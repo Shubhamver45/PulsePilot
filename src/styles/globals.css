@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --primary: #7565F5;
+    --primary-light: #F0EDFF;
+    --background: #F8F9FC;
+    --surface: #FFFFFF;
+    --text: #171923;
+    --text-secondary: #777D8D;
+    --border: #E8EAF0;
+    --success: #16A36A;
+    --warning: #E9A23B;
+    --danger: #E05252;
+  }
+
+  * {
+    border-color: #E8EAF0;
+  }
+
+  body {
+    background-color: #F8F9FC;
+    color: #171923;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Custom Scrollbar for clean SaaS aesthetics */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #E8EAF0;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #D5D8E2;
+}
+

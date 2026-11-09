@@ -1,0 +1,223 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum ExperimentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  RUNNING
+  PAUSED
+  CONCLUDED_ROLLED_OUT
+  CONCLUDED_ROLLED_BACK
+}
+
+enum EventType {
+  EXPOSURE
+  CONVERSION
+}
+
+enum MetricType {
+  CONVERSION_RATE
+  CLICK_THROUGH
+  REVENUE
+  RETENTION
+  CUSTOM
+}
+
+enum AgentType {
+  HYPOTHESIS_ARCHITECT
+  STATISTICAL_ANALYST
+  ROLLOUT_STRATEGIST
+  GUARDRAIL_SENTINEL
+  FUNNEL_TELEMETRY_TRACKER
+}
+
+enum AuditAction {
+  EXPERIMENT_CREATED
+  EXPERIMENT_APPROVED
+  FLAG_ACTIVATED
+  CONVERSION_RECORDED
+  EXPERIMENT_COMPLETED
+  ROLLOUT_APPROVED
+  ROLLBACK_PERFORMED
+  KILL_SWITCH_TRIGGERED
+}
+
+model Organization {
+  id        String     @id @default(cuid())
+  name      String
+  slug      String     @unique
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  users     User[]
+  projects  Project[]
+  auditLogs AuditLog[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String       @id
+  email          String       @unique
+  fullName       String?
+  avatarUrl      String?
+  role           UserRole     @default(EDITOR)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  auditLogs      AuditLog[]
+  agentRuns      AgentRun[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+model Project {
+  id                      String       @id @default(cuid())
+  name                    String
+  description             String?
+  organizationId          String
+  organization            Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  flagsmithProjectId      String?
+  flagsmithEnvironmentKey String?
+  flagsmithServerKey      String?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  experiments             Experiment[]
+  metrics                 Metric[]
+
+  @@index([organizationId])
+  @@map("projects")
+}
+
+model Experiment {
+  id                   String              @id @default(cuid())
+  projectId            String
+  project              Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title                String
+  hypothesis           String              @db.Text
+  description          String?             @db.Text
+  targetAudience       String?
+  flagsmithFeatureId   Int?
+  flagsmithFeatureName String              @unique
+  status               ExperimentStatus    @default(ACTIVE)
+  primaryMetric        String
+  guardrailMetrics     String[]            @default([])
+  sampleSizeTarget     Int                 @default(5000)
+  sampleSizeCurrent    Int                 @default(0)
+  winningVariantId     String?
+  rolloutRationale     String?             @db.Text
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  variants             ExperimentVariant[]
+  telemetryEvents      TelemetryEvent[]
+  agentRuns            AgentRun[]
+  auditLogs            AuditLog[]
+
+  @@index([projectId, status])
+  @@map("experiments")
+}
+
+model ExperimentVariant {
+  id                String           @id @default(cuid())
+  experimentId      String
+  experiment        Experiment       @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  key               String
+  name              String
+  description       String?          @db.Text
+  isControl         Boolean          @default(false)
+  trafficAllocation Int              @default(50)
+  featureValue      Json
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  telemetryEvents   TelemetryEvent[]
+
+  @@unique([experimentId, key])
+  @@index([experimentId])
+  @@map("experiment_variants")
+}
+
+model Metric {
+  id          String     @id @default(cuid())
+  projectId   String
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  key         String
+  description String?
+  type        MetricType @default(CONVERSION_RATE)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([projectId, key])
+  @@map("metrics")
+}
+
+model TelemetryEvent {
+  id             String            @id @default(cuid())
+  experimentId   String
+  experiment     Experiment        @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  variantId      String
+  variant        ExperimentVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  distinctUserId String
+  eventType      EventType
+  metricKey      String?
+  properties     Json?
+  timestamp      DateTime          @default(now())
+
+  @@index([experimentId, variantId, eventType])
+  @@index([experimentId, timestamp])
+  @@map("telemetry_events")
+}
+
+model AgentRun {
+  id               String      @id @default(cuid())
+  experimentId     String?
+  experiment       Experiment? @relation(fields: [experimentId], references: [id], onDelete: SetNull)
+  userId           String?
+  user             User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  agentType        AgentType
+  prompt           String      @db.Text
+  rawResponse      String?     @db.Text
+  structuredOutput Json
+  tokensUsed       Int?
+  modelName        String      @default("gemini-2.5-flash")
+  createdAt        DateTime    @default(now())
+
+  @@index([experimentId])
+  @@map("agent_runs")
+}
+
+model AuditLog {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  experimentId   String?
+  experiment     Experiment?   @relation(fields: [experimentId], references: [id], onDelete: SetNull)
+  action         AuditAction
+  entityType     String
+  entityId       String
+  previousState  Json?
+  newState       Json?
+  metadata       Json?
+  createdAt      DateTime      @default(now())
+
+  @@index([organizationId, createdAt])
+  @@map("audit_logs")
+}
+
