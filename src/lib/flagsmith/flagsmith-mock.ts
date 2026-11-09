@@ -115,6 +115,44 @@ class FlagsmithMockStore {
     }
   }
 
+  public updateGradualRollout(flagName: string, winningVariantKey: string, percentage: number) {
+    const flag = this.flags.get(flagName);
+    if (!flag) return;
+
+    const winnerOpt = flag.multivariateOptions.find((o) => o.key === winningVariantKey);
+    const controlOpt = flag.multivariateOptions.find((o) => o.key !== winningVariantKey) || flag.multivariateOptions[0];
+
+    if (winnerOpt) {
+      const clampedPct = Math.max(0, Math.min(100, percentage));
+      flag.multivariateOptions = flag.multivariateOptions.map((o) => {
+        if (o.key === winningVariantKey) {
+          return { ...o, trafficAllocation: clampedPct };
+        }
+        if (controlOpt && o.key === controlOpt.key) {
+          return { ...o, trafficAllocation: 100 - clampedPct };
+        }
+        return { ...o, trafficAllocation: 0 };
+      });
+      flag.enabled = true;
+      this.flags.set(flagName, flag);
+    }
+  }
+
+  public rollbackToControl(flagName: string) {
+    const flag = this.flags.get(flagName);
+    if (!flag) return;
+
+    const controlOpt = flag.multivariateOptions.find((o) => o.key === "control" || o.key.includes("control")) || flag.multivariateOptions[0];
+    if (controlOpt) {
+      flag.value = controlOpt.value;
+      flag.multivariateOptions = flag.multivariateOptions.map((o) => ({
+        ...o,
+        trafficAllocation: o.key === controlOpt.key ? 100 : 0,
+      }));
+      this.flags.set(flagName, flag);
+    }
+  }
+
   public toggleKillSwitch(flagName: string, enabled: boolean) {
     const flag = this.flags.get(flagName);
     if (flag) {

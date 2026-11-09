@@ -102,7 +102,7 @@ export function Sidebar({ className }: { className?: string }) {
         },
         {
           name: "Release Center",
-          href: "/releases",
+          href: "/release-center",
           icon: <ShieldCheck className="w-4 h-4" />,
           badge: "HITL",
           badgeVariant: "warning",
