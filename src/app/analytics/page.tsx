@@ -570,7 +570,7 @@ export default function AnalyticsIntelligencePage() {
             </div>
           </div>
           <Link
-            href="/releases"
+            href="/release-center"
             className="px-3 py-1.5 rounded bg-success text-white font-semibold hover:bg-success-text transition-colors flex items-center gap-1"
           >
             Go to Rollout Queue <ArrowRight className="w-3.5 h-3.5" />

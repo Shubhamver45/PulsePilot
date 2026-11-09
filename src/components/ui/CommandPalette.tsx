@@ -79,7 +79,7 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
       title: "Release Center & Canary Gates",
       category: "Safe Rollouts",
       icon: <ShieldCheck className="w-4 h-4 text-success" />,
-      action: () => router.push("/releases"),
+      action: () => router.push("/release-center"),
     },
     {
       id: "settings",
