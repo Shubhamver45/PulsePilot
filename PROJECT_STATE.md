@@ -93,6 +93,7 @@ Powered by **Google Gemini** with structured Zod outputs and dedicated prompts:
 | [`/analytics`](file:///Users/shubham/Desktop/pulsepilot/src/app/analytics/page.tsx) | **Experiment Intelligence** | Performance overview, variant comparison table, 5 interactive Recharts (conversion trends, CR bar chart, exposure distribution, guardrail trends), decision state badges, and printable PDF export modal. |
 | [`/release-center`](file:///Users/shubham/Desktop/pulsepilot/src/app/release-center/page.tsx) | **Release Guardian** | **6 Core Features:** 1. Release Readiness Audit (5-gate checklist + user criteria). 2. Rollout Recommendation (3 states: Rollout, Continue, Block). 3. Gradual Canary Rollout (5%, 10%, 25%, 50%, 75%, 100%). 4. Safety Monitoring (Payment failure, error rate, bounce, latency). 5. Verified Safe Rollback (side-by-side diff & signature). 6. Operational Audit Log. |
 | [`/releases`](file:///Users/shubham/Desktop/pulsepilot/src/app/releases/page.tsx) | **Release Center Alias** | Seamlessly redirects to `/release-center`. |
+| [`/demo-store`](file:///Users/shubham/Desktop/pulsepilot/src/app/demo-store/page.tsx) | **PulsePilot Demo Shop** | Realistic e-commerce storefront testing `checkout_experience`. Complete flow: Product listing, product details, shopping cart, variant checkout (Multi-Step vs Single-Page vs Express), exposure tracking, order confirmation, conversion attribution with stable user identity, and synthetic demo traffic simulator. |
 | [`/sandbox`](file:///Users/shubham/Desktop/pulsepilot/src/app/sandbox/page.tsx) | **Customer Sandbox** | Switch between user identities (`user_alex`, `user_sarah`, `user_david`), evaluate Flagsmith flag in real time, trigger checkout conversion telemetry, and simulate synthetic traffic. |
 | [`/flags`](file:///Users/shubham/Desktop/pulsepilot/src/app/flags/page.tsx) | **Feature Flags** | List and manage Flagsmith flags, multivariate split percentages, and enabled/disabled states. |
 | [`/insights`](file:///Users/shubham/Desktop/pulsepilot/src/app/insights/page.tsx) | **AI Growth Insights** | High-level synthesis cards with confidence scores, impact ratings, and recommended actions. |
@@ -168,3 +169,4 @@ Follow this exact flow when demonstrating PulsePilot AI:
 ---
 
 *PulsePilot AI is built strictly according to the highest software engineering standards, combining the cognitive power of Google Gemini with the operational safety of Flagsmith.*
+

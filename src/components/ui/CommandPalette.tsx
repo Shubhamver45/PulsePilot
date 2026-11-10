@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Compass,
   ArrowRight,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -73,6 +74,13 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
       category: "Agents",
       icon: <Sparkles className="w-4 h-4 text-primary" />,
       action: () => router.push("/insights"),
+    },
+    {
+      id: "demo-store",
+      title: "PulsePilot Demo Storefront (A/B Test)",
+      category: "Storefront",
+      icon: <Zap className="w-4 h-4 text-emerald-600" />,
+      action: () => router.push("/demo-store"),
     },
     {
       id: "releases",

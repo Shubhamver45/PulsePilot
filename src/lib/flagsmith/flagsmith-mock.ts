@@ -56,6 +56,53 @@ class FlagsmithMockStore {
         { key: "variant_annual", trafficAllocation: 50, value: JSON.stringify({ default: "annual", badge: "Save 20%" }) },
       ],
     });
+
+    this.flags.set("checkout_experience", {
+      name: "checkout_experience",
+      enabled: true,
+      type: "MULTIVARIATE",
+      value: JSON.stringify({
+        layout: "multi_step",
+        title: "Multi-Step Checkout",
+        expressPayment: false,
+        steps: ["Shipping", "Billing", "Review"],
+      }),
+      multivariateOptions: [
+        {
+          key: "control",
+          trafficAllocation: 34,
+          value: JSON.stringify({
+            layout: "multi_step",
+            title: "Multi-Step Checkout",
+            expressPayment: false,
+            badge: "Standard Multi-Step",
+            steps: ["Shipping", "Billing", "Review"],
+          }),
+        },
+        {
+          key: "variant_single_page",
+          trafficAllocation: 33,
+          value: JSON.stringify({
+            layout: "single_page",
+            title: "Single-Page Checkout",
+            expressPayment: true,
+            badge: "Streamlined 1-Page Layout",
+            coupon: "GROWTH20",
+          }),
+        },
+        {
+          key: "variant_express",
+          trafficAllocation: 33,
+          value: JSON.stringify({
+            layout: "express",
+            title: "Express Checkout",
+            expressPayment: true,
+            badge: "1-Click Apple Pay & Google Pay",
+            expressBrand: "Apple Pay / GPay",
+          }),
+        },
+      ],
+    });
   }
 
   public getFlag(name: string): MockFeatureFlag | undefined {

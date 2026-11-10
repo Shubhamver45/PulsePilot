@@ -90,6 +90,13 @@ export function Sidebar({ className }: { className?: string }) {
           badge: "Live SDK",
           badgeVariant: "primary",
         },
+        {
+          name: "Demo Store",
+          href: "/demo-store",
+          icon: <Zap className="w-4 h-4 text-emerald-600" />,
+          badge: "Storefront",
+          badgeVariant: "success",
+        },
       ],
     },
     {
