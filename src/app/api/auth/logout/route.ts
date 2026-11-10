@@ -15,3 +15,4 @@ export async function POST(request: Request) {
   response.cookies.delete("pulsepilot_session");
   return response;
 }
+
