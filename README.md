@@ -8,7 +8,7 @@
 [![Google Gemini](https://img.shields.io/badge/AI-Google%20Gemini-4285F4?style=flat-square&logo=google)](https://ai.google.dev)
 [![Next.js](https://img.shields.io/badge/Framework-Next.js%2014-black?style=flat-square&logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript%20Strict-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org)
-[![Tailwind CSS](https://img.shields.io/badge/Styling-Tailwind%20CSS-38B2D6?style=flat-square&logo=tailwind-css)](https://tailwindcss.com)
+[![Security & QA Audit](https://img.shields.io/badge/Audit-27%2F27%20Passed%20(100%25)-success?style=flat-square)](docs/SECURITY_AUDIT.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 ---
@@ -71,13 +71,17 @@ For complete architectural details, see [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTE
 
 ## 📚 Project Documentation
 
+- **[🏆 Hackathon Pitch Deck & 3-Minute Video Script](docs/HACKATHON_PITCH_DECK.md)** *(12 Slides + Speaker Notes)*
 - [Product Requirements Document (PRD)](docs/PRD.md)
-- [System Architecture](docs/SYSTEM_ARCHITECTURE.md)
+- [System Architecture Specification](docs/SYSTEM_ARCHITECTURE.md)
 - [Database Schema & ERD](docs/DATABASE_SCHEMA.md)
 - [AI Agent Design & Schemas](docs/AI_AGENT_DESIGN.md)
 - [Flagsmith Integration Guide](docs/FLAGSMITH_INTEGRATION.md)
+- [Release Guardian & Production Safety](docs/PRD.md)
 - [Security Architecture & Threat Model](docs/SECURITY.md)
+- [Comprehensive QA & Security Audit Report](docs/SECURITY_AUDIT.md)
 - [Hackathon Demo Plan & Presentation Guide](docs/DEMO_PLAN.md)
+- [Production Deployment Report](docs/DEPLOYMENT_REPORT.md)
 
 ---
 
@@ -85,28 +89,22 @@ For complete architectural details, see [docs/SYSTEM_ARCHITECTURE.md](docs/SYSTE
 
 | Layer | Technologies |
 |---|---|
-| **Frontend** | Next.js (App Router), React, TypeScript, Tailwind CSS, shadcn/ui, Lucide Icons, Framer Motion, Recharts |
+| **Frontend** | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS, Lucide Icons, Recharts |
 | **Backend** | Next.js Server-Side Route Handlers, Node.js runtime, Zod Schema Validation |
-| **Database** | PostgreSQL (Supabase), Prisma ORM |
-| **Authentication** | Supabase Auth (JWT session management) |
-| **Experimentation** | Flagsmith Management REST API, Flagsmith React SDK (`flagsmith/react`) |
-| **AI Engine** | Google Gemini API (`gemini-2.5-flash`), Structured JSON output mode |
+| **Database** | PostgreSQL (Supabase Managed Postgres), Prisma ORM (12 relational models) |
+| **Authentication** | Supabase Auth & NextAuth session management (Multi-tenant RBAC) |
+| **Experimentation** | Flagsmith Management REST API, Flagsmith Client SDK (`@flagsmith/flagsmith`) |
+| **AI Engine** | Google Gemini API (`gemini-2.5-flash`), Structured JSON Output Mode |
+| **Deterministic Math** | Pure TypeScript statistics engine (`src/lib/analytics/stats.ts`) |
 
 ---
 
 ## 🚀 Getting Started
 
-### 1. Prerequisites
-- Node.js $\ge 18.18$
-- npm or pnpm
-- Flagsmith Account ([flagsmith.com](https://flagsmith.com))
-- Google AI Studio API Key ([aistudio.google.com](https://aistudio.google.com))
-- PostgreSQL instance (or Supabase project)
-
-### 2. Clone and Install Dependencies
+### 1. Clone and Install Dependencies
 ```bash
-git clone https://github.com/your-username/pulsepilot.git
-cd pulsepilot
+git clone https://github.com/Shubhamver45/PulsePilot.git
+cd PulsePilot
 npm install
 ```
 
