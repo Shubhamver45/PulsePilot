@@ -42,7 +42,7 @@ const FLAGSMITH_API_URL = "https://api.flagsmith.com/api/v1";
 export async function createFlagsmithMultivariateFeature(
   input: CreateFlagInput
 ): Promise<{ success: boolean; featureId?: number; error?: string }> {
-  const managementKey = process.env.FLAGSMITH_MANAGEMENT_KEY;
+  const managementKey = process.env.FLAGSMITH_MANAGEMENT_KEY || process.env.FLAGSMITH_SERVER_SIDE_API_KEY;
   const projectId = process.env.FLAGSMITH_PROJECT_ID;
 
   // Fallback to local mock mode if management key is not set or set to "mock"
@@ -93,7 +93,7 @@ export async function rolloutFlagsmithWinner(
   featureId: number,
   winningVariantValue: string
 ): Promise<{ success: boolean; error?: string }> {
-  const managementKey = process.env.FLAGSMITH_MANAGEMENT_KEY;
+  const managementKey = process.env.FLAGSMITH_MANAGEMENT_KEY || process.env.FLAGSMITH_SERVER_SIDE_API_KEY;
   const environmentKey = process.env.FLAGSMITH_SERVER_KEY || process.env.NEXT_PUBLIC_FLAGSMITH_ENVIRONMENT_ID;
 
   if (!managementKey || managementKey === "mock" || !environmentKey) {
@@ -132,7 +132,7 @@ export async function rolloutFlagsmithWinner(
 export async function triggerFlagsmithKillSwitch(
   featureStateId: number
 ): Promise<{ success: boolean; error?: string }> {
-  const managementKey = process.env.FLAGSMITH_MANAGEMENT_KEY;
+  const managementKey = process.env.FLAGSMITH_MANAGEMENT_KEY || process.env.FLAGSMITH_SERVER_SIDE_API_KEY;
   const environmentKey = process.env.FLAGSMITH_SERVER_KEY || process.env.NEXT_PUBLIC_FLAGSMITH_ENVIRONMENT_ID;
 
   if (!managementKey || managementKey === "mock" || !environmentKey) {
