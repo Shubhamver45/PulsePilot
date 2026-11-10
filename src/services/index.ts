@@ -47,3 +47,4 @@ export const releaseService = {
     return res.json();
   },
 };
+

@@ -66,3 +66,4 @@ export interface CanaryStageConfig {
   durationHours: number;
   requireApproval: boolean;
 }
+
