@@ -153,6 +153,13 @@ export function compareVariants(
  * - minimum detectable effect (MDE) relative (e.g., 0.10 for +10% lift)
  * - alpha (false positive rate, e.g. 0.05)
  * - power (1 - beta, e.g. 0.80)
+ *
+ * Rejects invalid inputs:
+ * Throws explicit RangeError when:
+ * - relativeMDE <= 0 or isNaN
+ * - baselineRate <= 0 or baselineRate >= 1
+ * - alpha <= 0 or alpha >= 1
+ * - power <= 0 or power >= 1
  */
 export function calculateRequiredSampleSize(
   baselineRate: number,
@@ -160,7 +167,21 @@ export function calculateRequiredSampleSize(
   alpha: number = 0.05,
   power: number = 0.8
 ): number {
-  if (baselineRate <= 0 || baselineRate >= 1) return 1000;
+  if (typeof baselineRate !== "number" || isNaN(baselineRate) || baselineRate <= 0 || baselineRate >= 1) {
+    throw new RangeError("Invalid baselineRate: must be a probability between 0 and 1 exclusive.");
+  }
+
+  if (typeof relativeMDE !== "number" || isNaN(relativeMDE) || relativeMDE <= 0) {
+    throw new RangeError("Invalid relativeMDE: minimum detectable effect must be a positive number greater than 0.");
+  }
+
+  if (typeof alpha !== "number" || isNaN(alpha) || alpha <= 0 || alpha >= 1) {
+    throw new RangeError("Invalid alpha (significance level): must be between 0 and 1 exclusive.");
+  }
+
+  if (typeof power !== "number" || isNaN(power) || power <= 0 || power >= 1) {
+    throw new RangeError("Invalid power: must be between 0 and 1 exclusive.");
+  }
 
   // Standard Z-scores for alpha=0.05 (two-tailed => 1.96) and power=0.80 (0.84)
   const zAlpha = 1.95996;
@@ -168,14 +189,19 @@ export function calculateRequiredSampleSize(
 
   const p1 = baselineRate;
   const p2 = p1 * (1 + relativeMDE);
-  const pAvg = (p1 + p2) / 2;
+  const effectiveP2 = Math.min(0.9999, p2);
+  const pAvg = (p1 + effectiveP2) / 2;
 
   const numerator = Math.pow(
     zAlpha * Math.sqrt(2 * pAvg * (1 - pAvg)) +
-    zBeta * Math.sqrt(p1 * (1 - p1) + p2 * (1 - p2)),
+    zBeta * Math.sqrt(p1 * (1 - p1) + effectiveP2 * (1 - effectiveP2)),
     2
   );
-  const denominator = Math.pow(p2 - p1, 2);
+  const denominator = Math.pow(effectiveP2 - p1, 2);
+
+  if (denominator === 0) {
+    throw new RangeError("Invalid relativeMDE: denominator evaluated to zero.");
+  }
 
   return Math.ceil(numerator / denominator);
 }

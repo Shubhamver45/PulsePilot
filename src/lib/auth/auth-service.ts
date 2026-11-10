@@ -167,6 +167,58 @@ export async function registerUser(input: z.infer<typeof RegisterInputSchema>): 
 }
 
 /**
+ * Register or sync a user with a specific Supabase Auth user ID
+ */
+export async function registerUserWithId(
+  input: z.infer<typeof RegisterInputSchema>,
+  userId: string
+): Promise<{
+  success: boolean;
+  user?: AuthUser;
+  token?: string;
+  error?: string;
+}> {
+  const emailKey = input.email.toLowerCase().trim();
+  const orgId = `org_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const workspaceId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  const workspace: Workspace = {
+    id: workspaceId,
+    organizationId: orgId,
+    name: `${input.organizationName} (Production)`,
+    slug: input.organizationName.toLowerCase().replace(/[^a-z0-9]/g, "-"),
+    description: `Primary workspace for ${input.organizationName}`,
+    createdAt: new Date().toISOString(),
+  };
+  WORKSPACES_STORE.set(workspaceId, workspace);
+
+  const newUser: AuthUser = {
+    id: userId,
+    email: emailKey,
+    fullName: input.fullName.trim(),
+    role: "ADMIN",
+    organizationId: orgId,
+    organizationName: input.organizationName.trim(),
+    activeWorkspaceId: workspaceId,
+    activeWorkspaceName: workspace.name,
+    createdAt: new Date().toISOString(),
+  };
+
+  USERS_STORE.set(emailKey, {
+    user: newUser,
+    passwordHash: `hash_${input.password}`,
+  });
+
+  const token = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  SESSIONS_STORE.set(token, {
+    userId: newUser.id,
+    expiresAt: Date.now() + 1000 * 60 * 60 * 24 * 7,
+  });
+
+  return { success: true, user: newUser, token };
+}
+
+/**
  * Log in an existing user
  */
 export async function loginUser(input: z.infer<typeof LoginInputSchema>): Promise<{

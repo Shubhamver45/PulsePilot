@@ -60,25 +60,55 @@ export function sanitizeUserInput(input: string, maxLen = 4000): SanitizationRes
 }
 
 /**
- * Validates that an agent's structured response does not leak server secrets
+ * Validates that an agent's structured response does not leak server secrets.
+ * Uses both pattern matching and exact in-memory credential comparison.
+ * Never prints discovered secrets in error messages or logs.
  */
 export function assertZeroSecretLeakage(responseObj: any): boolean {
-  const serialized = JSON.stringify(responseObj);
-  const forbiddenPatterns = [
-    /FLAGSMITH_MANAGEMENT_KEY/i,
-    /GEMINI_API_KEY/i,
-    /DATABASE_URL/i,
-    /SUPABASE_SERVICE_ROLE/i,
-    /AIzaSy[A-Za-z0-9_-]{33}/, // Google API Key regex
-    /postgres:\/\/[^:]+:[^@]+@/, // Database connection string
+  const serialized = typeof responseObj === "string" ? responseObj : JSON.stringify(responseObj);
+
+  // 1. Structural Secret Regex Patterns
+  const forbiddenPatterns: { name: string; regex: RegExp }[] = [
+    { name: "Google AI Studio Key (AQ pattern)", regex: /AQ\.[A-Za-z0-9_-]{20,}/ },
+    { name: "Google API Key (AIza pattern)", regex: /AIza[0-9A-Za-z_-]{20,}/ },
+    { name: "Flagsmith Server Environment Key (ser pattern)", regex: /ser\.[A-Za-z0-9_-]{15,}/ },
+    { name: "Flagsmith Server Key (sb pattern)", regex: /sb\.[A-Za-z0-9_-]{15,}/ },
+    { name: "Database Connection URI", regex: /postgres(ql)?:\/\/[^:]+:[^@]+@/i },
+    { name: "JWT Token Pattern", regex: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
+    { name: "Secret Variable Name Leakage: FLAGSMITH_MANAGEMENT_KEY", regex: /FLAGSMITH_MANAGEMENT_KEY/i },
+    { name: "Secret Variable Name Leakage: FLAGSMITH_ORG_API_TOKEN", regex: /FLAGSMITH_ORG_API_TOKEN/i },
+    { name: "Secret Variable Name Leakage: GEMINI_API_KEY", regex: /GEMINI_API_KEY/i },
+    { name: "Secret Variable Name Leakage: SUPABASE_SERVICE_ROLE_KEY", regex: /SUPABASE_SERVICE_ROLE/i },
   ];
 
-  for (const pattern of forbiddenPatterns) {
-    if (pattern.test(serialized)) {
-      throw new Error(`CRITICAL SECURITY ALERT: Secret pattern '${pattern.source}' detected in output payload.`);
+  for (const { name, regex } of forbiddenPatterns) {
+    if (regex.test(serialized)) {
+      throw new Error(`CRITICAL SECURITY ALERT: Secret pattern '${name}' detected in output payload.`);
+    }
+  }
+
+  // 2. Exact Memory Matching Against Configured Private Environment Variables
+  const sensitiveEnvVars = [
+    "GEMINI_API_KEY",
+    "FLAGSMITH_ORG_API_TOKEN",
+    "FLAGSMITH_SERVER_SIDE_API_KEY",
+    "FLAGSMITH_MANAGEMENT_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "DATABASE_URL",
+    "DIRECT_URL",
+    "NEXTAUTH_SECRET",
+  ];
+
+  for (const varName of sensitiveEnvVars) {
+    const secretVal = process.env[varName];
+    if (secretVal && secretVal.length >= 8 && secretVal !== "mock") {
+      if (serialized.includes(secretVal)) {
+        throw new Error(
+          `CRITICAL SECURITY ALERT: Private credential from environment variable '${varName}' was detected in serialized output payload.`
+        );
+      }
     }
   }
 
   return true;
 }
-

@@ -3,7 +3,12 @@
  * PulsePilot AI — Senior QA Engineer & Application Security Auditor
  */
 
-import { normalCDF, calculateTwoTailedPValue, compareVariants } from "../src/lib/analytics/stats.ts";
+import {
+  normalCDF,
+  calculateTwoTailedPValue,
+  compareVariants,
+  calculateRequiredSampleSize,
+} from "../src/lib/analytics/stats.ts";
 import { registerUser, loginUser, getUserFromToken, logoutUser, createWorkspace } from "../src/lib/auth/auth-service.ts";
 import { sanitizeUserInput, assertZeroSecretLeakage } from "../src/lib/security/input-sanitizer.ts";
 import { checkRateLimit } from "../src/lib/security/rate-limiter.ts";
@@ -55,6 +60,26 @@ async function runFullAudit() {
     [0.5, 0.5]
   );
   assert(srmTest.sampleRatioMismatch.srmDetected === true, "SRM Chi-Square detector correctly flags biased traffic split");
+
+  // Sample Size Estimation & Strict MDE > 0 Enforcement
+  let zeroMdeRejected = false;
+  try {
+    calculateRequiredSampleSize(0.05, 0);
+  } catch (e: any) {
+    if (e instanceof RangeError) zeroMdeRejected = true;
+  }
+  assert(zeroMdeRejected, "calculateRequiredSampleSize rejects zero MDE with explicit RangeError");
+
+  let negativeMdeRejected = false;
+  try {
+    calculateRequiredSampleSize(0.05, -0.05);
+  } catch (e: any) {
+    if (e instanceof RangeError) negativeMdeRejected = true;
+  }
+  assert(negativeMdeRejected, "calculateRequiredSampleSize rejects negative MDE with explicit RangeError");
+
+  const validSampleSize = calculateRequiredSampleSize(0.05, 0.10);
+  assert(validSampleSize > 25000 && validSampleSize < 35000, "calculateRequiredSampleSize computes valid sample size (~31,234)");
 
   // ---------------------------------------------------------------------------
   // 2. AUTHENTICATION & WORKSPACE ISOLATION AUDIT
@@ -126,6 +151,28 @@ async function runFullAudit() {
     secretLeakageCaught = true;
   }
   assert(secretLeakageCaught === true, "Zero Secret Leakage validator catches exposed API keys");
+
+  let studioSecretCaught = false;
+  try {
+    assertZeroSecretLeakage({
+      safeField: "Experiment formulated",
+      leakedSecret: "AQ.mockTestingPattern123456789012345678901234567890",
+    });
+  } catch (err) {
+    studioSecretCaught = true;
+  }
+  assert(studioSecretCaught === true, "Zero Secret Leakage validator catches Google AI Studio AQ. key pattern");
+
+  let flagsmithSecretCaught = false;
+  try {
+    assertZeroSecretLeakage({
+      safeField: "Flagsmith config",
+      leakedKey: "ser.WfzY3pJshTQofYbAtWGSkR12345",
+    });
+  } catch (err) {
+    flagsmithSecretCaught = true;
+  }
+  assert(flagsmithSecretCaught === true, "Zero Secret Leakage validator catches Flagsmith server key pattern");
 
   // Test Rate Limiter Protection
   const rateLimitKey = `audit_test_ip_${Date.now()}`;
