@@ -47,18 +47,22 @@ Judges can explore PulsePilot AI live by following this exact 5-step journey:
 - Click **"Approve & Deploy to Flagsmith"**.
 - Verify that the status updates to **ACTIVE** with a direct link/reference to the Flagsmith feature.
 
-### Step 4: Interact with the Live Sandbox
-- Navigate to the **Sandbox** (`/sandbox`).
-- Switch user identities (e.g. `user_sarah`, `user_david`, `user_alex`).
-- Notice how Flagsmith dynamically evaluates the flag and renders distinct UI components.
-- Click **"Complete Checkout"** to generate real conversion telemetry.
+### Step 4: Interact with the Live Sandbox & Demo Store
+- Navigate to the **Demo Store** (`/demo-store`) or **Customer Sandbox** (`/sandbox`).
+- Switch user identities (e.g. `user_alex_dev`, `user_sarah_frontend`, `user_david_lead`).
+- Notice how Flagsmith dynamically evaluates `checkout_experience` and renders distinct variations:
+  - Multi-Step Checkout (Control)
+  - Single-Page Checkout (Variant A)
+  - Express Checkout (Variant B)
+- Add items to cart and click **"Complete Checkout"** to generate real conversion telemetry with the exact same identity.
+- Optionally run the **Synthetic Demo Traffic Simulator** with transparent labeling to stream batches of visitors.
 
-### Step 5: Review Statistical Insights & Execute Rollout
-- Return to the Experiment detail page (`/experiments/[id]`).
+### Step 5: Review Statistical Insights & Canary Rollout
+- Navigate to **Experiment Intelligence** (`/analytics`) and **Release Guardian** (`/release-center`).
 - Inspect the live conversion rates, uplift %, and p-value curves.
-- Click **"Run AI Analysis"** to generate the executive report.
-- When statistical significance is reached, click **"Execute 100% Rollout"**.
-- Check the **Audit Log** tab (`/audit-logs`) to see the complete immutable record of actions taken.
+- Review the 5-point release readiness checklist and AI rollout recommendation.
+- Progressively shift canary traffic (5% $\to$ 25% $\to$ 50% $\to$ 100%) or execute a **Safe Rollback to 100% Control**.
+- Check the **Activity Logs** (`/activity`) to see the complete immutable record of actions taken.
 
 ---
 
