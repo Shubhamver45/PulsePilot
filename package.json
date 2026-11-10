@@ -6,8 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "tsc --noEmit",
     "test": "node --experimental-strip-types scripts/test-stats.ts",
+    "test:audit": "node --experimental-strip-types scripts/test-full-audit.ts",
+    "audit": "node --experimental-strip-types scripts/test-full-audit.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push"
   },

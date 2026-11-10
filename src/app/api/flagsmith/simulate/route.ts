@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server";
 import { simulateTestTraffic } from "@/lib/flagsmith/experimentation-service";
+import { checkRateLimit } from "@/lib/security/rate-limiter";
 
 export async function POST(request: Request) {
   try {
+    const ip = request.headers.get("x-forwarded-for") || "127.0.0.1";
+    const rateCheck = checkRateLimit(`sim_${ip}`, { maxRequests: 30, windowMs: 60000 });
+    if (!rateCheck.allowed) {
+      return NextResponse.json(
+        { error: "Simulation rate limit reached. Please wait before streaming more traffic." },
+        { status: 429 }
+      );
+    }
+
     const body = await request.json();
     const flag = body.featureFlagName || "checkout_experience";
     const count = Math.min(100, Math.max(1, body.count || 20));

@@ -34,6 +34,38 @@ interface NavItem {
 export function Sidebar({ className }: { className?: string }) {
   const pathname = usePathname();
   const [workspace, setWorkspace] = useState("Acme Growth (Production)");
+  const [workspacesList, setWorkspacesList] = useState([
+    "Acme Growth (Production)",
+    "Acme Growth (Staging)",
+  ]);
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
+  const [newWorkspaceModalOpen, setNewWorkspaceModalOpen] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [isCreatingWs, setIsCreatingWs] = useState(false);
+
+  const handleCreateWorkspace = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newWorkspaceName.trim()) return;
+    setIsCreatingWs(true);
+    try {
+      const res = await fetch("/api/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newWorkspaceName.trim() }),
+      });
+      const data = await res.json();
+      if (data.success && data.workspace) {
+        setWorkspacesList((prev) => [...prev, data.workspace.name]);
+        setWorkspace(data.workspace.name);
+        setNewWorkspaceName("");
+        setNewWorkspaceModalOpen(false);
+      }
+    } catch (err) {
+      console.error("Workspace creation failed:", err);
+    } finally {
+      setIsCreatingWs(false);
+    }
+  };
 
   const navigation: { section?: string; items: NavItem[] }[] = [
     {
@@ -166,16 +198,98 @@ export function Sidebar({ className }: { className?: string }) {
           </Link>
         </div>
 
-        {/* Workspace Selector */}
-        <div className="p-3 border-b border-border bg-surface-subtle/50">
-          <button className="w-full flex items-center justify-between p-2 rounded-md bg-surface border border-border shadow-xs hover:border-primary/40 transition-colors text-left">
+        {/* Workspace Selector with Dropdown */}
+        <div className="p-3 border-b border-border bg-surface-subtle/50 relative">
+          <button
+            onClick={() => setWorkspaceDropdownOpen(!workspaceDropdownOpen)}
+            className="w-full flex items-center justify-between p-2 rounded-md bg-surface border border-border shadow-xs hover:border-primary/40 transition-colors text-left"
+          >
             <div className="flex items-center gap-2 min-w-0">
               <Building2 className="w-3.5 h-3.5 text-text-secondary flex-shrink-0" />
               <span className="text-xs font-medium text-text truncate">{workspace}</span>
             </div>
-            <ChevronDown className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />
+            <ChevronDown className={`w-3.5 h-3.5 text-text-muted flex-shrink-0 transition-transform ${workspaceDropdownOpen ? "rotate-180" : ""}`} />
           </button>
+
+          {workspaceDropdownOpen && (
+            <div className="absolute left-3 right-3 top-14 rounded-lg bg-surface border border-border shadow-lg p-1.5 z-40 text-xs animate-in fade-in zoom-in-95">
+              <span className="text-[10px] font-bold text-text-muted uppercase px-2 py-1 block">
+                Workspaces (Isolated Scopes)
+              </span>
+              <div className="space-y-0.5 mt-1">
+                {workspacesList.map((wsName) => (
+                  <button
+                    key={wsName}
+                    onClick={() => {
+                      setWorkspace(wsName);
+                      setWorkspaceDropdownOpen(false);
+                    }}
+                    className={`w-full flex items-center justify-between p-2 rounded text-left transition-colors ${
+                      workspace === wsName
+                        ? "bg-primary-light text-primary font-bold"
+                        : "hover:bg-surface-subtle text-text"
+                    }`}
+                  >
+                    <span className="truncate">{wsName}</span>
+                    {workspace === wsName && <span className="text-[10px] font-mono">✓</span>}
+                  </button>
+                ))}
+              </div>
+              <div className="pt-1.5 mt-1 border-t border-border">
+                <button
+                  onClick={() => {
+                    setWorkspaceDropdownOpen(false);
+                    setNewWorkspaceModalOpen(true);
+                  }}
+                  className="w-full p-1.5 rounded hover:bg-surface-subtle text-primary text-[11px] font-bold text-left flex items-center gap-1.5"
+                >
+                  <span>+ Create Workspace</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
+
+        {/* Create Workspace Modal */}
+        {newWorkspaceModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+            <div className="bg-surface border border-border rounded-xl p-5 w-full max-w-sm space-y-4 shadow-xl">
+              <h3 className="text-sm font-bold text-text">Create Isolated Workspace</h3>
+              <p className="text-xs text-text-secondary">
+                Each workspace has its own Flagsmith project key, experiments, and telemetry partition.
+              </p>
+              <form onSubmit={handleCreateWorkspace} className="space-y-3 text-xs">
+                <div>
+                  <label className="font-semibold text-text block mb-1">Workspace Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={newWorkspaceName}
+                    onChange={(e) => setNewWorkspaceName(e.target.value)}
+                    placeholder="e.g. Acme Mobile (Staging)"
+                    className="w-full p-2 rounded bg-surface-subtle border border-border text-text"
+                  />
+                </div>
+                <div className="flex gap-2 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewWorkspaceModalOpen(false)}
+                    className="px-3 py-1.5 rounded border border-border text-text-secondary hover:bg-surface-subtle"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCreatingWs}
+                    className="px-3 py-1.5 rounded bg-primary text-white font-bold"
+                  >
+                    {isCreatingWs ? "Creating..." : "Create Workspace"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* Navigation Links */}
         <nav className="p-3 space-y-5 overflow-y-auto max-h-[calc(100vh-220px)]">

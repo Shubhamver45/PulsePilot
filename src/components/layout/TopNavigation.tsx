@@ -12,7 +12,10 @@ import {
   User,
   ShieldCheck,
   ExternalLink,
+  LogOut,
+  ChevronDown,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { CommandPalette } from "../ui/CommandPalette";
 import { NotificationPanel, NotificationItem } from "../ui/NotificationPanel";
@@ -54,7 +57,23 @@ export function TopNavigation({
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>(initialNotifications);
 
-  // Generate breadcrumb items
+  const router = useRouter();
+  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState({
+    name: "Sarah Lin",
+    email: "sarah@pulsepilot.ai",
+    role: "Product Lead (Admin)",
+    initials: "SL",
+  });
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch (e) {
+      // ignore
+    }
+    router.push("/login");
+  };
   const pathSegments = pathname.split("/").filter(Boolean);
   const breadcrumbs = [
     { label: "PulsePilot", href: "/" },
@@ -135,19 +154,58 @@ export function TopNavigation({
 
           <div className="h-5 w-px bg-border mx-1 hidden sm:block" />
 
-          {/* User Profile */}
-          <div className="flex items-center gap-2.5 pl-1">
-            <div className="w-7 h-7 rounded-full bg-primary-light text-primary font-semibold text-xs flex items-center justify-center border border-primary/20">
-              SL
-            </div>
-            <div className="hidden lg:block text-left">
-              <span className="block text-xs font-semibold text-text leading-tight">
-                Sarah Lin
-              </span>
-              <span className="block text-[10px] text-text-secondary leading-tight">
-                Product Lead (Admin)
-              </span>
-            </div>
+          {/* User Profile with Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setUserDropdownOpen(!userDropdownOpen)}
+              className="flex items-center gap-2.5 pl-1 p-1 rounded-md hover:bg-surface-subtle transition-colors"
+            >
+              <div className="w-7 h-7 rounded-full bg-primary-light text-primary font-semibold text-xs flex items-center justify-center border border-primary/20">
+                {currentUser.initials}
+              </div>
+              <div className="hidden lg:block text-left">
+                <span className="block text-xs font-semibold text-text leading-tight">
+                  {currentUser.name}
+                </span>
+                <span className="block text-[10px] text-text-secondary leading-tight">
+                  {currentUser.role}
+                </span>
+              </div>
+              <ChevronDown className="w-3.5 h-3.5 text-text-muted hidden lg:block" />
+            </button>
+
+            {userDropdownOpen && (
+              <div className="absolute right-0 mt-2 w-56 rounded-lg bg-surface border border-border shadow-lg p-2 z-50 animate-in fade-in zoom-in-95 text-xs">
+                <div className="p-2 border-b border-border">
+                  <span className="font-bold text-text block">{currentUser.name}</span>
+                  <span className="text-[11px] text-text-muted block">{currentUser.email}</span>
+                </div>
+                <div className="py-1">
+                  <Link
+                    href="/settings"
+                    onClick={() => setUserDropdownOpen(false)}
+                    className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-text transition-colors"
+                  >
+                    <User className="w-3.5 h-3.5 text-text-secondary" /> Account Settings
+                  </Link>
+                  <Link
+                    href="/login"
+                    onClick={() => setUserDropdownOpen(false)}
+                    className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-text transition-colors"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-text-secondary" /> Switch Account
+                  </Link>
+                </div>
+                <div className="pt-1 border-t border-border">
+                  <button
+                    onClick={handleLogout}
+                    className="w-full text-left p-2 rounded hover:bg-red-50 text-danger flex items-center gap-2 font-semibold transition-colors"
+                  >
+                    <LogOut className="w-3.5 h-3.5" /> Sign Out
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </header>
