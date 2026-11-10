@@ -20,7 +20,6 @@ import {
   ExternalLink,
   Zap,
   Activity,
-  Play,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -129,13 +128,6 @@ export function Sidebar({ className }: { className?: string }) {
           icon: <Zap className="w-4 h-4 text-emerald-600" />,
           badge: "Storefront",
           badgeVariant: "success",
-        },
-        {
-          name: "Demo Video & Voice",
-          href: "/demo-video",
-          icon: <Play className="w-4 h-4 text-violet-600 fill-violet-600" />,
-          badge: "3-Min Video",
-          badgeVariant: "primary",
         },
       ],
     },
