@@ -65,7 +65,7 @@ async function main() {
       organizationId: org.id,
       flagsmithProjectId: "53867",
       flagsmithEnvironmentKey: "4Y72D2n57QaWFq7TU4sNsz",
-      flagsmithServerKey: "ser.WfzY3pJshTQofYbAtWGSkR",
+      flagsmithServerKey: process.env.FLAGSMITH_SERVER_SIDE_API_KEY || "",
     },
   });
   console.log("✅ Project created:", project.name);

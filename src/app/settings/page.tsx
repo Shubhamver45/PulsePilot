@@ -37,7 +37,8 @@ export default function SettingsPage() {
               <label className="font-semibold text-text-secondary">Environment Key (Client SDK)</label>
               <input
                 type="text"
-                defaultValue="ser.production_client_env_key"
+                placeholder="Configured via FLAGSMITH_ENVIRONMENT_KEY"
+                disabled
                 className="w-full mt-1 p-2 rounded bg-surface-subtle border border-border font-mono text-text"
               />
             </div>

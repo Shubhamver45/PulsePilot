@@ -68,12 +68,12 @@ pulsepilot/
 - **Location:** `src/lib/flagsmith/flagsmith-admin.ts` (lines 57–63) and `src/lib/flagsmith/experimentation-service.ts` (lines 269–275)
 - **Classification:** **CRITICAL**
 - **Evidence:**
-  Calling `POST https://api.flagsmith.com/api/v1/projects/53867/features/` with header `Authorization: Token ser.WfzY3pJshTQofYbAtWGSkR` returns:
+  Calling `POST https://api.flagsmith.com/api/v1/projects/53867/features/` with header `Authorization: Token ser.***REDACTED***` returns:
   ```json
   {"detail": "Invalid token."}
   ```
 - **Root Cause:** In Flagsmith's REST API architecture:
-  - `ser.WfzY3pJshTQofYbAtWGSkR` is an **Environment-Level Server Key**. It can only evaluate flags on Edge (`/api/v1/flags/` with header `X-Environment-Key`) or update feature states on `/api/v1/environments/{key}/feature-states/`.
+  - `ser.***REDACTED***` is an **Environment-Level Server Key**. It can only evaluate flags on Edge (`/api/v1/flags/` with header `X-Environment-Key`) or update feature states on `/api/v1/environments/{key}/feature-states/`.
   - Creating features on `/api/v1/projects/{projectId}/features/` requires an **Account-Level Admin Token** (generated in Flagsmith under *Account Settings* $\to$ *Admin Tokens*).
 - **Current Behavior:** Because the API returns 401, the code gracefully falls back to generating a mock feature ID (`Math.floor(Math.random() * 100000)`) and updating `flagsmithMockStore`.
 - **Impact:** Live remote flag creation on Flagsmith Cloud fails silently, and the app operates in mock state for new flag creation unless created manually via the Flagsmith UI.

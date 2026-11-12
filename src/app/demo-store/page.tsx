@@ -188,12 +188,24 @@ export default function DemoStorePage() {
   const [currentView, setCurrentView] = useState<StoreView>("CATALOG");
   const [selectedProduct, setSelectedProduct] = useState<Product>(PRODUCTS[0]);
 
+  // Active Experiment Flag Name (Supports exp_checkout_layout_v2 and query param override)
+  const [activeFlag, setActiveFlag] = useState<string>("exp_checkout_layout_v2");
+
   // Shopping Cart State
   const [cart, setCart] = useState<CartItem[]>([
     { product: PRODUCTS[1], quantity: 1 }, // Default keyboard in cart
   ]);
   const [couponCode, setCouponCode] = useState("GROWTH20");
   const [discountApplied, setDiscountApplied] = useState(true);
+
+  // Read URL flag parameter if provided on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const flagParam = params.get("flag");
+      if (flagParam) setActiveFlag(flagParam);
+    }
+  }, []);
 
   // Stable Identity State (Flagsmith Requirement)
   const [distinctUserId, setDistinctUserId] = useState<string>("user_alex_dev");
@@ -259,35 +271,46 @@ export default function DemoStorePage() {
     lift: number;
   } | null>(null);
 
-  // 1. Evaluate Flag on Identity Change
+  // 1. Evaluate Flag on Identity Change (Checks active experiment in Flagsmith)
   const evaluateFlagsmith = async (identity: string) => {
     setIsEvaluating(true);
     try {
-      const res = await fetch(`/api/flagsmith/evaluate?flag=checkout_experience&identity=${encodeURIComponent(identity)}`);
-      const data = await res.json();
+      const res = await fetch(`/api/flagsmith/evaluate?flag=${encodeURIComponent(activeFlag)}&identity=${encodeURIComponent(identity)}`);
+      let data = await res.json();
+
+      // If activeFlag is not found, fallback to checkout_experience
+      if (!data.value && activeFlag !== "checkout_experience") {
+        const fallbackRes = await fetch(`/api/flagsmith/evaluate?flag=checkout_experience&identity=${encodeURIComponent(identity)}`);
+        if (fallbackRes.ok) {
+          const fallbackData = await fallbackRes.json();
+          if (fallbackData.value) {
+            data = fallbackData;
+          }
+        }
+      }
 
       let parsedValue: any = {};
       try {
-        parsedValue = typeof data.value === "string" ? JSON.parse(data.value) : data.value;
+        parsedValue = typeof data.value === "string" ? JSON.parse(data.value) : (data.parsedValue || data.value || {});
       } catch (e) {
         parsedValue = {};
       }
 
       const layout =
-        data.variantKey === "variant_single_page"
+        parsedValue?.layout === "single_page" || data.variantKey === "variant_single_page" || data.variantKey === "treatment"
           ? "single_page"
-          : data.variantKey === "variant_express"
+          : parsedValue?.layout === "express" || data.variantKey === "variant_express"
           ? "express"
           : "multi_step";
 
       setEvaluatedVariant({
-        variantKey: data.variantKey || "control",
+        variantKey: data.variantKey || (layout === "single_page" ? "treatment" : "control"),
         variantName:
-          data.variantKey === "variant_single_page"
-            ? "Variant A: Single-Page Checkout"
-            : data.variantKey === "variant_express"
-            ? "Variant B: Express Checkout"
-            : "Control: Multi-Step Checkout",
+          layout === "single_page"
+            ? "Single-Page Streamlined Checkout"
+            : layout === "express"
+            ? "Express Checkout"
+            : "Current Multi-Step Checkout",
         layout,
         title: parsedValue?.title || (layout === "single_page" ? "Single-Page Checkout" : layout === "express" ? "Express Checkout" : "Multi-Step Checkout"),
         badge: parsedValue?.badge || (layout === "single_page" ? "Streamlined 1-Page" : layout === "express" ? "1-Click Express" : "Standard Multi-Step"),
@@ -303,10 +326,10 @@ export default function DemoStorePage() {
     }
   };
 
-  // Trigger evaluation on initial load or distinctUserId change
+  // Trigger evaluation on initial load, distinctUserId change, or activeFlag change
   useEffect(() => {
     evaluateFlagsmith(distinctUserId);
-  }, [distinctUserId]);
+  }, [distinctUserId, activeFlag]);
 
   // 2. Record Exposure when entering Checkout
   useEffect(() => {
@@ -315,9 +338,9 @@ export default function DemoStorePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          experimentFlag: "checkout_experience",
+          experimentFlag: activeFlag,
           distinctUserId,
-          eventType: "EXPOSURE",
+          eventType: "experiment_exposure",
           variantKey: evaluatedVariant.variantKey,
           properties: {
             cartItems: cart.length,
@@ -329,7 +352,7 @@ export default function DemoStorePage() {
       }).catch((e) => console.warn("Exposure tracking error:", e));
       setExposureLogged(true);
     }
-  }, [currentView, distinctUserId, evaluatedVariant.variantKey, exposureLogged]);
+  }, [currentView, distinctUserId, evaluatedVariant.variantKey, exposureLogged, activeFlag]);
 
   // Calculations
   const calculateSubtotal = () =>
@@ -383,9 +406,9 @@ export default function DemoStorePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          experimentFlag: "checkout_experience",
+          experimentFlag: activeFlag,
           distinctUserId, // CRITICAL: Must match exposure distinctUserId
-          eventType: "CONVERSION",
+          eventType: "checkout_completed",
           variantKey: evaluatedVariant.variantKey,
           metricKey: "checkout_completed",
           properties: {
@@ -981,6 +1004,18 @@ export default function DemoStorePage() {
               <button
                 onClick={() => {
                   setExposureLogged(false); // Trigger exposure on next view
+                  // Record checkout_started event
+                  fetch("/api/telemetry/track", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      experimentFlag: activeFlag,
+                      distinctUserId,
+                      eventType: "checkout_started",
+                      variantKey: evaluatedVariant.variantKey,
+                      properties: { cartItems: cart.length, subtotal: calculateSubtotal() },
+                    }),
+                  }).catch(() => {});
                   setCurrentView("CHECKOUT");
                 }}
                 disabled={cart.length === 0}
@@ -990,9 +1025,9 @@ export default function DemoStorePage() {
               </button>
 
               <div className="p-2.5 rounded bg-violet-50 border border-violet-200 text-[11px] text-violet-800 leading-relaxed">
-                <strong>Experiment Preview:</strong> Entering checkout will evaluate flag{" "}
-                <code>checkout_experience</code> for <code>{distinctUserId}</code> and render the
-                assigned variation (Multi-Step vs Single-Page vs Express).
+                <strong>Experiment Preview:</strong> Entering checkout evaluates flag{" "}
+                <code>{activeFlag}</code> for <code>{distinctUserId}</code> and renders the
+                assigned variation ({evaluatedVariant.variantName}).
               </div>
             </div>
           </div>
@@ -1006,7 +1041,21 @@ export default function DemoStorePage() {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <button
-              onClick={() => setCurrentView("CART")}
+              onClick={() => {
+                // Record checkout_abandoned event
+                fetch("/api/telemetry/track", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    experimentFlag: activeFlag,
+                    distinctUserId,
+                    eventType: "checkout_abandoned",
+                    variantKey: evaluatedVariant.variantKey,
+                    properties: { step: multiStepIndex },
+                  }),
+                }).catch(() => {});
+                setCurrentView("CART");
+              }}
               className="text-xs font-semibold text-text-secondary hover:text-text flex items-center gap-1.5 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" /> Back to Cart

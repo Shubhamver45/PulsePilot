@@ -178,14 +178,14 @@ assertThrows(
 
 // Test detection of Flagsmith server environment key
 assertThrows(
-  () => assertZeroSecretLeakage({ serverKey: "ser.WfzY3pJshTQofYbAtWGSkR1234" }),
+  () => assertZeroSecretLeakage({ serverKey: "ser.mockEnvironmentServerKey12345" }),
   Error,
   "Detection of Flagsmith server-side environment key pattern"
 );
 
 // Test detection of Database URI
 assertThrows(
-  () => assertZeroSecretLeakage({ connection: "postgresql://postgres:secret123@db.example.co:5432/postgres" }),
+  () => assertZeroSecretLeakage({ connection: "postgresql://mockuser:mockpass@localhost:5432/mockdb" }),
   Error,
   "Detection of PostgreSQL connection string with password"
 );

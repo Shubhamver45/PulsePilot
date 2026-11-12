@@ -167,7 +167,7 @@ async function runFullAudit() {
   try {
     assertZeroSecretLeakage({
       safeField: "Flagsmith config",
-      leakedKey: "ser.WfzY3pJshTQofYbAtWGSkR12345",
+      leakedKey: "ser.mockEnvironmentServerKey12345",
     });
   } catch (err) {
     flagsmithSecretCaught = true;

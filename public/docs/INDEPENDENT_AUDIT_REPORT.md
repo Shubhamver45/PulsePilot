@@ -14,7 +14,7 @@ PulsePilot AI was audited against the requirements of the **Flagsmith Toggle War
 1. **Compilation & Build Health (VERIFIED):** The Next.js 14 App Router project builds cleanly (`npm run build` completed 44/44 static and dynamic routes with 0 errors). The Prisma schema is 100% valid (`npx prisma validate`), and strict TypeScript typechecking (`npx tsc --noEmit`) passes with 0 errors.
 2. **Deterministic Mathematical Integrity (VERIFIED):** Statistical calculations (`src/lib/analytics/stats.ts`) are computed in pure TypeScript. 10/10 statistical ground truth unit tests pass with zero arithmetic extrapolation by LLMs.
 3. **Multi-Agent Architecture (VERIFIED):** All 5 agents (*Strategy, Builder, Analytics, Release Guardian, Growth Advisor*) are implemented with Google Gemini 2.5 Flash and validate outputs against strict Zod schemas.
-4. **Flagsmith Integration Reality (CRITICAL FINDING):** While client-side evaluation works via Flagsmith Edge and environment keys, server-side management operations (`/api/experiments/create` and `/api/flagsmith/rollout`) currently fall back to an in-memory mock store (`flagsmithMockStore`) because the server key provided (`ser.WfzY3pJshTQofYbAtWGSkR`) is an **Environment Key**, which lacks permission to call Flagsmith's `/api/v1/projects/{id}/features/` endpoint (which requires an Account/Org-level Admin Token).
+4. **Flagsmith Integration Reality (CRITICAL FINDING):** While client-side evaluation works via Flagsmith Edge and environment keys, server-side management operations (`/api/experiments/create` and `/api/flagsmith/rollout`) currently fall back to an in-memory mock store (`flagsmithMockStore`) because the server key provided (`ser.***REDACTED***`) is an **Environment Key**, which lacks permission to call Flagsmith's `/api/v1/projects/{id}/features/` endpoint (which requires an Account/Org-level Admin Token).
 5. **Human-in-the-Loop Gate (VERIFIED):** The platform strictly enforces human authorization before triggering rollout or rollback actions, logging every action to an immutable audit record.
 6. **Zero Code Changes Policy:** No application code was modified during this audit. This report presents evidence-based findings and a prioritised remediation roadmap for review.
 
@@ -67,12 +67,12 @@ pulsepilot/
 - **Location:** `src/lib/flagsmith/flagsmith-admin.ts` (lines 57–63) and `src/lib/flagsmith/experimentation-service.ts` (lines 269–275)
 - **Classification:** **CRITICAL**
 - **Evidence:**
-  Calling `POST https://api.flagsmith.com/api/v1/projects/53867/features/` with header `Authorization: Token ser.WfzY3pJshTQofYbAtWGSkR` returns:
+  Calling `POST https://api.flagsmith.com/api/v1/projects/53867/features/` with header `Authorization: Token ser.***REDACTED***` returns:
   ```json
   {"detail": "Invalid token."}
   ```
 - **Root Cause:** In Flagsmith's REST API architecture:
-  - `ser.WfzY3pJshTQofYbAtWGSkR` is an **Environment-Level Server Key**. It can only evaluate flags on Edge (`/api/v1/flags/` with header `X-Environment-Key`) or update feature states on `/api/v1/environments/{key}/feature-states/`.
+  - `ser.***REDACTED***` is an **Environment-Level Server Key**. It can only evaluate flags on Edge (`/api/v1/flags/` with header `X-Environment-Key`) or update feature states on `/api/v1/environments/{key}/feature-states/`.
   - Creating features on `/api/v1/projects/{projectId}/features/` requires an **Account-Level Admin Token** (generated in Flagsmith under *Account Settings* $\to$ *Admin Tokens*).
 - **Current Behavior:** Because the API returns 401, the code gracefully falls back to generating a mock feature ID (`Math.floor(Math.random() * 100000)`) and updating `flagsmithMockStore`.
 - **Impact:** Live remote flag creation on Flagsmith Cloud fails silently, and the app operates in mock state for new flag creation unless created manually via the Flagsmith UI.

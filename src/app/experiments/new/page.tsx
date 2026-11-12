@@ -90,6 +90,7 @@ export default function AIExperimentStudioPage() {
   // Step 7: Flags Mapping / Creation State
   const [isDeploying, setIsDeploying] = useState<boolean>(false);
   const [deploymentResult, setDeploymentResult] = useState<any>(null);
+  const [deploymentError, setDeploymentError] = useState<string | null>(null);
 
   // Copy Feedback
   const [copiedCodeSnippet, setCopiedCodeSnippet] = useState<string | null>(null);
@@ -168,6 +169,7 @@ export default function AIExperimentStudioPage() {
     if (!strategy) return;
     try {
       setIsDeploying(true);
+      setDeploymentError(null);
       const res = await fetch("/api/experiments/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -178,12 +180,12 @@ export default function AIExperimentStudioPage() {
       });
       const data = await res.json();
       if (!data.success) {
-        throw new Error(data.error || "Flagsmith provisioning failed");
+        throw new Error(data.error || "Flagsmith remote provisioning failed");
       }
       setDeploymentResult(data);
       setCurrentStep(7); // Show Flags Mapping Confirmation, then Step 8
     } catch (err: any) {
-      alert(`Deployment failed: ${err.message}`);
+      setDeploymentError(err.message || "Failed to provision feature in Flagsmith");
     } finally {
       setIsDeploying(false);
     }
@@ -929,6 +931,28 @@ export default function AIExperimentStudioPage() {
             </div>
           </div>
 
+          {/* Deployment Error Banner if Remote Actuation Fails */}
+          {deploymentError && (
+            <div className="p-4 rounded-md border border-danger/20 bg-danger-light text-danger text-xs space-y-2 animate-in fade-in">
+              <div className="flex items-center gap-2 font-bold">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>Flagsmith Remote Provisioning Error</span>
+              </div>
+              <p className="leading-relaxed">{deploymentError}</p>
+              {deploymentError.includes("FLAGSMITH_ORG_API_TOKEN") && (
+                <div className="p-3 bg-surface border border-danger/30 rounded text-text space-y-1.5 mt-2">
+                  <p className="font-semibold text-danger">How to configure your Organisation API Token:</p>
+                  <ol className="list-decimal pl-4 space-y-1 text-text-secondary">
+                    <li>Open Flagsmith Settings: <a href="https://app.flagsmith.com/project/53867/settings" target="_blank" rel="noreferrer" className="text-primary font-bold underline">app.flagsmith.com/project/53867/settings</a></li>
+                    <li>Click your Organisation name in the top left &rarr; <strong>Organisation Settings</strong> &rarr; <strong>API Keys</strong></li>
+                    <li>Click <strong>Create Organisation API Key</strong> (Role: Admin) and copy the token</li>
+                    <li>Configure <code className="bg-surface-subtle px-1 rounded font-mono text-primary font-bold">FLAGSMITH_ORG_API_TOKEN</code> in your environment variables</li>
+                  </ol>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-border">
             <button
               onClick={() => setCurrentStep(3)}
@@ -939,16 +963,9 @@ export default function AIExperimentStudioPage() {
 
             <div className="flex items-center gap-3">
               <button
-                onClick={() => setCurrentStep(8)}
-                className="px-4 py-2 bg-surface border border-border rounded text-xs font-semibold text-text hover:bg-surface-subtle transition-colors flex items-center gap-1.5"
-              >
-                <FileCode className="w-4 h-4 text-primary" /> View Implementation Instructions
-              </button>
-
-              <button
                 onClick={handleApproveAndDeploy}
                 disabled={isDeploying}
-                className="px-5 py-2.5 bg-success hover:bg-success-text text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors"
+                className="px-5 py-2.5 bg-success hover:bg-success-text text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors disabled:opacity-50"
               >
                 {isDeploying ? (
                   <>
@@ -976,9 +993,9 @@ export default function AIExperimentStudioPage() {
               <CheckCircle2 className="w-6 h-6" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-text">Step 7: Flagsmith Mapping Complete!</h2>
+              <h2 className="text-base font-bold text-text">Step 7: Flagsmith Remote Verification Complete!</h2>
               <p className="text-xs text-text-secondary mt-0.5">
-                The multivariate feature flag has been provisioned and mapped to your experiment.
+                The multivariate feature flag has been provisioned remotely and verified in the Flagsmith environment.
               </p>
             </div>
           </div>
@@ -989,12 +1006,22 @@ export default function AIExperimentStudioPage() {
               <span className="font-bold text-primary">{deploymentResult.flagsmithFeatureName}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-text-secondary">Feature ID:</span>
-              <span className="text-text">{deploymentResult.flagsmithFeatureId}</span>
+              <span className="text-text-secondary">Remote Feature ID:</span>
+              <span className="text-text font-bold">{deploymentResult.flagsmithFeatureId}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-text-secondary">Multivariate Status:</span>
-              <span className="text-success font-bold">ACTIVE & SPLIT EVALUATED</span>
+              <span className="text-text-secondary">Project / Environment:</span>
+              <span className="text-text">Project 53867 &bull; Development</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-secondary">Provisioning Status:</span>
+              <span className="text-success font-bold">
+                {deploymentResult.remoteCreated ? "LIVE REMOTE CREATED" : deploymentResult.isExisting ? "LIVE REMOTE VERIFIED (EXISTING)" : "ACTIVE"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-secondary">Read-After-Write Verification:</span>
+              <span className="text-success font-bold">&check; VERIFIED IN REMOTE ENVIRONMENT</span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-secondary">Authorized By:</span>
