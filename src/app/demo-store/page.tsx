@@ -229,6 +229,9 @@ export default function DemoStorePage() {
     expressPayment: false,
   });
 
+  // Mode: Distinguishes Live Flagsmith Edge from Sandbox Mock Mode
+  const [evaluationSource, setEvaluationSource] = useState<string>("flagsmith_remote_api");
+
   // Telemetry Tracking State
   const [exposureLogged, setExposureLogged] = useState(false);
   const [conversionLogged, setConversionLogged] = useState(false);
@@ -316,6 +319,10 @@ export default function DemoStorePage() {
         badge: parsedValue?.badge || (layout === "single_page" ? "Streamlined 1-Page" : layout === "express" ? "1-Click Express" : "Standard Multi-Step"),
         expressPayment: Boolean(parsedValue?.expressPayment),
       });
+
+      if (data.source) {
+        setEvaluationSource(data.source);
+      }
 
       // Reset step
       setMultiStepIndex(1);
@@ -566,11 +573,22 @@ export default function DemoStorePage() {
           </div>
         </div>
 
-        {/* Live Evaluated Variant Pill */}
-        <div className="flex items-center gap-2 self-start md:self-auto p-2 rounded-lg bg-white border border-violet-200 shadow-xs">
+        {/* Live Evaluated Variant Pill with Explicit Mode Indicator */}
+        <div className="flex items-center gap-2.5 self-start md:self-auto p-2 rounded-lg bg-white border border-violet-200 shadow-xs">
           <div className="text-right">
-            <div className="text-[10px] text-text-muted uppercase font-mono">Assigned Variation</div>
-            <div className="text-xs font-bold text-text font-mono flex items-center gap-1.5 justify-end">
+            <div className="flex items-center gap-1.5 justify-end">
+              <span
+                className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${
+                  evaluationSource === "flagsmith_remote_api"
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                    : "bg-amber-50 text-amber-800 border-amber-300"
+                }`}
+              >
+                {evaluationSource === "flagsmith_remote_api" ? "LIVE FLAGSMITH" : "SANDBOX MOCK"}
+              </span>
+              <span className="text-[10px] text-text-muted uppercase font-mono">Assigned Variation</span>
+            </div>
+            <div className="text-xs font-bold text-text font-mono flex items-center gap-1.5 justify-end mt-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
               <span>{evaluatedVariant.variantName}</span>
             </div>

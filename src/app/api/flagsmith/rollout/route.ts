@@ -79,6 +79,17 @@ export async function POST(request: Request) {
     const req = RolloutRequestSchema.parse(body);
     const isRemoteConfigured = hasFlagsmithRemoteCredentials();
 
+    if (process.env.NODE_ENV === "production" && !isRemoteConfigured) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Production rollout requires valid Flagsmith management credentials. Configure FLAGSMITH_ORG_API_TOKEN.",
+          isConfigError: true,
+        },
+        { status: 503 }
+      );
+    }
+
     const existingFlag = flagsmithMockStore.getFlag(req.flagsmithFeatureName);
     const previousAllocations = existingFlag
       ? existingFlag.multivariateOptions.map((o) => `${o.key}: ${o.trafficAllocation}%`).join(", ")

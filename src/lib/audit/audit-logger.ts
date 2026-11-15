@@ -26,7 +26,8 @@ export interface AuditRecord {
     | "KILL_SWITCH_TRIGGERED"
     | "KILL_SWITCH_FAILED"
     | "OPERATION_FAILED"
-    | "CONVERSION_RECORDED";
+    | "CONVERSION_RECORDED"
+    | "ANALYSIS_GENERATED";
   actor: {
     name: string;
     type: "human" | "agent" | "system";

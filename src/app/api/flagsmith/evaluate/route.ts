@@ -58,10 +58,29 @@ export async function GET(request: Request) {
       }
     } catch (err: any) {
       console.warn("[Flagsmith Remote Evaluation Error]:", err.message);
+      if (process.env.NODE_ENV === "production") {
+        return NextResponse.json(
+          {
+            error: `Flagsmith remote edge evaluation failed: ${err.message}`,
+            code: "FLAGSMITH_EDGE_FETCH_FAILED",
+            source: "error",
+          },
+          { status: 502 }
+        );
+      }
     }
+  } else if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      {
+        error: "Missing production Flagsmith credentials: FLAGSMITH_ENVIRONMENT_KEY is not configured.",
+        code: "FLAGSMITH_NOT_CONFIGURED",
+        source: "error",
+      },
+      { status: 503 }
+    );
   }
 
-  // 2. Local Fallback with Deterministic MurmurHash3
+  // 2. Local Fallback with Deterministic MurmurHash3 (Development / Sandbox / Testing Only)
   const result = flagsmithMockStore.evaluateForIdentity(flag, identity);
 
   return NextResponse.json({

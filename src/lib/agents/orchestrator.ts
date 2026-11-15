@@ -153,10 +153,10 @@ export async function orchestrateAgentRequest(
     const executionTimeMs = Date.now() - startTime;
 
     // 3. Log Audit Trail with accurate role-based governance action
-    const actionByRole: Record<AgentRole, "EXPERIMENT_CREATED" | "TRAFFIC_SPLIT_UPDATED" | "CONVERSION_RECORDED" | "ROLLOUT_RECOMMENDED"> = {
+    const actionByRole: Record<AgentRole, "EXPERIMENT_CREATED" | "TRAFFIC_SPLIT_UPDATED" | "ANALYSIS_GENERATED" | "ROLLOUT_RECOMMENDED"> = {
       STRATEGY_AGENT: "EXPERIMENT_CREATED",
       EXPERIMENT_BUILDER_AGENT: "TRAFFIC_SPLIT_UPDATED",
-      ANALYTICS_AGENT: "CONVERSION_RECORDED",
+      ANALYTICS_AGENT: "ANALYSIS_GENERATED",
       RELEASE_GUARDIAN_AGENT: "ROLLOUT_RECOMMENDED",
       GROWTH_ADVISOR_AGENT: "EXPERIMENT_CREATED",
     };
