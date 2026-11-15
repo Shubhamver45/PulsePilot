@@ -543,11 +543,11 @@ export default function DemoStorePage() {
                 }}
                 className="text-xs font-mono font-bold bg-white border border-border rounded-md px-2.5 py-1 text-text shadow-xs focus:ring-1 focus:ring-primary focus:outline-hidden"
               >
-                <option value="user_alex_dev">user_alex_dev (Evaluates to: Single-Page)</option>
-                <option value="user_sarah_frontend">user_sarah_frontend (Evaluates to: Express)</option>
-                <option value="user_david_lead">user_david_lead (Evaluates to: Multi-Step)</option>
-                <option value="user_elena_ai">user_elena_ai (Evaluates to: Single-Page)</option>
-                <option value="user_marcus_cto">user_marcus_cto (Evaluates to: Multi-Step)</option>
+                <option value="user_alex_dev">user_alex_dev (Evaluates to: Single-Page Treatment)</option>
+                <option value="user_elena_ai">user_elena_ai (Evaluates to: Multi-Step Control)</option>
+                <option value="user_control_1">user_control_1 (Evaluates to: Multi-Step Control)</option>
+                <option value="user_sarah_prod">user_sarah_prod (Evaluates to: Single-Page Treatment)</option>
+                <option value="user_david_lead">user_david_lead (Evaluates to: Single-Page Treatment)</option>
               </select>
 
               <button

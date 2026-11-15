@@ -147,9 +147,16 @@ export function Sidebar({ className }: { className?: string }) {
           badgeVariant: "warning",
         },
         {
+          name: "Flagsmith Showcase",
+          href: "/integrations/flagsmith",
+          icon: <Cpu className="w-4 h-4 text-primary" />,
+          badge: "Live Edge",
+          badgeVariant: "primary",
+        },
+        {
           name: "Integrations",
           href: "/integrations",
-          icon: <Cpu className="w-4 h-4" />,
+          icon: <Activity className="w-4 h-4" />,
         },
       ],
     },

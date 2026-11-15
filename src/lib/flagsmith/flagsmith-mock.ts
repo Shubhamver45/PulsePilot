@@ -57,6 +57,42 @@ class FlagsmithMockStore {
       ],
     });
 
+    this.flags.set("exp_checkout_layout_v2", {
+      name: "exp_checkout_layout_v2",
+      enabled: true,
+      type: "MULTIVARIATE",
+      value: JSON.stringify({
+        layout: "multi_step",
+        title: "Standard Multi-Step Checkout",
+        expressPayment: false,
+        steps: ["Shipping", "Billing", "Review"],
+      }),
+      multivariateOptions: [
+        {
+          key: "control",
+          trafficAllocation: 50,
+          value: JSON.stringify({
+            layout: "multi_step",
+            title: "Standard Multi-Step Checkout",
+            expressPayment: false,
+            badge: "Control (3-Step Wizard)",
+            steps: ["Shipping", "Billing", "Review"],
+          }),
+        },
+        {
+          key: "variant_single_page",
+          trafficAllocation: 50,
+          value: JSON.stringify({
+            layout: "single_page",
+            title: "Single-Page Express Checkout",
+            expressPayment: true,
+            badge: "Treatment (1-Page Express)",
+            coupon: "GROWTH20",
+          }),
+        },
+      ],
+    });
+
     this.flags.set("checkout_experience", {
       name: "checkout_experience",
       enabled: true,

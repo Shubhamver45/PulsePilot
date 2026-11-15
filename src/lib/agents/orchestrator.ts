@@ -152,14 +152,22 @@ export async function orchestrateAgentRequest(
 
     const executionTimeMs = Date.now() - startTime;
 
-    // 3. Log Audit Trail
+    // 3. Log Audit Trail with accurate role-based governance action
+    const actionByRole: Record<AgentRole, "EXPERIMENT_CREATED" | "TRAFFIC_SPLIT_UPDATED" | "CONVERSION_RECORDED" | "ROLLOUT_RECOMMENDED"> = {
+      STRATEGY_AGENT: "EXPERIMENT_CREATED",
+      EXPERIMENT_BUILDER_AGENT: "TRAFFIC_SPLIT_UPDATED",
+      ANALYTICS_AGENT: "CONVERSION_RECORDED",
+      RELEASE_GUARDIAN_AGENT: "ROLLOUT_RECOMMENDED",
+      GROWTH_ADVISOR_AGENT: "EXPERIMENT_CREATED",
+    };
+
     await recordAuditLog({
-      action: "EXPERIMENT_CREATED",
+      action: actionByRole[agentRole] || "EXPERIMENT_CREATED",
       actor: { name: AGENT_FRIENDLY_NAMES[agentRole], type: "agent" },
       entityType: "EXPERIMENT",
       entityId: orchestrationId,
-      details: `Orchestrator dispatched '${userPrompt}' to ${AGENT_FRIENDLY_NAMES[agentRole]} (${executionTimeMs}ms).`,
-      metadata: { routing, executionTimeMs },
+      details: `${AGENT_FRIENDLY_NAMES[agentRole]} executed prompt: '${userPrompt}' (${executionTimeMs}ms).`,
+      metadata: { routing, executionTimeMs, status: "SUCCESS" },
     });
 
     return {
@@ -174,6 +182,17 @@ export async function orchestrateAgentRequest(
     };
   } catch (error: any) {
     const executionTimeMs = Date.now() - startTime;
+
+    // Log failure event to audit trail honestly
+    await recordAuditLog({
+      action: "OPERATION_FAILED",
+      actor: { name: "Orchestrator Error Handler", type: "system" },
+      entityType: "EXPERIMENT",
+      entityId: orchestrationId,
+      details: `Execution failed for prompt '${userPrompt}': ${error.message}`,
+      metadata: { error: error.message, executionTimeMs, status: "FAILED" },
+    }).catch(() => {});
+
     return {
       orchestrationId,
       timestamp: new Date().toISOString(),
