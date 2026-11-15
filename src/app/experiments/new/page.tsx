@@ -320,10 +320,22 @@ export default function AIExperimentStudioPage() {
             />
           </div>
 
-          {/* Quick-Fill Presets */}
-          <div className="p-3 rounded bg-surface-subtle border border-border flex items-center justify-between text-xs">
-            <span className="text-text-secondary">Quick Examples:</span>
-            <div className="flex gap-2">
+          {/* Quick-Fill Presets including Task 2 Command Example */}
+          <div className="p-3.5 rounded-lg bg-surface-subtle border border-border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs">
+            <span className="text-text-secondary font-semibold shrink-0">Command Presets:</span>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedObjective("Reduce abandonment");
+                  setPrompt(
+                    "Test single-page versus multi-step checkout. Use a 50/50 traffic split. Optimize checkout completion. Monitor payment failure rate."
+                  );
+                }}
+                className="px-2.5 py-1 bg-violet-100 text-violet-900 font-bold border border-violet-300 rounded hover:bg-violet-200 transition-colors flex items-center gap-1 shadow-xs"
+              >
+                <Sparkles className="w-3 h-3 text-violet-700" /> Track 02 Command Spec
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -361,6 +373,21 @@ export default function AIExperimentStudioPage() {
                 Annual Pricing
               </button>
             </div>
+          </div>
+
+          {/* 10-Step Autonomous Pipeline Banner */}
+          <div className="p-4 rounded-lg bg-violet-50/60 border border-violet-200 text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-violet-950 flex items-center gap-1.5">
+                <Sliders className="w-3.5 h-3.5 text-violet-700" /> 10-Step Autonomous Execution Pipeline
+              </span>
+              <span className="px-2 py-0.5 rounded bg-violet-200 text-violet-900 font-mono text-[10px] font-bold">
+                TRACK 02 COMPLIANT
+              </span>
+            </div>
+            <p className="text-violet-800 text-[11px] leading-relaxed">
+              When triggered, Gemini parses the objective &rarr; synthesizes hypothesis &rarr; designs variants &rarr; defines primary metric & guardrails &rarr; validates 100% traffic allocation &rarr; generates Flagsmith config preview &rarr; gates on explicit human approval &rarr; provisions feature remotely in Flagsmith &rarr; executes read-after-write verification.
+            </p>
           </div>
 
           {generationError && (

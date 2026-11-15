@@ -358,9 +358,18 @@ export default function ReleaseCenterPage() {
             </label>
             <select
               value={selectedFlag}
-              onChange={(e) => setSelectedFlag(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedFlag(val);
+                if (val === "exp_checkout_layout_v2") {
+                  setWinningVariant("single_page");
+                } else if (val === "exp_checkout_social_proof") {
+                  setWinningVariant("variant_social_proof");
+                }
+              }}
               className="text-xs font-mono font-bold bg-surface-subtle border border-border rounded px-2.5 py-1.5 mt-0.5 text-text focus:outline-hidden focus:ring-1 focus:ring-primary"
             >
+              <option value="exp_checkout_layout_v2">exp_checkout_layout_v2 (Checkout Experience - Live)</option>
               <option value="exp_checkout_social_proof">exp_checkout_social_proof (Checkout Flow)</option>
               <option value="exp_pricing_annual_default">exp_pricing_annual_default (Pricing Toggle)</option>
               <option value="exp_mobile_sticky_cta">exp_mobile_sticky_cta (Mobile Navigation)</option>
@@ -934,18 +943,38 @@ export default function ReleaseCenterPage() {
         isLoading={isExecuting}
       >
         <div className="space-y-4 py-2 text-xs">
-          <div className="p-3 rounded bg-surface-subtle border border-border">
-            <div className="flex justify-between py-1">
+          {/* Before / After Configuration Diff (Task 5) */}
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="p-3 rounded-lg bg-surface-subtle border border-border">
+              <span className="text-[10px] text-text-secondary uppercase font-bold block">Current Allocation</span>
+              <p className="font-mono text-xs font-bold text-text mt-1">
+                {winningVariant}: {currentStage}%<br />
+                Control: {100 - currentStage}%
+              </p>
+              <span className="text-[10px] text-text-muted mt-1 block">Live in Environment</span>
+            </div>
+            <div className="p-3 rounded-lg bg-violet-50 border border-violet-200">
+              <span className="text-[10px] text-violet-800 uppercase font-bold block">Proposed Mutation Diff</span>
+              <p className="font-mono text-xs font-bold text-violet-950 mt-1">
+                {winningVariant}: {targetStage}% &uarr;<br />
+                Control: {100 - targetStage}% &darr;
+              </p>
+              <span className="text-[10px] text-violet-700 mt-1 block font-semibold">&Delta; Allocation: +{targetStage - currentStage}%</span>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-1.5 font-mono text-[11px]">
+            <div className="flex justify-between">
               <span className="text-text-secondary">Target Flag:</span>
-              <span className="font-mono font-bold text-text">{selectedFlag}</span>
+              <span className="font-bold text-text">{selectedFlag}</span>
             </div>
-            <div className="flex justify-between py-1">
-              <span className="text-text-secondary">Winning Variant:</span>
-              <span className="font-mono font-bold text-primary">{winningVariant}</span>
+            <div className="flex justify-between">
+              <span className="text-text-secondary">Actuation Protocol:</span>
+              <span className="font-bold text-primary">Flagsmith v2 Feature Versioning</span>
             </div>
-            <div className="flex justify-between py-1">
-              <span className="text-text-secondary">New Allocation:</span>
-              <span className="font-mono font-bold text-text">{targetStage}% Winner / {100 - targetStage}% Control</span>
+            <div className="flex justify-between">
+              <span className="text-text-secondary">Read-After-Write:</span>
+              <span className="text-emerald-700 font-bold">Enabled (GET /flags/ verify)</span>
             </div>
           </div>
 

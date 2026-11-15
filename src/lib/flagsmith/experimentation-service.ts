@@ -136,9 +136,9 @@ function initDefaultDemoExperiment() {
         exposures: 2810,
         conversions: 138,
         conversionRate: 0.0491,
-        expectedLiftPercent: 20.3,
-        chanceToWin: 0.982,
-        credibleInterval95: [0.003, 0.014],
+        expectedLiftPercent: 20.2,
+        chanceToWin: 0.933,
+        credibleInterval95: [-0.0025, 0.0191],
       },
       {
         variantKey: "variant_express",
@@ -147,16 +147,16 @@ function initDefaultDemoExperiment() {
         exposures: 2825,
         conversions: 131,
         conversionRate: 0.0464,
-        expectedLiftPercent: 13.7,
-        chanceToWin: 0.895,
-        credibleInterval95: [0.001, 0.010],
+        expectedLiftPercent: 13.5,
+        chanceToWin: 0.846,
+        credibleInterval95: [-0.0051, 0.0162],
       },
     ],
     summary: {
       totalExposures: 8475,
       totalConversions: 385,
       leadingVariationKey: "variant_single_page",
-      statisticalCertaintyReached: true,
+      statisticalCertaintyReached: false,
     },
   });
 }

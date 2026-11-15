@@ -13,7 +13,7 @@ import { registerUser, loginUser, getUserFromToken, logoutUser, createWorkspace 
 import { sanitizeUserInput, assertZeroSecretLeakage } from "../src/lib/security/input-sanitizer.ts";
 import { checkRateLimit } from "../src/lib/security/rate-limiter.ts";
 import { flagsmithMockStore } from "../src/lib/flagsmith/flagsmith-mock.ts";
-import { recordAuditLog, getAuditLogs } from "../src/lib/audit/audit-logger.ts";
+import { recordAuditLog, getAuditLogs, verifyAuditLogIntegrity } from "../src/lib/audit/audit-logger.ts";
 
 let totalTests = 0;
 let passedTests = 0;
@@ -218,7 +218,7 @@ async function runFullAudit() {
   // ---------------------------------------------------------------------------
   console.log("\nSECTION 5: IMMUTABLE AUDIT TRAIL & GOVERNANCE RECORD");
   const initialAuditCount = getAuditLogs().length;
-  await recordAuditLog({
+  const recorded = await recordAuditLog({
     action: "ROLLBACK_EXECUTED",
     actor: { name: "Sarah Lin (QA Auditor)", type: "human" },
     entityType: "FLAGSMITH_FLAG",
@@ -228,6 +228,17 @@ async function runFullAudit() {
   });
   const newAuditCount = getAuditLogs().length;
   assert(newAuditCount === initialAuditCount + 1, "Audit log records tamper-resistant governance event with actor signature");
+  assert(Boolean(recorded.signature && recorded.signature.length === 64), "Audit log computes valid 64-char SHA-256 signature");
+  assert(Boolean(recorded.previousSignature), "Audit log links to previous record signature in cryptographic chain");
+
+  const integrityCheck = verifyAuditLogIntegrity();
+  assert(integrityCheck.valid === true, "Audit log chain integrity passes cryptographic verification");
+
+  // Tamper detection test on cloned audit store
+  const tamperedLogs = JSON.parse(JSON.stringify(getAuditLogs()));
+  tamperedLogs[0].details = "MALICIOUS_TAMPER_MODIFIED_DETAILS";
+  const tamperedCheck = verifyAuditLogIntegrity(tamperedLogs);
+  assert(tamperedCheck.valid === false && tamperedCheck.brokenAtId === tamperedLogs[0].id, "Tamper detector flags unauthorized modification of audit record payload");
 
   // ---------------------------------------------------------------------------
   // AUDIT SUMMARY

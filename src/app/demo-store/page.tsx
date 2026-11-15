@@ -456,7 +456,7 @@ export default function DemoStorePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          featureFlagName: "checkout_experience",
+          featureFlagName: activeFlag || "checkout_experience",
           count: simulatorCount,
           scenario: simulatorScenario,
         }),
@@ -491,7 +491,7 @@ export default function DemoStorePage() {
           <div className="flex items-center gap-2">
             <StatusBadge status="active" label="FLAGSMITH SDK LIVE" />
             <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
-              Exp: checkout_experience
+              Exp: {activeFlag}
             </span>
           </div>
         }

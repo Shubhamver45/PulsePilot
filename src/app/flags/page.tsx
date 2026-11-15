@@ -10,6 +10,16 @@ import { ConfirmationModal } from "@/components/ui/ConfirmationModal";
 export default function FeatureFlagsPage() {
   const [flags, setFlags] = useState([
     {
+      name: "exp_checkout_layout_v2",
+      description: "PulsePilot Live Experiment: Multi-step wizard vs single-page accordion checkout (Remote Feature ID: 291896)",
+      enabled: true,
+      type: "MULTIVARIATE" as const,
+      variants: [
+        { key: "control", trafficAllocation: 50, value: '{"layout":"multi_step"}' },
+        { key: "variant_single_page", trafficAllocation: 50, value: '{"layout":"single_page"}' },
+      ],
+    },
+    {
       name: "exp_checkout_social_proof",
       description: "Checkout card customer quote vs standard CTA",
       enabled: true,

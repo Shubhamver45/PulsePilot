@@ -41,6 +41,7 @@ import {
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { FlagsmithExperimentResults, ExperimentVariationResult } from "@/lib/flagsmith/experimentation-service";
+import { compareVariants } from "@/lib/analytics/stats";
 
 // Trend and Performance Over Time Data
 const dailyTrendData = [
@@ -72,22 +73,22 @@ export default function AnalyticsIntelligencePage() {
     decisionState: "Running" | "Collecting data" | "Insufficient evidence" | "Promising result" | "Winner identified" | "Completed";
   }>({
     executiveSummary:
-      "Variant A (Single-page checkout) is outperforming the Control with high statistical certainty. The Bayesian probability to beat control has reached 98.2%, with a relative conversion lift of +20.3%. All payment and error guardrails remain within healthy thresholds.",
+      "Variant A (Single-page checkout) demonstrates positive directional uplift (+20.2% relative lift, Bayesian win probability 93.3%). However, with a two-tailed p-value of 0.134, the test has not yet reached the α = 0.05 significance threshold. All operational guardrails remain healthy with payment failure rate at 1.10%.",
     bestPerformingVariant: "Single-page checkout (Variant A)",
-    expectedLift: "+20.3% relative lift (from 4.08% to 4.91% CR)",
-    strengthOfEvidence: "Strong evidence (8,475 total exposures evaluated across 7 days, Bayes win prob = 98.2%, credible interval [0.3%, 1.4%])",
+    expectedLift: "+20.2% relative lift (from 4.08% to 4.91% CR)",
+    strengthOfEvidence: "Directional evidence (5,650 pairwise exposures, Bayes win prob = 93.3%, 95% CI [-0.25%, +1.91%], p = 0.134). Underpowered for definitive winner call.",
     potentialRisks: [
       "Mobile Safari layout must maintain single-page ergonomics on screens smaller than 375px.",
       "Inline address validation should not cause premature input blocking.",
     ],
     importantObservations: [
-      "Variant A (Single-page checkout) experienced immediate uplift within 48 hours of launch.",
-      "Variant B (Express payment option) also demonstrated positive lift (+13.7%), but was outperformed by Variant A.",
-      "The guardrail metric 'payment_failed' stayed at 1.10%, well below the 2.0% safety boundary.",
+      "Variant A (Single-page checkout) experienced positive directional uplift (+20.2% relative lift).",
+      "Variant B (Express payment option) demonstrated +13.5% lift with 84.6% Bayesian win probability.",
+      "The guardrail metric 'payment_failed' stayed at 1.10%, well below the 1.50% safety boundary.",
     ],
     recommendedNextAction:
-      "Prepare a 100% rollout of Variant A (Single-page checkout) in Flagsmith via the Release Center with human sign-off.",
-    decisionState: "Winner identified",
+      "Continue collecting traffic until sample size reaches ~7,000 exposures per variant to achieve p < 0.05 statistical significance before authorizing a full rollout.",
+    decisionState: "Collecting data",
   });
 
   // Report Modal / Print View State
@@ -164,6 +165,42 @@ export default function AnalyticsIntelligencePage() {
     lift: v.expectedLiftPercent || 0,
     isControl: v.isControl,
   })) || [];
+
+  // Deterministic Statistical Calculations (Task 4: Zero-Hallucination Ground Truth)
+  const controlVariant = results?.variations.find((v) => v.isControl) || {
+    variantKey: "control",
+    variantName: "Original multi-step checkout",
+    isControl: true,
+    exposures: 2840,
+    conversions: 116,
+    conversionRate: 0.0408,
+  };
+
+  const leadingTreatment = results?.variations.find((v) => !v.isControl) || {
+    variantKey: "variant_single_page",
+    variantName: "Single-page checkout",
+    isControl: false,
+    exposures: 2810,
+    conversions: 138,
+    conversionRate: 0.0491,
+  };
+
+  const stats = compareVariants(
+    {
+      key: controlVariant.variantKey,
+      name: controlVariant.variantName,
+      isControl: true,
+      exposures: controlVariant.exposures,
+      conversions: controlVariant.conversions,
+    },
+    {
+      key: leadingTreatment.variantKey,
+      name: leadingTreatment.variantName,
+      isControl: false,
+      exposures: leadingTreatment.exposures,
+      conversions: leadingTreatment.conversions,
+    }
+  );
 
   return (
     <div className="space-y-8 animate-in fade-in duration-150 pb-16">
@@ -243,15 +280,15 @@ export default function AnalyticsIntelligencePage() {
           <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
             <span className="text-xs font-medium text-text-secondary">Expected Max Lift</span>
             <div className="text-2xl font-bold text-success mt-1 font-mono">
-              +20.3%
+              +{stats.relativeUpliftPercent.toFixed(1)}%
             </div>
-            <span className="text-[11px] text-text-muted mt-1 block">Variant A vs Control</span>
+            <span className="text-[11px] text-text-muted mt-1 block">Treatment vs Control</span>
           </div>
 
           <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
             <span className="text-xs font-medium text-text-secondary">Chance to Win</span>
             <div className="text-2xl font-bold text-primary mt-1 font-mono">
-              98.2%
+              {(stats.bayesianProbabilityToBeatControl * 100).toFixed(1)}%
             </div>
             <span className="text-[11px] text-text-muted mt-1 block">Bayesian certainty</span>
           </div>
@@ -259,10 +296,142 @@ export default function AnalyticsIntelligencePage() {
           <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
             <span className="text-xs font-medium text-text-secondary">Experiment Decision</span>
             <div className="mt-1.5">
-              <StatusBadge status="completed" label="WINNER IDENTIFIED" />
+              <StatusBadge
+                status={stats.isSignificant ? "completed" : "active"}
+                label={stats.isSignificant ? "WINNER IDENTIFIED" : "COLLECTING DATA"}
+              />
             </div>
-            <span className="text-[11px] text-text-muted mt-1.5 block">Evidence verified</span>
+            <span className="text-[11px] text-text-muted mt-1.5 block">
+              {stats.isSignificant ? "Statistical significance met" : "p > 0.05 (Underpowered)"}
+            </span>
           </div>
+        </div>
+      </div>
+
+      {/* ===================================================================== */}
+      {/* TASK 4: DETERMINISTIC STATISTICAL EVIDENCE SCORECARD (ZERO-HALLUCINATION) */}
+      {/* ===================================================================== */}
+      <div className="rounded-lg border border-border bg-surface shadow-xs p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-text flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                Deterministic Statistical Evidence Scorecard
+              </h3>
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-100 text-violet-800 border border-violet-200">
+                Track 02 Mathematical Integrity
+              </span>
+            </div>
+            <p className="text-xs text-text-secondary mt-0.5">
+              Strictly computed via pure TypeScript math engine (<code className="font-mono text-primary">stats.ts</code>). LLMs are never permitted to compute or guess p-values.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="px-2.5 py-1 rounded text-[11px] font-mono font-semibold bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
+              <Info className="w-3.5 h-3.5 text-amber-600" /> Interactive Demo Telemetry
+            </span>
+            <StatusBadge
+              status={stats.isSignificant ? "completed" : "active"}
+              label={stats.isSignificant ? "p < 0.05 SIGNIFICANT" : "COLLECTING DATA"}
+            />
+          </div>
+        </div>
+
+        {/* 11-Metric Comprehensive Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">Unique Exposures (Sample Sizes)</span>
+            <p className="font-mono font-bold text-text text-sm">
+              {stats.controlKey}: {controlVariant.exposures.toLocaleString()} vs {stats.treatmentKey}: {leadingTreatment.exposures.toLocaleString()}
+            </p>
+            <span className="text-[10px] text-text-muted">Total: {totalExposures.toLocaleString()} verified users</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">Conversion Counts</span>
+            <p className="font-mono font-bold text-text text-sm">
+              {controlVariant.conversions.toLocaleString()} vs {leadingTreatment.conversions.toLocaleString()}
+            </p>
+            <span className="text-[10px] text-text-muted">Primary metric: checkout_completed</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">Conversion Rates (CR)</span>
+            <p className="font-mono font-bold text-text text-sm">
+              {(stats.controlRate * 100).toFixed(2)}% &rarr; {(stats.treatmentRate * 100).toFixed(2)}%
+            </p>
+            <span className="text-[10px] text-emerald-700 font-semibold">Treatment leads</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">Absolute & Relative Uplift</span>
+            <p className="font-mono font-bold text-emerald-700 text-sm">
+              +{(stats.absoluteDifference * 100).toFixed(2)}% abs (+{stats.relativeUpliftPercent.toFixed(1)}% rel)
+            </p>
+            <span className="text-[10px] text-text-muted">Relative to Control baseline</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">95% Confidence Interval</span>
+            <p className="font-mono font-bold text-text text-sm">
+              [{(stats.confidenceInterval95[0] * 100).toFixed(2)}%, +{(stats.confidenceInterval95[1] * 100).toFixed(2)}%]
+            </p>
+            <span
+              className={`text-[10px] font-semibold ${
+                stats.confidenceInterval95[0] > 0 ? "text-emerald-700" : "text-amber-700"
+              }`}
+            >
+              {stats.confidenceInterval95[0] > 0
+                ? "Lower bound strictly > 0"
+                : "Spans zero (Underpowered sample size)"}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">Frequentist P-Value (Z-test)</span>
+            <p className="font-mono font-bold text-violet-700 text-sm">
+              p = {stats.pValue.toFixed(4)} (Z = {stats.zScore.toFixed(2)})
+            </p>
+            <span
+              className={`text-[10px] font-semibold ${
+                stats.isSignificant ? "text-emerald-700" : "text-amber-700"
+              }`}
+            >
+              {stats.isSignificant
+                ? "α = 0.05 threshold met (Significant)"
+                : `p = ${stats.pValue.toFixed(3)} > 0.05 (Collecting data)`}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">Bayesian Win Probability</span>
+            <p className="font-mono font-bold text-primary text-sm">
+              {(stats.bayesianProbabilityToBeatControl * 100).toFixed(1)}%
+            </p>
+            <span className="text-[10px] text-text-muted">Beta-Binomial conjugate posterior</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
+            <span className="text-[11px] text-text-secondary font-medium">Sample Ratio Mismatch (SRM)</span>
+            <p className="font-mono font-bold text-emerald-700 text-sm flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> p = {stats.sampleRatioMismatch.pValue.toFixed(2)} (SRM Clear)
+            </p>
+            <span className="text-[10px] text-text-muted">Chi-Square test &bull; No traffic skew</span>
+          </div>
+        </div>
+
+        {/* Safety Guardrail Metric Status Banner */}
+        <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="text-slate-800">
+              <strong>Guardrail Metric (payment_failed):</strong> Current rate is <strong>1.10%</strong> vs configured safety ceiling of <strong>1.50%</strong>.
+            </span>
+          </div>
+          <span className="px-2 py-0.5 rounded font-mono font-bold bg-emerald-100 text-emerald-800 text-[10px]">
+            GUARDRAILS HEALTHY
+          </span>
         </div>
       </div>
 
