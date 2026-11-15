@@ -8,8 +8,8 @@
 [![Google Gemini](https://img.shields.io/badge/AI-Google%20Gemini%202.5%20Flash-4285F4?style=flat-square&logo=google)](https://ai.google.dev)
 [![Next.js](https://img.shields.io/badge/Framework-Next.js%2014-black?style=flat-square&logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript%20Strict-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org)
-[![Flagsmith Test Suite](https://img.shields.io/badge/Flagsmith%20Tests-9%2F9%20Passed%20(100%25)-emerald?style=flat-square)](tests/flagsmith-integration.test.ts)
-[![Security & Math Audit](https://img.shields.io/badge/Audit-32%2F32%20Passed%20(100%25)-success?style=flat-square)](tests/audit.test.ts)
+[![Flagsmith Test Suite](https://img.shields.io/badge/Flagsmith%20Tests-15%2F15%20Passed%20(100%25)-emerald?style=flat-square)](tests/flagsmith-integration.test.ts)
+[![Security & Math Audit](https://img.shields.io/badge/Audit-36%2F36%20Passed%20(100%25)-success?style=flat-square)](tests/audit.test.ts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 **Live Application:** [https://pulse-pilot-two.vercel.app/](https://pulse-pilot-two.vercel.app/)
@@ -53,7 +53,7 @@ flowchart TD
       Strategy & Builder -->|"POST /projects/53867/features/"| FS_Create["Remote Multivariate Provisioning"]
       FS_Create --> FS_Edge["Flagsmith Cloud Edge (ID: 115953)"]
       FS_Edge -->|"GET /api/v1/identities/?identifier=..."| Store["Live Storefront (/demo-store)"]
-      Store -->|"user_sarah_prod"| V_Control["Control: 3-Step Wizard"]
+      Store -->|"user_elena_ai"| V_Control["Control: 3-Step Wizard"]
       Store -->|"user_alex_dev"| V_Treatment["Treatment: 1-Page Express"]
     end
 
@@ -116,7 +116,7 @@ PulsePilot interacts directly with live Flagsmith Cloud resources on **Project I
 | Timestamp | Screen | Narrative & Demonstration |
 | :--- | :--- | :--- |
 | **0:00 – 0:35** | [`/studio`](https://pulse-pilot-two.vercel.app/studio) | **Act 1: Gemini AI Strategy Formulation.** Input: *"Test single-page versus multi-step checkout. Use a 50/50 traffic split. Optimize checkout completion. Monitor payment failure rate."* Gemini autonomously synthesizes the hypothesis, primary metric (`checkout_completed`), guardrails, and provisions `exp_checkout_layout_v2` in Flagsmith. |
-| **0:35 – 1:20** | [`/demo-store`](https://pulse-pilot-two.vercel.app/demo-store?flag=exp_checkout_layout_v2) | **Act 2: Live Flagsmith Multivariate Bucketing.** Show identity `user_sarah_prod` $\to$ Flagsmith edge resolves `multi_step` (Control 3-step wizard). Switch identity to `user_alex_dev` $\to$ Flagsmith edge dynamically resolves `single_page` (Treatment 1-page express checkout). Exact same codebase; two live experiences. |
+| **0:35 – 1:20** | [`/demo-store`](https://pulse-pilot-two.vercel.app/demo-store?flag=exp_checkout_layout_v2) | **Act 2: Live Flagsmith Multivariate Bucketing.** Show identity `user_elena_ai` $\to$ Flagsmith edge resolves `multi_step` (Control 3-step wizard). Switch identity to `user_alex_dev` $\to$ Flagsmith edge dynamically resolves `single_page` (Treatment 1-page express checkout). Exact same codebase; two live experiences. |
 | **1:20 – 1:55** | [`/analytics`](https://pulse-pilot-two.vercel.app/analytics) | **Act 3: Telemetry & Anti-Hallucination Analytics.** Place order in demo store $\to$ captures exposure and conversion with deduplication. Open Analytics $\to$ show deterministic TypeScript math: $+20.2\%$ relative lift, exact two-tailed Z-test ($p = 0.134$), SRM $\chi^2$ ($p = 0.69$), and payment failure guardrail safe at $1.10\%$. |
 | **1:55 – 2:40** | [`/release-center`](https://pulse-pilot-two.vercel.app/release-center) | **Act 4: Human-in-the-Loop Rollout.** Release Guardian confirms all 5 gates passed. Displays before/after diff (`50/50 -> 25/75`). Human operator inputs authorization signature and approves. Flagsmith v2 Feature Versioning mutates remote traffic in $< 200$ms with read-after-write verification. |
 | **2:40 – 3:00** | [`/activity`](https://pulse-pilot-two.vercel.app/activity) | **Act 5: Tamper-Evident Governance Audit Log.** View cryptographic audit record with SHA-256 hash chaining displaying timestamp, authorizer, and exact before/after flag state changes. |
@@ -145,10 +145,10 @@ All functional, security, and Flagsmith integration test suites run automaticall
 # 1. TypeScript Strict Type-Check (0 Errors)
 npx tsc --noEmit
 
-# 2. Flagsmith Management & Edge Evaluation Test Suite (9/9 Passed)
+# 2. Flagsmith Management & Edge Evaluation Test Suite (15/15 Passed)
 npm run test:flagsmith
 
-# 3. Comprehensive QA, Math Integrity & Security Audit (32/32 Passed)
+# 3. Comprehensive QA, Math Integrity & Security Audit (36/36 Passed)
 npm run test:audit
 
 # 4. Production Next.js Build (44/44 Pages Compiled)
@@ -156,8 +156,8 @@ npm run build
 ```
 
 ### Test Suite Summary:
-- **9 / 9 Flagsmith Tests Passed:** Credential isolation, idempotent remote provisioning, identity stability, multivariate canary allocation, 100% winner rollout, safe rollback to Control, and $< 50$ms emergency kill-switch.
-- **32 / 32 Comprehensive Audit Tests Passed:** High-precision Normal CDF approximation, two-tailed p-value calculation, Bayesian win probability, SRM Chi-Square detection, prompt injection neutralization, and zero-secret-leakage verification.
+- **15 / 15 Flagsmith Tests Passed:** Credential isolation, idempotent remote provisioning, identity stability, multivariate canary allocation, 100% winner rollout, safe rollback to Control, < 50ms emergency kill-switch, production vs mock guards, and zero-silent-fallback enforcement.
+- **36 / 36 Comprehensive Audit Tests Passed:** High-precision Normal CDF approximation, two-tailed p-value calculation, Bayesian win probability, SRM Chi-Square detection, prompt injection neutralization, and zero-secret-leakage verification.
 
 ---
 
