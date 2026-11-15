@@ -144,12 +144,13 @@ export default function OverviewPage() {
           </div>
 
           <AIInsightCard
-            title="Winner Detected: Social Proof Testimonial on Checkout"
-            summary="Statistical significance reached with 97.4% Bayesian confidence. Treatment variant yields a +18.4% relative uplift in completed transactions over control with zero guardrail violations."
+            title="Winner Detected: Social Proof Testimonial (exp_checkout_social_proof)"
+            summary="Statistical significance reached with 97.4% Bayesian confidence for concluded test 'exp_checkout_social_proof'. Note: Active checkout layout test (exp_checkout_layout_v2, p = 0.134) is underpowered and collecting data in Analytics."
             confidenceScore={0.974}
             impact="high"
             type="winner_detected"
             observations={[
+              "Concluded Benchmark: exp_checkout_social_proof (p = 0.026 < 0.05).",
               "Sample size reached 2,400 visitors per variant (target was 2,000).",
               "Conversion rate surged from 4.12% (Control) to 4.88% (Social Proof).",
               "Refund rate and checkout friction guardrails remained completely stable.",

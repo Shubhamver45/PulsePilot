@@ -135,7 +135,9 @@ export default function AnalyticsIntelligencePage() {
           ...prev,
           executiveSummary:
             data.data?.executive_summary || prev.executiveSummary,
-          decisionState: "Winner identified",
+          decisionState: results?.summary?.statisticalCertaintyReached
+            ? "Winner identified"
+            : "Collecting data",
         }));
       }
     } catch (err) {
