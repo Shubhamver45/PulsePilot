@@ -1,0 +1,28 @@
+1
+00:00:01,000 --> 00:00:14,000
+Product teams have great growth ideas, but turning them into measurable experiments and safely releasing winning changes takes time. PulsePilot AI changes that.
+
+2
+00:00:15,000 --> 00:00:44,000
+With PulsePilot, a product manager simply describes a growth objective. Google Gemini transforms that objective into an experiment strategy, while specialized AI agents coordinate experiment design, analytics, release safety and growth recommendations.
+
+3
+00:00:45,000 --> 00:01:09,000
+PulsePilot connects directly to Flagsmith Cloud. It provisions multivariate feature flags, evaluates user identities and verifies remote configuration changes. This is real feature-flag infrastructure, not a simulated integration.
+
+4
+00:01:10,000 --> 00:01:34,000
+Different users receive different checkout experiences through Flagsmith identity evaluation. The same application can deliver a multi-step control experience or a single-page treatment without hardcoded client-side experiment assignment.
+
+5
+00:01:35,000 --> 00:01:59,000
+PulsePilot calculates experiment statistics deterministically, not through an AI guess. Our current checkout dataset shows a 20.2 percent relative uplift, but a p-value of 0.134 and a confidence interval crossing zero. The platform correctly identifies the experiment as underpowered instead of declaring a premature winner.
+
+6
+00:02:00,000 --> 00:02:34,000
+Production changes require human oversight. The Release Guardian evaluates the available evidence, presents the configuration diff and requires explicit authorization before a permitted Flagsmith rollout. Every operation is verified against the remote configuration.
+
+7
+00:02:35,000 --> 00:02:52,000
+Every important operation is recorded in a tamper-evident SHA-256 audit chain. PulsePilot AI connects intelligent experimentation with real feature management and responsible production releases.
+
