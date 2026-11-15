@@ -688,7 +688,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ===================================================================== */}
-      {/* SECTION 7: RECENT ACTIVITY (IMMUTABLE AUDIT STREAM)                   */}
+      {/* SECTION 7: RECENT ACTIVITY (TAMPER-EVIDENT AUDIT STREAM)              */}
       {/* ===================================================================== */}
       <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-4">
         <div className="flex items-center justify-between pb-3 border-b border-border">

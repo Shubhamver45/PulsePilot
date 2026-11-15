@@ -27,7 +27,7 @@ export default function IntegrationsPage() {
       name: "PostgreSQL Database",
       category: "Persistence & Telemetry Logs",
       status: "connected",
-      description: "High-throughput event logging, experiment variants, and immutable audit logs.",
+      description: "High-throughput event logging, experiment variants, and tamper-evident audit logs with cryptographic hash chaining.",
       icon: <Database className="w-5 h-5 text-primary" />,
       details: "Prisma ORM • Connection Pooled",
     },

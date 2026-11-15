@@ -216,7 +216,7 @@ async function runFullAudit() {
   // ---------------------------------------------------------------------------
   // 5. AUDIT LOGGING & GOVERNANCE TRAIL
   // ---------------------------------------------------------------------------
-  console.log("\nSECTION 5: IMMUTABLE AUDIT TRAIL & GOVERNANCE RECORD");
+  console.log("\nSECTION 5: APPEND-ONLY TAMPER-EVIDENT AUDIT TRAIL & GOVERNANCE RECORD");
   const initialAuditCount = getAuditLogs().length;
   const recorded = await recordAuditLog({
     action: "ROLLBACK_EXECUTED",

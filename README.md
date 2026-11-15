@@ -69,7 +69,7 @@ flowchart TD
       Rec --> HITL{"Human-in-the-Loop Gate"}
       HITL -->|"Human Signature Approved"| FS_Mutate["Flagsmith v2 Feature Versioning"]
       FS_Mutate -->|"Read-After-Write Verified (< 200ms)"| FS_Edge
-      FS_Mutate -->|"Cryptographic Record"| Audit[(Immutable Audit Log)]
+      FS_Mutate -->|"Cryptographic Record"| Audit[(Tamper-Evident Audit Log)]
     end
 ```
 
@@ -119,7 +119,7 @@ PulsePilot interacts directly with live Flagsmith Cloud resources on **Project I
 | **0:35 – 1:20** | [`/demo-store`](https://pulse-pilot-two.vercel.app/demo-store?flag=exp_checkout_layout_v2) | **Act 2: Live Flagsmith Multivariate Bucketing.** Show identity `user_sarah_prod` $\to$ Flagsmith edge resolves `multi_step` (Control 3-step wizard). Switch identity to `user_alex_dev` $\to$ Flagsmith edge dynamically resolves `single_page` (Treatment 1-page express checkout). Exact same codebase; two live experiences. |
 | **1:20 – 1:55** | [`/analytics`](https://pulse-pilot-two.vercel.app/analytics) | **Act 3: Telemetry & Anti-Hallucination Analytics.** Place order in demo store $\to$ captures exposure and conversion with deduplication. Open Analytics $\to$ show deterministic TypeScript math: $+20.2\%$ relative lift, exact two-tailed Z-test ($p = 0.134$), SRM $\chi^2$ ($p = 0.69$), and payment failure guardrail safe at $1.10\%$. |
 | **1:55 – 2:40** | [`/release-center`](https://pulse-pilot-two.vercel.app/release-center) | **Act 4: Human-in-the-Loop Rollout.** Release Guardian confirms all 5 gates passed. Displays before/after diff (`50/50 -> 25/75`). Human operator inputs authorization signature and approves. Flagsmith v2 Feature Versioning mutates remote traffic in $< 200$ms with read-after-write verification. |
-| **2:40 – 3:00** | [`/activity`](https://pulse-pilot-two.vercel.app/activity) | **Act 5: Immutable Governance Audit Log.** View cryptographic audit record in Supabase PostgreSQL displaying timestamp, authorizer, and exact before/after flag state changes. |
+| **2:40 – 3:00** | [`/activity`](https://pulse-pilot-two.vercel.app/activity) | **Act 5: Tamper-Evident Governance Audit Log.** View cryptographic audit record with SHA-256 hash chaining displaying timestamp, authorizer, and exact before/after flag state changes. |
 
 ---
 

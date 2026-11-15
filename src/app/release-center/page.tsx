@@ -792,7 +792,7 @@ export default function ReleaseCenterPage() {
         </div>
       </div>
 
-      {/* FEATURE 6: IMMUTABLE AUDIT LOG TABLE */}
+      {/* FEATURE 6: TAMPER-EVIDENT AUDIT LOG TABLE */}
       <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-4">
         <div className="flex items-center justify-between">
           <div>
@@ -800,7 +800,7 @@ export default function ReleaseCenterPage() {
               <History className="w-4 h-4 text-primary" /> Feature 6: Operational Audit Log & Governance Record
             </h3>
             <p className="text-xs text-text-secondary mt-1">
-              Immutable log of every flag modification, rollout approval, and rollback event with authorizer identity.
+              Append-only, tamper-evident log with SHA-256 hash chaining of every flag modification, rollout approval, and rollback event with authorizer identity.
             </p>
           </div>
           <button
