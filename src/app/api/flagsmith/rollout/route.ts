@@ -9,6 +9,7 @@ import {
   getLiveRemoteFeatureState,
 } from "@/lib/flagsmith/flagsmith-admin";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
+import { checkProductionRolloutGuard } from "@/lib/flagsmith/production-guards";
 
 const RolloutRequestSchema = z.object({
   flagsmithFeatureName: z.string().min(1),
@@ -78,15 +79,17 @@ export async function POST(request: Request) {
     const body = await request.json();
     const req = RolloutRequestSchema.parse(body);
     const isRemoteConfigured = hasFlagsmithRemoteCredentials();
+    const rolloutGuard = checkProductionRolloutGuard(isRemoteConfigured);
 
-    if (process.env.NODE_ENV === "production" && !isRemoteConfigured) {
+    if (!rolloutGuard.allowed) {
       return NextResponse.json(
         {
           success: false,
-          error: "Production rollout requires valid Flagsmith management credentials. Configure FLAGSMITH_ORG_API_TOKEN.",
+          error: rolloutGuard.error,
+          code: rolloutGuard.code,
           isConfigError: true,
         },
-        { status: 503 }
+        { status: rolloutGuard.statusCode || 503 }
       );
     }
 

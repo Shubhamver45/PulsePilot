@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
+import {
+  checkProductionEvaluationGuard,
+  checkProductionRemoteFetchGuard,
+} from "@/lib/flagsmith/production-guards";
 
 const getApiUrl = () =>
   (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
@@ -58,25 +62,30 @@ export async function GET(request: Request) {
       }
     } catch (err: any) {
       console.warn("[Flagsmith Remote Evaluation Error]:", err.message);
-      if (process.env.NODE_ENV === "production") {
+      const fetchGuard = checkProductionRemoteFetchGuard(err);
+      if (!fetchGuard.allowed) {
         return NextResponse.json(
           {
-            error: `Flagsmith remote edge evaluation failed: ${err.message}`,
-            code: "FLAGSMITH_EDGE_FETCH_FAILED",
+            error: fetchGuard.error,
+            code: fetchGuard.code,
             source: "error",
           },
-          { status: 502 }
+          { status: fetchGuard.statusCode || 502 }
         );
       }
     }
-  } else if (process.env.NODE_ENV === "production") {
+  }
+
+  // Production check: reject missing credentials without falling back to mock
+  const evalGuard = checkProductionEvaluationGuard(envKey);
+  if (!evalGuard.allowed) {
     return NextResponse.json(
       {
-        error: "Missing production Flagsmith credentials: FLAGSMITH_ENVIRONMENT_KEY is not configured.",
-        code: "FLAGSMITH_NOT_CONFIGURED",
+        error: evalGuard.error,
+        code: evalGuard.code,
         source: "error",
       },
-      { status: 503 }
+      { status: evalGuard.statusCode || 503 }
     );
   }
 

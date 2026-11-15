@@ -8,6 +8,12 @@ import {
   getLiveRemoteFeatureState,
 } from "../src/lib/flagsmith/flagsmith-admin.ts";
 import { flagsmithMockStore } from "../src/lib/flagsmith/flagsmith-mock.ts";
+import {
+  checkProductionEvaluationGuard,
+  checkProductionRolloutGuard,
+  checkProductionRemoteFetchGuard,
+} from "../src/lib/flagsmith/production-guards.ts";
+import { assertZeroSecretLeakage } from "../src/lib/security/input-sanitizer.ts";
 
 let totalTests = 0;
 let passedTests = 0;
@@ -183,6 +189,83 @@ async function runFlagsmithIntegrationTests() {
     "Emergency Kill-Switch: Feature disabled immediately (< 50ms latency)"
   );
   flagsmithMockStore.toggleKillSwitch("exp_checkout_layout_v2", true); // Restore
+
+  // ---------------------------------------------------------------------------
+  // 5. PRODUCTION VS MOCK ISOLATION GUARDS & ZERO SILENT FALLBACK
+  // ---------------------------------------------------------------------------
+  console.log("\nSECTION 5: PRODUCTION VS MOCK ISOLATION GUARDS & ZERO SILENT FALLBACK");
+
+  // 1. Missing production environment key returns 503
+  const missingEnvGuard = checkProductionEvaluationGuard(undefined, "production");
+  assert(
+    missingEnvGuard.allowed === false && missingEnvGuard.statusCode === 503 && missingEnvGuard.code === "FLAGSMITH_NOT_CONFIGURED",
+    "Missing production environment key returns HTTP 503 (FLAGSMITH_NOT_CONFIGURED)"
+  );
+
+  // 2. A production environment key set to 'mock' returns 503
+  const mockEnvGuard = checkProductionEvaluationGuard("mock", "production");
+  assert(
+    mockEnvGuard.allowed === false && mockEnvGuard.statusCode === 503 && mockEnvGuard.code === "FLAGSMITH_NOT_CONFIGURED",
+    "Production environment key set to 'mock' returns HTTP 503 without fallback"
+  );
+
+  // 3. Remote production evaluation failure returns 502 without mock fallback
+  const fetchErrGuard = checkProductionRemoteFetchGuard(
+    new Error("Connection refused to edge.api.flagsmith.com"),
+    "production"
+  );
+  assert(
+    fetchErrGuard.allowed === false && fetchErrGuard.statusCode === 502 && fetchErrGuard.code === "FLAGSMITH_EDGE_FETCH_FAILED",
+    "Remote production evaluation failure returns HTTP 502 without silent mock fallback"
+  );
+
+  // 4. Missing production management credentials block rollout with 503
+  const rolloutGuard = checkProductionRolloutGuard(false, "production");
+  assert(
+    rolloutGuard.allowed === false && rolloutGuard.statusCode === 503 && rolloutGuard.code === "FLAGSMITH_NOT_CONFIGURED",
+    "Missing production management credentials block rollout with HTTP 503"
+  );
+
+  // 5. Development/test mock evaluation continues working
+  flagsmithMockStore.setFlag({
+    name: "exp_checkout_layout_v2",
+    enabled: true,
+    type: "MULTIVARIATE",
+    value: JSON.stringify({ layout: "multi_step" }),
+    multivariateOptions: [
+      { key: "control", trafficAllocation: 50, value: JSON.stringify({ layout: "multi_step" }) },
+      { key: "variant_single_page", trafficAllocation: 50, value: JSON.stringify({ layout: "single_page" }) },
+    ],
+  });
+
+  const devEvalGuard = checkProductionEvaluationGuard(undefined, "development");
+  const devRolloutGuard = checkProductionRolloutGuard(false, "development");
+  const alexEval = flagsmithMockStore.evaluateForIdentity("exp_checkout_layout_v2", "user_alex_dev");
+  const elenaEval = flagsmithMockStore.evaluateForIdentity("exp_checkout_layout_v2", "user_elena_ai");
+  assert(
+    devEvalGuard.allowed === true &&
+      devRolloutGuard.allowed === true &&
+      alexEval.variantKey === "variant_single_page" &&
+      elenaEval.variantKey === "control",
+    "Development/test mock evaluation continues working safely with deterministic identity assignments"
+  );
+
+  // 6. No credentials or secret values appear in API error responses
+  let zeroSecretsInErrors = true;
+  try {
+    assertZeroSecretLeakage({
+      missingEnvError: missingEnvGuard.error,
+      mockEnvError: mockEnvGuard.error,
+      fetchError: fetchErrGuard.error,
+      rolloutError: rolloutGuard.error,
+    });
+  } catch (err) {
+    zeroSecretsInErrors = false;
+  }
+  assert(
+    zeroSecretsInErrors === true,
+    "No credentials, tokens, or secret values appear in API guard error responses"
+  );
 
   console.log("\n=====================================================================");
   console.log(`FLAGSMITH TEST RESULTS: ${passedTests} / ${totalTests} TESTS PASSED (${failedTests} FAILS)`);
