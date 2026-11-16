@@ -24,7 +24,10 @@
     "audit": "node --experimental-strip-types scripts/test-full-audit.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "prisma:migrate:staging": "node --experimental-strip-types scripts/staging-prisma-migrate.ts"
+    "prisma:migrate:staging": "node --experimental-strip-types scripts/staging-prisma-migrate.ts",
+    "staging:preflight": "node --experimental-strip-types scripts/verify-staging-database.ts",
+    "staging:acceptance": "node --experimental-strip-types scripts/run-staging-dba-tests.ts",
+    "test:staging-acceptance": "node --experimental-strip-types scripts/run-staging-dba-tests.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

@@ -1,5 +1,5 @@
 /**
- * PulsePilot AI — Staging Environment Safety & Identity Verification Module
+ * PulsePilot AI — Staging Environment Safety & Identity Assurance Module
  * 
  * Enforces strict staging-only isolation invariants:
  * 1. Mandatory STAGING_PROJECT_REF with strict format validation.
@@ -8,11 +8,12 @@
  * 4. Rejection of non-Supabase or unsupported host formats.
  * 5. Rejection of missing, malformed, or mismatching expected project references.
  * 6. Agreement between project reference and target hostnames across all URLs.
- * 7. Zero fallback to DATABASE_URL or DIRECT_URL.
- * 8. Live read-only server identity check recording current_database, current_user,
- *    session_user, inet_server_addr, inet_server_port, version, and derived project ref.
- * 9. Explicit verification that current_database() = 'postgres' is NOT treated as staging proof.
- * 10. Zero secret leakage across all logs and outputs.
+ * 7. Verification that TLS certificate verification is NOT disabled (sslmode != disable/no-verify).
+ * 8. Zero fallback to DATABASE_URL or DIRECT_URL.
+ * 9. Separation of client-side endpoint validation from server session inspection.
+ * 10. Explicit documentation that Supabase exposes no native PostgreSQL project identifier,
+ *     and current_database() = 'postgres' is standard and NOT treated as staging proof.
+ * 11. Zero secret leakage across all logs and outputs.
  */
 
 import fs from "fs";
@@ -30,6 +31,7 @@ export interface ValidatedStagingEndpoint {
   projectRef: string;
   isPooler: boolean;
   sanitizedUrl: string;
+  rawUrl: string;
 }
 
 export interface StagingEnvironmentConfig {
@@ -40,6 +42,11 @@ export interface StagingEnvironmentConfig {
   directEndpoint: ValidatedStagingEndpoint;
 }
 
+/**
+ * Pure server-returned attributes obtained by querying PostgreSQL.
+ * Note: Supabase exposes no native PostgreSQL catalog variable for cloud project reference.
+ * Therefore, this record contains strictly values returned by PostgreSQL itself.
+ */
 export interface ServerIdentityRecord {
   current_database: string;
   current_user: string;
@@ -47,7 +54,6 @@ export interface ServerIdentityRecord {
   inet_server_addr: string | null;
   inet_server_port: number | null;
   version: string;
-  derived_project_ref: string;
 }
 
 /**
@@ -99,7 +105,7 @@ export function validateStagingProjectRef(projectRef: string | undefined): strin
 
 /**
  * Parses and sanitizes a connection URL, validating hostname and agreement with expected project ref.
- * Enforces zero secret leakage and rejects non-Supabase or unsupported host formats.
+ * Enforces TLS certificate validation and zero secret leakage.
  */
 export function validateStagingEndpointUrl(
   urlStr: string | undefined,
@@ -122,6 +128,23 @@ export function validateStagingEndpointUrl(
 
   if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
     throw new Error(`INVALID_PROTOCOL: ${paramName} must use postgresql: or postgres: protocol.`);
+  }
+
+  // TLS Certificate Verification Enforcement
+  const sslMode = parsed.searchParams.get("sslmode")?.toLowerCase();
+  if (sslMode === "disable" || sslMode === "allow" || sslMode === "no-verify" || sslMode === "prefer") {
+    throw new Error(
+      `INSECURE_TLS_CONFIGURATION: ${paramName} specifies sslmode="${sslMode}". ` +
+      "Disabling or weakening TLS certificate validation is strictly prohibited. Use sslmode=require or default."
+    );
+  }
+
+  const rejectUnauthorized = parsed.searchParams.get("rejectUnauthorized");
+  if (rejectUnauthorized === "false" || rejectUnauthorized === "0") {
+    throw new Error(
+      `INSECURE_TLS_CONFIGURATION: ${paramName} explicitly disables certificate validation ` +
+      "(rejectUnauthorized=false is prohibited)."
+    );
   }
 
   const hostname = parsed.hostname.toLowerCase();
@@ -156,7 +179,6 @@ export function validateStagingEndpointUrl(
     } else if (hostParts.length >= 4 && hostParts[1] === "pooler") {
       derivedRef = hostParts[0];
     } else {
-      // In Supabase poolers, username format is postgres.<project-ref>
       throw new Error(
         `MALFORMED_POOLER_ENDPOINT: ${paramName} connects to a Supabase pooler host but username does not ` +
         `contain the project reference suffix (e.g. postgres.<project-ref>).`
@@ -203,6 +225,7 @@ export function validateStagingEndpointUrl(
     projectRef: derivedRef,
     isPooler: isSupabasePooler,
     sanitizedUrl,
+    rawUrl: urlStr.trim(),
   };
 }
 
@@ -211,7 +234,7 @@ export function validateStagingEndpointUrl(
  * Enforces:
  * - STAGING_PROJECT_REF mandatory.
  * - STAGING_DATABASE_URL mandatory.
- * - STAGING_DIRECT_URL mandatory for migration runner.
+ * - STAGING_DIRECT_URL mandatory for migration execution.
  * - Zero fallback to DATABASE_URL or DIRECT_URL.
  * - Both URLs target the exact same validated staging project.
  */
@@ -291,49 +314,47 @@ export function loadAndValidateStagingEnv(
 }
 
 /**
- * Validates connected PostgreSQL server identity against expected staging configuration.
- * Cardinal Rule: current_database() = 'postgres' is standard on Supabase and is NOT treated as staging proof.
+ * Validates connected PostgreSQL server session against expected staging configuration.
+ * 
+ * Security Boundary Documentation:
+ * 1. Endpoint Parsing: Validates client-side URL structure and extracts target hostname.
+ * 2. TLS Connection: Establishes an encrypted TLS session and validates the server's certificate
+ *    against the validated hostname (db.<staging-ref>.supabase.co), preventing MITM/DNS spoofing.
+ * 3. PostgreSQL Session Inspection: Confirms connected user, session user, active database, and server port.
+ * 
+ * Architectural Limitation:
+ * Supabase does not expose a native PostgreSQL catalog setting or function exposing the cloud project reference.
+ * Therefore, current_database()='postgres' is standard across all projects and does NOT prove staging identity.
+ * Project identity assurance is established by the combination of (1) client-side endpoint validation,
+ * (2) TLS certificate validation to the specific hostname, and (3) read-only PostgreSQL session checks.
  */
-export function verifyServerIdentity(
-  identity: ServerIdentityRecord,
-  expectedProjectRef: string
-): { verified: boolean; warnings: string[]; details: ServerIdentityRecord } {
+export function verifyServerSession(
+  serverRecord: ServerIdentityRecord,
+  validatedEndpoint: ValidatedStagingEndpoint
+): { verified: boolean; warnings: string[]; serverDetails: ServerIdentityRecord; validatedEndpoint: ValidatedStagingEndpoint } {
   const warnings: string[] = [];
 
-  // Check 1: Database name inspection
-  if (identity.current_database.toLowerCase().includes(KNOWN_PRODUCTION_PROJECT_REF.toLowerCase())) {
+  // Check 1: Server-reported database name collision check
+  if (serverRecord.current_database.toLowerCase().includes(KNOWN_PRODUCTION_PROJECT_REF.toLowerCase())) {
     throw new Error(
-      `PRODUCTION_COLLISION: Server reports current_database() = "${identity.current_database}", ` +
+      `PRODUCTION_COLLISION: Server reports current_database() = "${serverRecord.current_database}", ` +
       `which matches known production project "${KNOWN_PRODUCTION_PROJECT_REF}"!`
     );
   }
 
-  // Check 2: Explicit awareness that 'postgres' database name does not prove staging
-  if (identity.current_database.toLowerCase() === "postgres") {
+  // Check 2: Explicit awareness of Supabase database name limitation
+  if (serverRecord.current_database.toLowerCase() === "postgres") {
     warnings.push(
-      "current_database() reports 'postgres' (standard default for all Supabase projects). " +
-      "This is NOT considered proof of staging identity. Identity proof is derived from the validated endpoint."
-    );
-  }
-
-  // Check 3: Project ref agreement
-  if (identity.derived_project_ref.toLowerCase() !== expectedProjectRef.toLowerCase()) {
-    throw new Error(
-      `SERVER_IDENTITY_MISMATCH: Derived project ref "${identity.derived_project_ref}" ` +
-      `does not match expected staging ref "${expectedProjectRef}".`
-    );
-  }
-
-  // Check 4: Collision check on derived ref
-  if (identity.derived_project_ref.toLowerCase() === KNOWN_PRODUCTION_PROJECT_REF.toLowerCase()) {
-    throw new Error(
-      `PRODUCTION_COLLISION: Connected server derived ref matches known production "${KNOWN_PRODUCTION_PROJECT_REF}".`
+      "current_database() reports 'postgres' (standard default for all Supabase projects) and does NOT prove staging identity. " +
+      "PostgreSQL exposes no cloud project reference catalog variable. " +
+      "Target identity assurance relies on validated endpoint hostname and TLS certificate verification."
     );
   }
 
   return {
     verified: true,
     warnings,
-    details: identity,
+    serverDetails: serverRecord,
+    validatedEndpoint,
   };
 }

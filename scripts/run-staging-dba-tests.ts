@@ -1,68 +1,61 @@
 /**
- * PulsePilot AI — Hardened Staging DBA Execution & Live Acceptance Runner
+ * PulsePilot AI — Hardened Staging Live PostgreSQL Acceptance Runner
  * 
- * Safety Protocol:
- * 1. Requires mandatory STAGING_PROJECT_REF with format validation.
- * 2. Requires dedicated STAGING_DATABASE_URL and STAGING_DIRECT_URL.
- * 3. Rejects non-Supabase endpoints and rejects production references (czqhiuidekvozuoqdmyd).
- * 4. Strictly prohibits silent fallback to DATABASE_URL or DIRECT_URL.
- * 5. Redacts all passwords, secrets, and credentials in logs.
- * 6. Connects to the database and performs a live read-only server identity check:
- *    - current_database(), current_user, session_user, inet_server_addr, inet_server_port, version.
- * 7. Explicitly asserts that current_database() = 'postgres' is NOT treated as staging proof.
- * 8. Inspects prerequisite roles (pulsepilot_app, pulsepilot_revocation_maint) to confirm
- *    NOSUPERUSER and NOBYPASSRLS attributes before any acceptance operations.
+ * Execution Architecture:
+ * 1. Strict Endpoint Preflight:
+ *    - Validates STAGING_PROJECT_REF format and ensures zero production collision.
+ *    - Validates STAGING_DATABASE_URL and STAGING_DIRECT_URL.
+ *    - Enforces TLS certificate verification.
+ * 2. Single Connection Target Consistency:
+ *    - Connects to the EXACT direct staging endpoint validated during preflight.
+ * 3. 13 Live Behavioral Acceptance Tests (Self-Reverting):
+ *    - Test 1: pulsepilot_app can SELECT from public.revoked_tokens.
+ *    - Test 2: pulsepilot_app can INSERT into public.revoked_tokens.
+ *    - Test 3: pulsepilot_app cannot UPDATE (asserts SQLSTATE 42501).
+ *    - Test 4: pulsepilot_app cannot DELETE (asserts SQLSTATE 42501).
+ *    - Test 5: pulsepilot_app cannot TRUNCATE (asserts SQLSTATE 42501).
+ *    - Test 6: anon role cannot access table (asserts SQLSTATE 42501).
+ *    - Test 7: authenticated role cannot access table (asserts SQLSTATE 42501).
+ *    - Test 8: pulsepilot_app cannot execute cleanup function (asserts SQLSTATE 42501).
+ *    - Test 9a: pulsepilot_revocation_maint under FORCE RLS cannot delete active row.
+ *    - Test 9b: pulsepilot_revocation_maint deletes expired row.
+ *    - Test 10: service_role can execute cleanup function.
+ *    - Test 11: Hostile schema-shadowing attack resistance (dual proof).
+ *    - Test 12: service_role has no direct table access (function-only).
+ *    - Test 13: pulsepilot_app cannot ALTER or hijack maintenance function.
+ * 4. Safety Guarantee:
+ *    - Returns nonzero exit code (1) if ANY assertion fails or if connection fails.
+ *    - All test modifications rolled back via transaction rollback.
  */
 
-import fs from "fs";
-import path from "path";
 import { PrismaClient } from "@prisma/client";
 import {
   loadAndValidateStagingEnv,
-  verifyServerIdentity,
+  verifyServerSession,
   type ServerIdentityRecord,
 } from "./staging-safety.ts";
 
-async function runStagingSafetyGate() {
+async function executeAcceptanceSuite() {
   console.log("=====================================================================");
-  console.log("   PULSEPILOT AI — SEC-03.2 HARDENED STAGING DBA ACCEPTANCE RUNNER    ");
+  console.log("   PULSEPILOT AI — SEC-03.2 LIVE POSTGRESQL ACCEPTANCE RUNNER        ");
   console.log("=====================================================================\n");
 
-  // 1. Strict Enforcement & Environment Validation Gate
+  // 1. Strict Preflight & Endpoint Validation
   let config;
   try {
     config = loadAndValidateStagingEnv();
   } catch (err: any) {
-    console.error(`❌ [CRITICAL SAFETY HALT] ${err.message}\n`);
-    console.error("Rule Enforcement: Silent fallback to DATABASE_URL is strictly prohibited.");
-    console.error("Action Required: Configure .env.staging with isolated staging credentials:");
-    console.error("  STAGING_PROJECT_REF=\"<your-staging-project-ref>\"");
-    console.error("  STAGING_DATABASE_URL=\"postgresql://postgres:<PASSWORD>@db.<staging-ref>.supabase.co:5432/postgres\"");
-    console.error("  STAGING_DIRECT_URL=\"postgresql://postgres:<PASSWORD>@db.<staging-ref>.supabase.co:5432/postgres\"\n");
-    console.log("📄 Staging DBA SQL execution script is ready at: scripts/staging-dba-execution.sql");
-    console.log("📄 Acceptance Runbook documented in: SEC03_REVOCATION_FINAL_SECURITY_SIGNOFF.md\n");
+    console.error(`❌ [PREFLIGHT FAILED]: ${err.message}\n`);
     process.exit(1);
   }
 
-  console.log("Staging Target Sanitized Inspection (Zero Secret Leakage):");
-  console.log(`  • Staging Project Ref: ${config.stagingProjectRef}`);
-  console.log(`  • Pooled Target Host:  ${config.dbEndpoint.hostname}:${config.dbEndpoint.port}`);
-  console.log(`  • Direct Target Host:  ${config.directEndpoint.hostname}:${config.directEndpoint.port}`);
-  console.log(`  • Database Name:       ${config.directEndpoint.database}`);
-  console.log(`  • Target User:         ${config.directEndpoint.username}`);
-  console.log(`  • Target Endpoint:     ${config.directEndpoint.sanitizedUrl}\n`);
+  console.log("Validated Staging Endpoint:");
+  console.log(`  • Project Ref:     ${config.stagingProjectRef}`);
+  console.log(`  • Direct Endpoint: ${config.directEndpoint.sanitizedUrl}\n`);
 
-  // 2. Staging Script Existence Check
-  const scriptPath = path.resolve("scripts/staging-dba-execution.sql");
-  if (!fs.existsSync(scriptPath)) {
-    console.error(`❌ [ERROR] Expected SQL script not found at ${scriptPath}`);
-    process.exit(1);
-  }
-  console.log(`✅ Staging DBA execution script verified at: ${scriptPath}`);
+  console.log("🔍 Connecting to staging direct endpoint to verify session before acceptance tests...");
 
-  // 3. Connect to Staging Database & Execute Live Read-Only Server Identity Check
-  console.log("\n🔍 Connecting to staging endpoint to perform read-only identity verification...");
-
+  // Use the EXACT validated direct URL
   const prisma = new PrismaClient({
     datasources: {
       db: { url: config.stagingDirectUrl },
@@ -71,6 +64,7 @@ async function runStagingSafetyGate() {
   });
 
   try {
+    // 2. Read-only session inspection
     const identityRows = await prisma.$queryRawUnsafe<
       Array<{
         current_database: string;
@@ -91,91 +85,296 @@ async function runStagingSafetyGate() {
     }
 
     const row = identityRows[0];
-    const identityRecord: ServerIdentityRecord = {
+    const serverRecord: ServerIdentityRecord = {
       current_database: row.current_database,
       current_user: row.current_user,
       session_user: row.session_user,
       inet_server_addr: row.inet_server_addr,
       inet_server_port: row.inet_server_port,
       version: row.version,
-      derived_project_ref: config.directEndpoint.projectRef,
     };
 
-    const verification = verifyServerIdentity(identityRecord, config.stagingProjectRef);
+    const sessionVerification = verifyServerSession(serverRecord, config.directEndpoint);
 
-    console.log("\n✅ Actual Connected Server Identity Verification Report:");
-    console.log(`  • current_database(): ${row.current_database}`);
-    console.log(`  • current_user:       ${row.current_user}`);
-    console.log(`  • session_user:       ${row.session_user}`);
-    console.log(`  • inet_server_addr(): ${row.inet_server_addr || "n/a (managed host)"}`);
-    console.log(`  • inet_server_port(): ${row.inet_server_port || "5432"}`);
-    console.log(`  • pg_version:         ${row.version.split(" on ")[0]}`);
-    console.log(`  • derived_project_ref:${identityRecord.derived_project_ref}`);
-
-    for (const warning of verification.warnings) {
-      console.log(`  ⚠️  [NOTICE] ${warning}`);
+    console.log(`✅ Connected Server Verified: db=${row.current_database}, user=${row.current_user}, version=${row.version.split(" on ")[0]}`);
+    for (const warning of sessionVerification.warnings) {
+      console.log(`  ℹ️  [NOTICE] ${warning}`);
     }
 
-    // 4. Role and Privilege Inspection
-    console.log("\n🔍 Inspecting staging database roles and attributes...");
-    const roles = await prisma.$queryRawUnsafe<
-      Array<{
-        rolname: string;
-        rolsuper: boolean;
-        rolbypassrls: boolean;
-        rolcanlogin: boolean;
-      }>
-    >(
-      `SELECT rolname, rolsuper, rolbypassrls, rolcanlogin 
-       FROM pg_roles 
-       WHERE rolname IN ('pulsepilot_app', 'pulsepilot_revocation_maint', 'postgres', 'service_role')
-       ORDER BY rolname`
+    // Check table existence before running tests
+    const tableExists = await prisma.$queryRawUnsafe<Array<{ exists: boolean }>>(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'revoked_tokens') AS exists`
     );
 
-    const roleMap = new Map(roles.map((r) => [r.rolname, r]));
-
-    // Check pulsepilot_app
-    const appRole = roleMap.get("pulsepilot_app");
-    if (!appRole) {
-      console.log("  ⚠️  Role 'pulsepilot_app' does not yet exist. Run Step 1 of scripts/staging-dba-execution.sql.");
-    } else {
-      console.log(`  ✅ Role 'pulsepilot_app': rolsuper=${appRole.rolsuper}, rolbypassrls=${appRole.rolbypassrls}, rolcanlogin=${appRole.rolcanlogin}`);
-      if (appRole.rolsuper || appRole.rolbypassrls) {
-        console.error("❌ [SECURITY ALERT] pulsepilot_app has rolsuper=true or rolbypassrls=true!");
-        await prisma.$disconnect();
-        process.exit(1);
-      }
+    if (!tableExists || !tableExists[0]?.exists) {
+      console.error("\n❌ [PREREQUISITE MISSING: Table public.revoked_tokens does not exist]");
+      console.error("Run Prisma migrations first via: npm run prisma:migrate:staging\n");
+      await prisma.$disconnect();
+      process.exit(1);
     }
 
-    // Check pulsepilot_revocation_maint
-    const maintRole = roleMap.get("pulsepilot_revocation_maint");
-    if (!maintRole) {
-      console.log("  ⚠️  Role 'pulsepilot_revocation_maint' does not yet exist. Will be provisioned during migration.");
-    } else {
-      console.log(`  ✅ Role 'pulsepilot_revocation_maint': rolsuper=${maintRole.rolsuper}, rolbypassrls=${maintRole.rolbypassrls}, rolcanlogin=${maintRole.rolcanlogin}`);
-      if (maintRole.rolsuper || maintRole.rolbypassrls || maintRole.rolcanlogin) {
-        console.error("❌ [SECURITY ALERT] pulsepilot_revocation_maint must have NOLOGIN, NOSUPERUSER, NOBYPASSRLS!");
-        await prisma.$disconnect();
-        process.exit(1);
+    console.log("\n=================================================================");
+    console.log(" STARTING 13 LIVE POSTGRESQL ACCEPTANCE TESTS (SELF-REVERTING)  ");
+    console.log("=================================================================\n");
+
+    // Execute tests inside a single PostgreSQL interactive transaction
+    // All changes will be rolled back at the end to keep staging clean.
+    await prisma.$transaction(async (tx) => {
+      // Setup identifiable test records
+      const activeJti = `pp_stage_sec03_act_${Date.now()}`;
+      const expiredJti = `pp_stage_sec03_exp_${Date.now()}`;
+
+      await tx.$executeRawUnsafe(
+        `INSERT INTO public.revoked_tokens (jti, user_id, expires_at, reason) VALUES 
+         ($1, 'usr_sarah_stage', pg_catalog.now() + interval '2 hours', 'ACTIVE_TEST_TOKEN'),
+         ($2, 'usr_sarah_stage', pg_catalog.now() - interval '2 hours', 'EXPIRED_TEST_TOKEN')`,
+        activeJti,
+        expiredJti
+      );
+
+      // --- TEST 1: pulsepilot_app can SELECT ---
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE pulsepilot_app`);
+      const selectResult = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
+        `SELECT COUNT(*) AS count FROM public.revoked_tokens WHERE jti = $1`,
+        activeJti
+      );
+      if (!selectResult || Number(selectResult[0].count) < 1) {
+        throw new Error("TEST 1 FAILED: pulsepilot_app could not select active test record!");
       }
-    }
+      console.log("  ✅ LIVE TEST 1 PASSED: pulsepilot_app SELECT succeeded.");
 
-    await prisma.$disconnect();
+      // --- TEST 2: pulsepilot_app can INSERT ---
+      const appInsertJti = `pp_stage_sec03_app_ins_${Date.now()}`;
+      await tx.$executeRawUnsafe(
+        `INSERT INTO public.revoked_tokens (jti, user_id, expires_at, reason) VALUES ($1, 'usr_alex_stage', pg_catalog.now() + interval '30 minutes', 'APP_INSERT_TEST')`,
+        appInsertJti
+      );
+      console.log("  ✅ LIVE TEST 2 PASSED: pulsepilot_app INSERT succeeded.");
 
-    console.log("\n=====================================================================");
-    console.log("   ✅ STAGING ENDPOINT & ACTUAL IDENTITY FULLY VERIFIED              ");
-    console.log("=====================================================================\n");
-    console.log("Next Step: Execute the 5-stage DBA runbook via psql or Supabase SQL Editor:");
-    console.log(`  psql "${config.directEndpoint.sanitizedUrl}" -f scripts/staging-dba-execution.sql\n`);
+      // --- TEST 3: pulsepilot_app cannot UPDATE (Must fail with 42501) ---
+      let test3FailedAsExpected = false;
+      try {
+        await tx.$executeRawUnsafe(
+          `UPDATE public.revoked_tokens SET reason = 'TAMPERED' WHERE jti = $1`,
+          activeJti
+        );
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied")) {
+          test3FailedAsExpected = true;
+        } else {
+          throw new Error(`TEST 3 FAILED: Unexpected error: ${err.message}`);
+        }
+      }
+      if (!test3FailedAsExpected) throw new Error("TEST 3 FAILED: pulsepilot_app UPDATE unexpectedly succeeded!");
+      console.log("  ✅ LIVE TEST 3 PASSED: pulsepilot_app UPDATE rejected with SQLSTATE 42501.");
+
+      // --- TEST 4: pulsepilot_app cannot DELETE (Must fail with 42501) ---
+      let test4FailedAsExpected = false;
+      try {
+        await tx.$executeRawUnsafe(
+          `DELETE FROM public.revoked_tokens WHERE jti = $1`,
+          activeJti
+        );
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied")) {
+          test4FailedAsExpected = true;
+        } else {
+          throw new Error(`TEST 4 FAILED: Unexpected error: ${err.message}`);
+        }
+      }
+      if (!test4FailedAsExpected) throw new Error("TEST 4 FAILED: pulsepilot_app DELETE unexpectedly succeeded!");
+      console.log("  ✅ LIVE TEST 4 PASSED: pulsepilot_app DELETE rejected with SQLSTATE 42501.");
+
+      // --- TEST 5: pulsepilot_app cannot TRUNCATE (Must fail with 42501) ---
+      let test5FailedAsExpected = false;
+      try {
+        await tx.$executeRawUnsafe(`TRUNCATE TABLE public.revoked_tokens`);
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied")) {
+          test5FailedAsExpected = true;
+        } else {
+          throw new Error(`TEST 5 FAILED: Unexpected error: ${err.message}`);
+        }
+      }
+      if (!test5FailedAsExpected) throw new Error("TEST 5 FAILED: pulsepilot_app TRUNCATE unexpectedly succeeded!");
+      console.log("  ✅ LIVE TEST 5 PASSED: pulsepilot_app TRUNCATE rejected with SQLSTATE 42501.");
+
+      // --- TEST 6: anon role cannot access table (Must fail with 42501) ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE anon`);
+      let test6FailedAsExpected = false;
+      try {
+        await tx.$queryRawUnsafe(`SELECT * FROM public.revoked_tokens LIMIT 1`);
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied")) {
+          test6FailedAsExpected = true;
+        }
+      }
+      if (!test6FailedAsExpected) throw new Error("TEST 6 FAILED: anon SELECT unexpectedly succeeded!");
+      console.log("  ✅ LIVE TEST 6 PASSED: anon role denied access (SQLSTATE 42501).");
+
+      // --- TEST 7: authenticated role cannot access table (Must fail with 42501) ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE authenticated`);
+      let test7FailedAsExpected = false;
+      try {
+        await tx.$queryRawUnsafe(`SELECT * FROM public.revoked_tokens LIMIT 1`);
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied")) {
+          test7FailedAsExpected = true;
+        }
+      }
+      if (!test7FailedAsExpected) throw new Error("TEST 7 FAILED: authenticated SELECT unexpectedly succeeded!");
+      console.log("  ✅ LIVE TEST 7 PASSED: authenticated role denied access (SQLSTATE 42501).");
+
+      // --- TEST 8: pulsepilot_app cannot execute cleanup function ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE pulsepilot_app`);
+      let test8FailedAsExpected = false;
+      try {
+        await tx.$executeRawUnsafe(`SELECT public.cleanup_expired_revoked_tokens()`);
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied")) {
+          test8FailedAsExpected = true;
+        }
+      }
+      if (!test8FailedAsExpected) throw new Error("TEST 8 FAILED: pulsepilot_app executed cleanup function!");
+      console.log("  ✅ LIVE TEST 8 PASSED: pulsepilot_app denied EXECUTE on cleanup function (SQLSTATE 42501).");
+
+      // --- TEST 9: pulsepilot_revocation_maint under FORCE RLS ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE pulsepilot_revocation_maint`);
+      
+      // 9a: Attempt to delete ACTIVE row -> RLS must block (0 rows affected)
+      const delActiveCount = await tx.$executeRawUnsafe(
+        `DELETE FROM public.revoked_tokens WHERE jti = $1`,
+        activeJti
+      );
+      if (delActiveCount !== 0) {
+        throw new Error(`TEST 9a FAILED: Maintenance role deleted active row (${delActiveCount} rows affected)!`);
+      }
+      console.log("  ✅ LIVE TEST 9a PASSED: Maintenance role RLS strictly prevented active row deletion (0 rows deleted).");
+
+      // 9b: Attempt to delete EXPIRED row -> RLS permits (>=1 rows affected)
+      const delExpiredCount = await tx.$executeRawUnsafe(
+        `DELETE FROM public.revoked_tokens WHERE jti = $1`,
+        expiredJti
+      );
+      if (delExpiredCount < 1) {
+        throw new Error(`TEST 9b FAILED: Maintenance role failed to delete expired row (${delExpiredCount} rows affected)!`);
+      }
+      console.log("  ✅ LIVE TEST 9b PASSED: Maintenance role successfully deleted expired row under FORCE RLS.");
+
+      // --- TEST 10: service_role can execute cleanup function ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE service_role`);
+      const fnTestExpJti = `pp_stage_sec03_fnexp_${Date.now()}`;
+      await tx.$executeRawUnsafe(
+        `INSERT INTO public.revoked_tokens (jti, user_id, expires_at, reason) VALUES ($1, 'usr_sarah_stage', pg_catalog.now() - interval '2 hours', 'FN_TEST')`,
+        fnTestExpJti
+      );
+      const cleanedRows = await tx.$queryRawUnsafe<Array<{ cleanup_expired_revoked_tokens: number }>>(
+        `SELECT public.cleanup_expired_revoked_tokens() AS cleanup_expired_revoked_tokens`
+      );
+      if (!cleanedRows || Number(cleanedRows[0].cleanup_expired_revoked_tokens) < 1) {
+        throw new Error("TEST 10 FAILED: service_role cleanup function returned 0 rows deleted!");
+      }
+      console.log("  ✅ LIVE TEST 10 PASSED: service_role executed cleanup function successfully.");
+
+      // --- TEST 11: Real Schema-Shadowing Attack Test (Dual Proof) ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      const shadowActJti = `pp_stage_sec03_shad_act_${Date.now()}`;
+      const shadowExpJti = `pp_stage_sec03_shad_exp_${Date.now()}`;
+      await tx.$executeRawUnsafe(
+        `INSERT INTO public.revoked_tokens (jti, user_id, expires_at, reason) VALUES 
+         ($1, 'usr_sarah_stage', pg_catalog.now() + interval '5 hours', 'SHADOW_ACT'),
+         ($2, 'usr_sarah_stage', pg_catalog.now() - interval '3 hours', 'SHADOW_EXP')`,
+        shadowActJti,
+        shadowExpJti
+      );
+
+      // Inject hostile public.now() returning future date (year 2099)
+      await tx.$executeRawUnsafe(`
+        CREATE OR REPLACE FUNCTION public.now() RETURNS timestamptz AS $$
+        BEGIN RETURN '2099-01-01 00:00:00+00'::timestamptz; END;
+        $$ LANGUAGE plpgsql;
+      `);
+
+      // Run cleanup as service_role
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE service_role`);
+      await tx.$queryRawUnsafe(`SELECT public.cleanup_expired_revoked_tokens()`);
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+
+      // Verify active token survived (search_path=pg_catalog ignored hostile public.now)
+      const remainingAct = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
+        `SELECT COUNT(*) AS count FROM public.revoked_tokens WHERE jti = $1`,
+        shadowActJti
+      );
+      if (Number(remainingAct[0].count) !== 1) {
+        throw new Error("TEST 11 CRITICAL FAILURE: Hostile public.now() purged active token!");
+      }
+
+      // Verify expired token was deleted
+      const remainingExp = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
+        `SELECT COUNT(*) AS count FROM public.revoked_tokens WHERE jti = $1`,
+        shadowExpJti
+      );
+      if (Number(remainingExp[0].count) !== 0) {
+        throw new Error("TEST 11 CRITICAL FAILURE: Expired token was not deleted during shadow test!");
+      }
+
+      // Drop hostile shadow function
+      await tx.$executeRawUnsafe(`DROP FUNCTION public.now()`);
+      console.log("  ✅ LIVE TEST 11 PASSED (DUAL PROOF): search_path=pg_catalog defeated schema-shadowing attack.");
+
+      // --- TEST 12: service_role has NO DIRECT Table Privileges ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE service_role`);
+      let test12FailedAsExpected = false;
+      try {
+        await tx.$queryRawUnsafe(`SELECT * FROM public.revoked_tokens LIMIT 1`);
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied")) {
+          test12FailedAsExpected = true;
+        }
+      }
+      if (!test12FailedAsExpected) throw new Error("TEST 12 FAILED: service_role directly accessed table!");
+      console.log("  ✅ LIVE TEST 12 PASSED: service_role denied direct table access (SQLSTATE 42501; function execution only).");
+
+      // --- TEST 13: pulsepilot_app cannot ALTER Maintenance Function ---
+      await tx.$executeRawUnsafe(`RESET ROLE`);
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE pulsepilot_app`);
+      let test13FailedAsExpected = false;
+      try {
+        await tx.$executeRawUnsafe(`ALTER FUNCTION public.cleanup_expired_revoked_tokens() OWNER TO pulsepilot_app`);
+      } catch (err: any) {
+        if (err.message.includes("42501") || err.message.includes("permission denied") || err.message.includes("must be owner")) {
+          test13FailedAsExpected = true;
+        }
+      }
+      if (!test13FailedAsExpected) throw new Error("TEST 13 FAILED: pulsepilot_app altered function ownership!");
+      console.log("  ✅ LIVE TEST 13 PASSED: pulsepilot_app cannot ALTER or hijack maintenance function.");
+
+      // Intentional Rollback: Trigger error to roll back test transaction cleanly
+      throw new Error("__PULSEPILOT_INTENTIONAL_ROLLBACK__");
+    });
   } catch (err: any) {
-    await prisma.$disconnect().catch(() => {});
-    console.error(`\n❌ [STAGING CONNECTION FAILED]: ${err.message}\n`);
-    console.error("Verify staging credentials, database readiness, and network access.");
-    process.exit(1);
+    if (err.message === "__PULSEPILOT_INTENTIONAL_ROLLBACK__") {
+      console.log("\n=================================================================");
+      console.log("   🎉 ALL 13 LIVE POSTGRESQL ACCEPTANCE TESTS PASSED             ");
+      console.log("   (Test transaction rolled back: staging database remains clean)");
+      console.log("=================================================================\n");
+      await prisma.$disconnect();
+      process.exit(0);
+    } else {
+      await prisma.$disconnect().catch(() => {});
+      console.error(`\n❌ [ACCEPTANCE TEST FAILED]: ${err.message}\n`);
+      process.exit(1);
+    }
   }
 }
 
-runStagingSafetyGate().catch((err) => {
-  console.error("Unexpected error in safety gate:", err);
+executeAcceptanceSuite().catch((err) => {
+  console.error("Acceptance runner fatal error:", err);
   process.exit(1);
 });

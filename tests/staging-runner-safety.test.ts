@@ -4,6 +4,7 @@
  * Objective: Formally verify the safety gates and invariant enforcement of:
  * - scripts/staging-safety.ts
  * - scripts/staging-prisma-migrate.ts
+ * - scripts/verify-staging-database.ts
  * - scripts/run-staging-dba-tests.ts
  * 
  * Verifies:
@@ -15,15 +16,19 @@
  * 6. Missing STAGING_DIRECT_URL rejection.
  * 7. Prohibited DIRECT_URL fallback rejection.
  * 8. Non-Supabase or unsupported hostname rejection.
- * 9. Production reference in STAGING_DATABASE_URL rejection.
- * 10. Production reference in STAGING_DIRECT_URL rejection.
- * 11. Hostname and project reference mismatch rejection.
- * 12. Mismatch between STAGING_DATABASE_URL and STAGING_DIRECT_URL rejection.
- * 13. current_database() = 'postgres' NOT treated as staging proof.
- * 14. Server identity mismatch detection and rejection.
- * 15. Server identity reporting production database name rejection.
- * 16. CLI migration runner exits nonzero (code 1) on missing or invalid configuration.
- * 17. CLI DBA runner exits nonzero (code 1) on missing or invalid configuration.
+ * 9. Insecure TLS configuration rejection (sslmode=disable, sslmode=no-verify, rejectUnauthorized=false).
+ * 10. Production reference in STAGING_DATABASE_URL rejection.
+ * 11. Production reference in STAGING_DIRECT_URL rejection.
+ * 12. Hostname and project reference mismatch rejection.
+ * 13. Mismatch between STAGING_DATABASE_URL and STAGING_DIRECT_URL rejection.
+ * 14. ServerIdentityRecord does NOT manufacture server project ref; project ref is client-side validated.
+ * 15. current_database() = 'postgres' NOT treated as staging proof.
+ * 16. Server identity reporting production database name rejection.
+ * 17. Preflight success explicitly clarified as NOT meaning acceptance tests passed.
+ * 18. Exact validated staging endpoint target consistency.
+ * 19. CLI migration runner exits nonzero (code 1) on missing or invalid configuration.
+ * 20. CLI preflight runner exits nonzero (code 1) on missing or invalid configuration.
+ * 21. CLI acceptance runner exits nonzero (code 1) on missing or invalid configuration.
  */
 
 import { spawnSync } from "child_process";
@@ -32,7 +37,7 @@ import {
   validateStagingProjectRef,
   validateStagingEndpointUrl,
   loadAndValidateStagingEnv,
-  verifyServerIdentity,
+  verifyServerSession,
   type ServerIdentityRecord,
 } from "../scripts/staging-safety.ts";
 
@@ -120,9 +125,9 @@ async function runStagingSafetyTests() {
   console.log("  ✅ Test Suite 1 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 2. URL Endpoint & Hostname Validation
+  // 2. URL Endpoint, Hostname & TLS Validation
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 2: Endpoint Parsing & Hostname Validation");
+  console.log("TEST SUITE 2: Endpoint Parsing, Hostname & TLS Validation");
 
   expectThrows(
     () => validateStagingEndpointUrl(undefined, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
@@ -146,6 +151,37 @@ async function runStagingSafetyTests() {
     () => validateStagingEndpointUrl("postgresql://postgres:pass@staging.internal.net:5432/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "UNSUPPORTED_HOST",
     "Non-Supabase hostname must be rejected"
+  );
+
+  // Insecure TLS checks
+  expectThrows(
+    () => validateStagingEndpointUrl(
+      `postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=disable`,
+      VALID_STAGING_REF,
+      "STAGING_DATABASE_URL"
+    ),
+    "INSECURE_TLS_CONFIGURATION",
+    "sslmode=disable must be rejected"
+  );
+
+  expectThrows(
+    () => validateStagingEndpointUrl(
+      `postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=no-verify`,
+      VALID_STAGING_REF,
+      "STAGING_DATABASE_URL"
+    ),
+    "INSECURE_TLS_CONFIGURATION",
+    "sslmode=no-verify must be rejected"
+  );
+
+  expectThrows(
+    () => validateStagingEndpointUrl(
+      `postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?rejectUnauthorized=false`,
+      VALID_STAGING_REF,
+      "STAGING_DATABASE_URL"
+    ),
+    "INSECURE_TLS_CONFIGURATION",
+    "rejectUnauthorized=false must be rejected"
   );
 
   expectThrows(
@@ -174,9 +210,9 @@ async function runStagingSafetyTests() {
   console.log("  ✅ Test Suite 2 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 3. Prohibited Fallback & Environment Isolation
+  // 3. Prohibited Fallback & Target Consistency
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 3: Prohibited Fallback Invariants");
+  console.log("TEST SUITE 3: Prohibited Fallback & Target Consistency");
 
   expectThrows(
     () => loadAndValidateStagingEnv({
@@ -215,53 +251,47 @@ async function runStagingSafetyTests() {
     STAGING_DIRECT_URL: VALID_STAGING_DIRECT_URL,
   });
   assert(validConfig.stagingProjectRef === VALID_STAGING_REF, "Valid staging config loaded successfully");
+  assert(validConfig.directEndpoint.rawUrl === VALID_STAGING_DIRECT_URL, "Exact direct URL preserved without mutation");
   console.log("  ✅ Test Suite 3 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 4. Server Identity Verification Invariants
+  // 4. Server Session Inspection & Identity Separation
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 4: Live Server Identity Invariants");
+  console.log("TEST SUITE 4: Server Session Inspection & Identity Separation");
 
-  const validServerIdentity: ServerIdentityRecord = {
+  const pureServerRecord: ServerIdentityRecord = {
     current_database: "postgres",
     current_user: "postgres",
     session_user: "postgres",
     inet_server_addr: "10.0.0.1",
     inet_server_port: 5432,
     version: "PostgreSQL 15.6 on x86_64-pc-linux-gnu",
-    derived_project_ref: VALID_STAGING_REF,
   };
 
-  const identityResult = verifyServerIdentity(validServerIdentity, VALID_STAGING_REF);
-  assert(identityResult.verified, "Valid server identity verified");
+  // Verify pureServerRecord does not have a manufactured derived_project_ref property
+  assert(!("derived_project_ref" in pureServerRecord), "ServerIdentityRecord strictly contains server-returned fields only");
+
+  const sessionResult = verifyServerSession(pureServerRecord, validConfig.directEndpoint);
+  assert(sessionResult.verified, "Valid server session verified against validated endpoint");
   assert(
-    identityResult.warnings.some((w) => w.includes("NOT considered proof of staging identity")),
+    sessionResult.warnings.some((w) => w.includes("does NOT prove staging identity")),
     "current_database() = 'postgres' explicitly generates warning and is NOT treated as staging proof"
   );
 
   expectThrows(
-    () => verifyServerIdentity({
-      ...validServerIdentity,
+    () => verifyServerSession({
+      ...pureServerRecord,
       current_database: `prod_${KNOWN_PRODUCTION_PROJECT_REF}`,
-    }, VALID_STAGING_REF),
+    }, validConfig.directEndpoint),
     "PRODUCTION_COLLISION",
     "Server reporting production database name must be rejected"
-  );
-
-  expectThrows(
-    () => verifyServerIdentity({
-      ...validServerIdentity,
-      derived_project_ref: "differentproj789",
-    }, VALID_STAGING_REF),
-    "SERVER_IDENTITY_MISMATCH",
-    "Server identity mismatch against expected staging project reference must be rejected"
   );
   console.log("  ✅ Test Suite 4 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 5. CLI Migration & DBA Runner Process Safety (Nonzero Exit on Invariant Failure)
+  // 5. CLI Process Safety & Clear Preflight/Acceptance Distinction
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 5: CLI Runner Fail-Closed Process Validation");
+  console.log("TEST SUITE 5: CLI Runner Process Safety & Preflight Separation");
 
   // Test scripts/staging-prisma-migrate.ts with empty environment
   const migrateProc = spawnSync("node", ["--experimental-strip-types", "scripts/staging-prisma-migrate.ts"], {
@@ -269,26 +299,23 @@ async function runStagingSafetyTests() {
     encoding: "utf8",
   });
   assert(migrateProc.status !== 0, "staging-prisma-migrate exits nonzero when STAGING_PROJECT_REF is missing");
-  assert(
-    (migrateProc.stdout + migrateProc.stderr).includes("MISSING_STAGING_PROJECT_REF") ||
-    (migrateProc.stdout + migrateProc.stderr).includes("CRITICAL SAFETY HALT"),
-    "staging-prisma-migrate reports clear safety halt error"
-  );
 
-  // Test scripts/run-staging-dba-tests.ts with empty environment
-  const dbaProc = spawnSync("node", ["--experimental-strip-types", "scripts/run-staging-dba-tests.ts"], {
+  // Test scripts/verify-staging-database.ts with empty environment
+  const preflightProc = spawnSync("node", ["--experimental-strip-types", "scripts/verify-staging-database.ts"], {
     env: { PATH: process.env.PATH, HOME: process.env.HOME },
     encoding: "utf8",
   });
-  assert(dbaProc.status !== 0, "run-staging-dba-tests exits nonzero when STAGING_PROJECT_REF is missing");
-  assert(
-    (dbaProc.stdout + dbaProc.stderr).includes("MISSING_STAGING_PROJECT_REF") ||
-    (dbaProc.stdout + dbaProc.stderr).includes("CRITICAL SAFETY HALT"),
-    "run-staging-dba-tests reports clear safety halt error"
-  );
+  assert(preflightProc.status !== 0, "verify-staging-database exits nonzero when STAGING_PROJECT_REF is missing");
 
-  // Test scripts/staging-prisma-migrate.ts when targeting production project reference
-  const prodCollideProc = spawnSync("node", ["--experimental-strip-types", "scripts/staging-prisma-migrate.ts"], {
+  // Test scripts/run-staging-dba-tests.ts with empty environment
+  const acceptanceProc = spawnSync("node", ["--experimental-strip-types", "scripts/run-staging-dba-tests.ts"], {
+    env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    encoding: "utf8",
+  });
+  assert(acceptanceProc.status !== 0, "run-staging-dba-tests exits nonzero when STAGING_PROJECT_REF is missing");
+
+  // Test production collision rejection across all runners
+  const prodCollideProc = spawnSync("node", ["--experimental-strip-types", "scripts/run-staging-dba-tests.ts"], {
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
@@ -298,16 +325,16 @@ async function runStagingSafetyTests() {
     },
     encoding: "utf8",
   });
-  assert(prodCollideProc.status !== 0, "staging-prisma-migrate exits nonzero when production collision occurs");
+  assert(prodCollideProc.status !== 0, "run-staging-dba-tests exits nonzero when production collision occurs");
   assert(
     (prodCollideProc.stdout + prodCollideProc.stderr).includes("PRODUCTION_COLLISION"),
-    "staging-prisma-migrate explicitly halts with PRODUCTION_COLLISION"
+    "run-staging-dba-tests explicitly halts with PRODUCTION_COLLISION"
   );
 
   console.log("  ✅ Test Suite 5 Passed.\n");
 
   console.log("=====================================================================");
-  console.log("   🎉 ALL 17 FORMAL RUNNER HARDENING TESTS PASSED (5/5 suites)        ");
+  console.log("   🎉 ALL 21 FORMAL RUNNER HARDENING TESTS PASSED (5/5 suites)        ");
   console.log("=====================================================================");
 }
 

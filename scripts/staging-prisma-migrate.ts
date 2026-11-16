@@ -9,16 +9,17 @@
  * 3. Strictly prohibits silent fallback to DATABASE_URL or DIRECT_URL.
  * 4. Parses and validates both URLs independently; requires both to target the same staging project.
  * 5. Rejects non-Supabase endpoints and rejects production references (czqhiuidekvozuoqdmyd).
- * 6. Redacts all passwords and credentials in logs (zero secret leakage).
- * 7. Performs read-only server identity and prerequisite role check before migration.
- * 8. Uses child-process-only overrides for Prisma to ensure strict target binding.
+ * 6. Enforces TLS certificate verification (sslmode != disable).
+ * 7. Redacts all passwords and credentials in logs (zero secret leakage).
+ * 8. Performs read-only server identity and prerequisite role check before migration.
+ * 9. Uses child-process-only overrides for Prisma to ensure strict target binding.
  */
 
 import { spawnSync } from "child_process";
 import { PrismaClient } from "@prisma/client";
 import {
   loadAndValidateStagingEnv,
-  verifyServerIdentity,
+  verifyServerSession,
   type ServerIdentityRecord,
 } from "./staging-safety.ts";
 
@@ -49,9 +50,10 @@ async function main() {
   console.log(`  • Database User:       ${config.directEndpoint.username}`);
   console.log(`  • Direct Target URL:   ${config.directEndpoint.sanitizedUrl}\n`);
 
-  // 2. Pre-Migration Live Server Identity & Prerequisite Role Verification
-  console.log("🔍 Connecting to staging database to verify actual server identity and prerequisites...");
+  // 2. Pre-Migration Live Server Session & Prerequisite Role Verification
+  console.log("🔍 Connecting to staging direct endpoint to verify server session and prerequisites...");
 
+  // Use the exact validated direct URL for preflight
   const preflightPrisma = new PrismaClient({
     datasources: {
       db: { url: config.stagingDirectUrl },
@@ -80,19 +82,18 @@ async function main() {
     }
 
     const serverRow = rows[0];
-    const identityRecord: ServerIdentityRecord = {
+    const serverRecord: ServerIdentityRecord = {
       current_database: serverRow.current_database,
       current_user: serverRow.current_user,
       session_user: serverRow.session_user,
       inet_server_addr: serverRow.inet_server_addr,
       inet_server_port: serverRow.inet_server_port,
       version: serverRow.version,
-      derived_project_ref: config.directEndpoint.projectRef,
     };
 
-    const verification = verifyServerIdentity(identityRecord, config.stagingProjectRef);
+    const sessionVerification = verifyServerSession(serverRecord, config.directEndpoint);
 
-    console.log("✅ Actual Connected Server Identity Verified:");
+    console.log("✅ Actual Connected Server Session Verified:");
     console.log(`  • current_database(): ${serverRow.current_database}`);
     console.log(`  • current_user:       ${serverRow.current_user}`);
     console.log(`  • session_user:       ${serverRow.session_user}`);
@@ -100,8 +101,8 @@ async function main() {
     console.log(`  • inet_server_port(): ${serverRow.inet_server_port || "5432"}`);
     console.log(`  • pg_version:         ${serverRow.version.split(" on ")[0]}`);
 
-    for (const warning of verification.warnings) {
-      console.log(`  ⚠️  [NOTICE] ${warning}`);
+    for (const warning of sessionVerification.warnings) {
+      console.log(`  ℹ️  [NOTICE] ${warning}`);
     }
 
     // Check prerequisite role: pulsepilot_app must exist before migration
@@ -112,7 +113,7 @@ async function main() {
     if (!roleCheck || !roleCheck[0]?.exists) {
       console.error("\n❌ [PREREQUISITE CHECK FAILED: MISSING pulsepilot_app ROLE]");
       console.error("The application runtime role 'pulsepilot_app' does not exist in staging.");
-      console.error("Action Required: Execute Step 1 of scripts/staging-dba-execution.sql before deploying migrations.\n");
+      console.error("Action Required: Execute Step 2 of scripts/staging-dba-execution.sql before deploying migrations.\n");
       await preflightPrisma.$disconnect();
       process.exit(1);
     }
@@ -131,7 +132,7 @@ async function main() {
   console.log("🚀 Executing 'prisma migrate deploy' with scoped staging datasource overrides...\n");
 
   // Construct isolated environment dictionary for the child process.
-  // Overrides DATABASE_URL and DIRECT_URL strictly to the validated staging endpoints.
+  // Overrides DATABASE_URL and DIRECT_URL strictly to the exact validated staging endpoints.
   const childEnv = {
     ...process.env,
     DATABASE_URL: config.stagingDatabaseUrl,

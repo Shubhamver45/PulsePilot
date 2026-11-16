@@ -1,6 +1,6 @@
 # PULSEPILOT AI — STAGING DEPLOYMENT ISOLATION CHECKLIST
 
-**Document Reference:** `STAGING-DEPLOY-CHECKLIST-V1`  
+**Document Reference:** `STAGING-DEPLOY-CHECKLIST-V2`  
 **Security Architect:** Principal Application Security Architect & DevOps Engineer  
 **Classification:** Staging Deployment Verification & Production Protection  
 **Status:** **ACTIVE CHECKLIST**  
@@ -32,6 +32,7 @@ In the [Vercel Dashboard](https://vercel.com/) $\to$ **Project Settings** $\to$ 
 
 | Variable Name | Production Scope Value | Preview / Staging Scope Value | Security Verification |
 | :--- | :--- | :--- | :--- |
+| **`STAGING_PROJECT_REF`** | *(Not defined in prod)* | `<STAGING_PROJECT_REF>` | Identifies isolated staging project. |
 | **`DATABASE_URL`** | `...db.czqhiuidekvozuoqdmyd...` | `...db.<STAGING_PROJECT_REF>...` | Staging runtime connects to staging DB only. |
 | **`DIRECT_URL`** | `...db.czqhiuidekvozuoqdmyd...` | `...db.<STAGING_PROJECT_REF>...` | Staging migrations connect to staging DB only. |
 | **`NEXT_PUBLIC_SUPABASE_URL`** | `https://czqhiuidekvozuoqdmyd.supabase.co` | `https://<STAGING_PROJECT_REF>.supabase.co` | Client calls isolated Supabase project. |
@@ -43,46 +44,37 @@ In the [Vercel Dashboard](https://vercel.com/) $\to$ **Project Settings** $\to$ 
 
 ---
 
-## 3. Pre-Promotion Verification Probes
+## 3. Verification Phases (Clearly Delineated)
 
-Execute these probes against the deployed staging environment:
+### Phase 1: Static Code Review & SQL Invariants
+- `npm run test:sql-hardening`
+- Status: **PASS (10/10 Invariants Verified)**
 
-### Probe 1: PostgREST Public API Exposure Check
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" \
-  "https://<STAGING_PROJECT_REF>.supabase.co/rest/v1/organizations" \
-  -H "apikey: $STAGING_ANON_KEY"
-# Expected Result: 403 Forbidden or 401 Unauthorized
-```
+### Phase 2: Automated Unit & Process Safety Tests
+- `npm run test:staging-safety`
+- Status: **PASS (21/21 Unit Tests Verified)**
 
-### Probe 2: Unauthenticated Rollout Mutation Rejection
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" -X POST \
-  "https://pulse-pilot-two-git-staging-shubhamver45s-projects.vercel.app/api/flagsmith/rollout" \
-  -H "Content-Type: application/json" \
-  -d '{"flagsmithFeatureName": "exp_checkout_social_proof", "action": "EMERGENCY_KILL_SWITCH", "rationale": "unauthenticated probe"}'
-# Expected Result: 401 Unauthorized
-```
+### Phase 3: Read-Only Staging Preflight Inspection
+- `npm run staging:preflight`
+- Status: **GATED (Pending operator provisioning of dedicated staging database)**
+- Preflight success verifies connection and session state only; does NOT indicate acceptance tests have passed.
 
-### Probe 3: Non-Admin Rollout Rejection
-```bash
-# Log in as non-admin user on staging, attempt rollout:
-# Expected Result: 403 Forbidden (FORBIDDEN)
-```
+### Phase 4: Authoritative Schema Migration
+- `npm run prisma:migrate:staging`
+- Status: **GATED (Pending operator provisioning)**
 
-### Probe 4: Session Revocation Cross-Container Invalidation
-```bash
-# 1. Log in on staging to obtain valid session token.
-# 2. Call /api/auth/logout.
-# 3. Present the logged-out token to /api/flagsmith/rollout.
-# Expected Result: 401 Unauthorized (INVALID_SESSION).
-```
+### Phase 5: Live PostgreSQL Acceptance Tests
+- `npm run staging:acceptance`
+- Status: **GATED (Pending operator provisioning)**
+- Executes all 13 live behavioral tests over the exact validated connection in a self-reverting transaction.
 
-### Probe 5: Production State Immutability Assurance
-```bash
-# Query production database / health endpoint:
-# Verify that experiment count, audit log count, and feature flag values in production have not changed!
-```
+### Phase 6: Remote Staging End-to-End Probes
+Execute against deployed Vercel preview URL once provisioned:
+- Probe 1: PostgREST Public API exposure blocked (`401`/`403`).
+- Probe 2: Unauthenticated rollout rejected (`401`).
+- Probe 3: Non-admin rollout rejected (`403`).
+- Probe 4: Session revocation cross-instance rejection (`401`).
+- Probe 5: Production state immutability confirmed.
 
 ---
 
@@ -90,9 +82,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
 
 | Gate ID | Condition | Status | Action Required |
 | :--- | :--- | :---: | :--- |
-| **GATE-01** | Dedicated Supabase staging project created | ⏳ PENDING | Operator must create project in Supabase dashboard. |
-| **GATE-02** | Staging database initialized via code migrations | ⏳ PENDING | Run `npm run prisma:migrate:staging`. |
-| **GATE-03** | Live SEC-03.1 acceptance tests pass (13/13) | ⏳ PENDING | Run `psql "$STAGING_DATABASE_URL" -f scripts/staging-dba-execution.sql`. |
-| **GATE-04** | Vercel preview deployment scoped to staging env | ⏳ PENDING | Configure Vercel preview environment variables. |
-| **GATE-05** | Production database and flags verified untouched | ✅ PASS | Continuous verification: zero production mutations. |
-
+| **GATE-01** | Dedicated Supabase staging project created | ⏳ PENDING | Operator creates project in Supabase dashboard. |
+| **GATE-02** | Staging preflight read-only inspection succeeds | ⏳ PENDING | Run `npm run staging:preflight`. |
+| **GATE-03** | Staging database initialized via Prisma migrations | ⏳ PENDING | Run `npm run prisma:migrate:staging`. |
+| **GATE-04** | Live SEC-03.1 acceptance tests pass (13/13) | ⏳ PENDING | Run `npm run staging:acceptance`. |
+| **GATE-05** | Vercel preview deployment scoped to staging env | ⏳ PENDING | Configure Vercel preview environment variables. |
+| **GATE-06** | Production database and flags verified untouched | ✅ PASS | Continuous verification: zero production mutations. |
