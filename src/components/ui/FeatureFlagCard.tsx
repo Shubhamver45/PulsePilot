@@ -33,47 +33,55 @@ export function FeatureFlagCard({
   return (
     <div
       className={cn(
-        "p-5 rounded-lg bg-surface border border-border shadow-xs hover:border-primary/40 transition-all",
+        "p-5 rounded-lg bg-surface border border-border shadow-xs hover:border-primary/40 transition-all overflow-hidden",
         !enabled && "opacity-80 bg-surface-subtle",
         className
       )}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex items-start gap-3 min-w-0 flex-1">
           <div
             className={cn(
-              "w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0",
+              "w-9 h-9 rounded-md flex items-center justify-center shrink-0 mt-0.5",
               enabled ? "bg-primary-light text-primary" : "bg-surface-muted text-text-secondary"
             )}
           >
-            <Flag className="w-5 h-5" />
+            <Flag className="w-4 h-4" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-sm font-semibold text-text">{name}</span>
-              <span className="text-xs px-2 py-0.5 rounded bg-surface-muted font-mono text-text-secondary border border-border">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-sm font-semibold text-text truncate max-w-full" title={name}>
+                {name}
+              </span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-muted font-mono text-text-secondary border border-border shrink-0">
                 {type}
               </span>
             </div>
-            {description && <p className="text-xs text-text-secondary mt-1">{description}</p>}
+            {description && (
+              <p className="text-xs text-text-secondary mt-1 line-clamp-2" title={description}>
+                {description}
+              </p>
+            )}
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 shrink-0 self-start">
           <StatusBadge
             status={enabled ? "active" : "draft"}
             label={enabled ? "ACTIVE (FLAGSMITH)" : "DISABLED"}
+            className="text-[10px] px-2 py-0.5 shrink-0"
           />
           {onToggleState && (
             <button
+              type="button"
               onClick={onToggleState}
-              className="text-text-secondary hover:text-primary transition-colors"
+              className="text-text-secondary hover:text-primary transition-colors shrink-0 p-0.5 rounded focus:outline-hidden"
               title={enabled ? "Disable Flag" : "Enable Flag"}
             >
               {enabled ? (
-                <ToggleRight className="w-7 h-7 text-primary" />
+                <ToggleRight className="w-6 h-6 text-primary" />
               ) : (
-                <ToggleLeft className="w-7 h-7 text-text-muted" />
+                <ToggleLeft className="w-6 h-6 text-text-muted" />
               )}
             </button>
           )}
