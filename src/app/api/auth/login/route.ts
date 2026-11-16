@@ -18,12 +18,12 @@ export async function POST(request: Request) {
       message: `Welcome back, ${result.user?.fullName}!`,
     });
 
-    // Set secure HTTP-only session cookie
+    // Set secure HTTP-only session cookie (24-hour least privilege staging duration)
     response.cookies.set("pulsepilot_session", result.token || "", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
+      maxAge: 60 * 60 * 24, // 24 hours
       path: "/",
     });
 

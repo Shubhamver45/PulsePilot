@@ -8,7 +8,11 @@
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "tsc --noEmit",
-    "test": "node --experimental-strip-types tests/stats.test.ts && node --experimental-strip-types tests/analytics-agent.test.ts && node --experimental-strip-types tests/telemetry-persistence.test.ts && node --experimental-strip-types tests/audit-persistence.test.ts",
+    "test": "node --experimental-strip-types tests/stats.test.ts && node --experimental-strip-types tests/analytics-agent.test.ts && node --experimental-strip-types tests/telemetry-persistence.test.ts && node --experimental-strip-types tests/audit-persistence.test.ts && node --loader ./tests/next-server-loader.mjs --experimental-strip-types tests/auth-rollout-sec03.test.ts",
+    "test:auth": "node --loader ./tests/next-server-loader.mjs --experimental-strip-types tests/auth-rollout-sec03.test.ts",
+    "test:staging-revocation": "node --loader ./tests/next-server-loader.mjs --experimental-strip-types scripts/staging-revocation-acceptance.ts",
+    "test:sql-hardening": "node --loader ./tests/next-server-loader.mjs --experimental-strip-types tests/revocation-sql-hardening.test.ts",
+    "test:audit-truncate": "node --experimental-strip-types tests/audit-truncate-protection.test.ts",
     "test:analytics": "node --experimental-strip-types tests/analytics-agent.test.ts",
     "test:telemetry": "node --experimental-strip-types tests/telemetry-persistence.test.ts",
     "test:audit-persistence": "node --experimental-strip-types tests/audit-persistence.test.ts",
@@ -18,7 +22,8 @@
     "test:audit": "node --experimental-strip-types tests/audit.test.ts",
     "audit": "node --experimental-strip-types scripts/test-full-audit.ts",
     "prisma:generate": "prisma generate",
-    "prisma:push": "prisma db push"
+    "prisma:push": "prisma db push",
+    "prisma:migrate:staging": "node --experimental-strip-types scripts/staging-prisma-migrate.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

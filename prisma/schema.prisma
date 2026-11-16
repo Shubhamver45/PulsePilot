@@ -242,3 +242,15 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+model RevokedToken {
+  jti       String   @id @db.VarChar(64)
+  userId    String   @map("user_id") @db.VarChar(64)
+  revokedAt DateTime @default(now()) @map("revoked_at") @db.Timestamptz
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  reason    String?  @default("USER_LOGOUT") @db.VarChar(255)
+
+  @@index([expiresAt])
+  @@index([userId])
+  @@map("revoked_tokens")
+}
+
