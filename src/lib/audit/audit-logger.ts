@@ -11,6 +11,7 @@ export interface AuditRecord {
   timestamp: string;
   signature?: string;
   previousSignature?: string;
+  sequenceNumber?: number;
   action:
     | "EXPERIMENT_CREATED"
     | "EXPERIMENT_APPROVED"
@@ -19,14 +20,17 @@ export interface AuditRecord {
     | "GRADUAL_STAGE_UPDATED"
     | "GRADUAL_STAGE_FAILED"
     | "ROLLOUT_RECOMMENDED"
+    | "ROLLOUT_APPROVED"
     | "ROLLOUT_APPROVED_EXECUTED"
     | "ROLLOUT_FAILED"
+    | "ROLLBACK_PERFORMED"
     | "ROLLBACK_EXECUTED"
     | "ROLLBACK_FAILED"
     | "KILL_SWITCH_TRIGGERED"
     | "KILL_SWITCH_FAILED"
     | "OPERATION_FAILED"
     | "CONVERSION_RECORDED"
+    | "EXPERIMENT_COMPLETED"
     | "ANALYSIS_GENERATED"
     | "IDENTITY_TRAITS_UPDATED"
     | "SEGMENT_CREATED"
@@ -82,7 +86,7 @@ const globalAuditStore = globalThis as unknown as {
 
 if (!globalAuditStore.auditLogsStore) {
   // Initialize with genesis seeds, chained in chronological order
-  const rawSeedLogs: Array<Omit<AuditRecord, "signature" | "previousSignature">> = [
+  const rawSeedLogs: Array<Omit<AuditRecord, "signature" | "previousSignature" | "sequenceNumber">> = [
     {
       id: "audit-3",
       timestamp: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
@@ -116,6 +120,7 @@ if (!globalAuditStore.auditLogsStore) {
   ];
 
   let prev = GENESIS_SIGNATURE;
+  let seq = 1;
   const chainedSeeds: AuditRecord[] = [];
   for (const raw of rawSeedLogs) {
     const sig = computeRecordSignature(prev, raw);
@@ -123,6 +128,7 @@ if (!globalAuditStore.auditLogsStore) {
       ...raw,
       previousSignature: prev,
       signature: sig,
+      sequenceNumber: seq++,
     });
     prev = sig;
   }
@@ -133,40 +139,151 @@ if (!globalAuditStore.auditLogsStore) {
 
 const auditLogsStore = globalAuditStore.auditLogsStore;
 
+// Concurrency mutex queue to ensure atomic sequential appends
+let appendQueue: Promise<any> = Promise.resolve();
+
 export async function recordAuditLog(
-  record: Omit<AuditRecord, "id" | "timestamp" | "signature" | "previousSignature">
+  record: Omit<AuditRecord, "id" | "timestamp" | "signature" | "previousSignature" | "sequenceNumber">
 ): Promise<AuditRecord> {
-  const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const timestamp = new Date().toISOString();
+  return new Promise((resolve, reject) => {
+    appendQueue = appendQueue.then(async () => {
+      try {
+        const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const timestamp = new Date().toISOString();
 
-  // Previous signature is the signature of the currently newest record, or GENESIS if empty
-  const previousSignature = auditLogsStore.length > 0 && auditLogsStore[0].signature
-    ? auditLogsStore[0].signature
-    : GENESIS_SIGNATURE;
+        let previousSignature = GENESIS_SIGNATURE;
+        let sequenceNumber = 1;
 
-  const baseRecord = {
-    ...record,
-    id,
-    timestamp,
-  };
+        const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
 
-  const signature = computeRecordSignature(previousSignature, baseRecord);
+        if (isDbConfigured) {
+          try {
+            const { prisma } = await import("@/lib/db/prisma");
+            const lastDbLog = await prisma.auditLog.findFirst({
+              orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
+            });
+            if (lastDbLog?.signature) {
+              previousSignature = lastDbLog.signature;
+              sequenceNumber = (lastDbLog.sequenceNumber || 0) + 1;
+            } else if (auditLogsStore.length > 0 && auditLogsStore[0].signature) {
+              previousSignature = auditLogsStore[0].signature;
+              sequenceNumber = (auditLogsStore[0].sequenceNumber || auditLogsStore.length) + 1;
+            }
+          } catch {
+            if (auditLogsStore.length > 0 && auditLogsStore[0].signature) {
+              previousSignature = auditLogsStore[0].signature;
+              sequenceNumber = (auditLogsStore[0].sequenceNumber || auditLogsStore.length) + 1;
+            }
+          }
+        } else if (auditLogsStore.length > 0 && auditLogsStore[0].signature) {
+          previousSignature = auditLogsStore[0].signature;
+          sequenceNumber = (auditLogsStore[0].sequenceNumber || auditLogsStore.length) + 1;
+        }
 
-  const newRecord: AuditRecord = {
-    ...baseRecord,
-    previousSignature,
-    signature,
-  };
+        const baseRecord = {
+          ...record,
+          id,
+          timestamp,
+        };
 
-  auditLogsStore.unshift(newRecord);
-  if (auditLogsStore.length > 500) {
-    auditLogsStore.pop();
-  }
+        const signature = computeRecordSignature(previousSignature, baseRecord);
 
-  return newRecord;
+        const newRecord: AuditRecord = {
+          ...baseRecord,
+          previousSignature,
+          signature,
+          sequenceNumber,
+        };
+
+        auditLogsStore.unshift(newRecord);
+        if (auditLogsStore.length > 500) {
+          auditLogsStore.pop();
+        }
+
+        // Persist to PostgreSQL Prisma store if configured (server-side persistence)
+        if (isDbConfigured) {
+          try {
+            const { prisma } = await import("@/lib/db/prisma");
+            const org = await prisma.organization.findFirst();
+            if (org) {
+              await prisma.auditLog.create({
+                data: {
+                  id: newRecord.id,
+                  organizationId: org.id,
+                  action: newRecord.action as any,
+                  entityType: newRecord.entityType,
+                  entityId: newRecord.entityId,
+                  actorName: newRecord.actor.name,
+                  actorType: newRecord.actor.type,
+                  details: newRecord.details,
+                  signature: newRecord.signature,
+                  previousSignature: newRecord.previousSignature,
+                  sequenceNumber: newRecord.sequenceNumber,
+                  previousState: newRecord.previousState || undefined,
+                  newState: newRecord.newState || undefined,
+                  metadata: newRecord.metadata || undefined,
+                  createdAt: new Date(newRecord.timestamp),
+                },
+              });
+            }
+          } catch (dbErr: any) {
+            console.warn("[AuditLog DB Persistence Warning]:", dbErr.message);
+          }
+        }
+
+        resolve(newRecord);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
 }
 
+/**
+ * Returns latest audit logs synchronously from memory.
+ */
 export function getAuditLogs(): AuditRecord[] {
+  return [...auditLogsStore];
+}
+
+/**
+ * Returns latest audit logs from PostgreSQL if configured, falling back to memory.
+ */
+export async function getPersistedAuditLogs(): Promise<AuditRecord[]> {
+  const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+
+  if (isDbConfigured) {
+    try {
+      const { prisma } = await import("@/lib/db/prisma");
+      const dbLogs = await prisma.auditLog.findMany({
+        orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
+      });
+
+      if (dbLogs && dbLogs.length > 0) {
+        return dbLogs.map((log) => ({
+          id: log.id,
+          timestamp: log.createdAt.toISOString(),
+          action: log.action as any,
+          actor: {
+            name: log.actorName || "system",
+            type: (log.actorType as any) || "system",
+          },
+          entityType: log.entityType as any,
+          entityId: log.entityId,
+          details: log.details || "",
+          signature: log.signature || undefined,
+          previousSignature: log.previousSignature || undefined,
+          sequenceNumber: log.sequenceNumber || undefined,
+          previousState: log.previousState,
+          newState: log.newState,
+          metadata: log.metadata as Record<string, any> | undefined,
+        }));
+      }
+    } catch {
+      // Fall through to memory
+    }
+  }
+
   return [...auditLogsStore];
 }
 
@@ -229,8 +346,10 @@ export function verifyAuditLogIntegrity(records?: AuditRecord[]): AuditIntegrity
         };
       }
     } else {
-      // The oldest record must link back to GENESIS_SIGNATURE
-      if (record.previousSignature !== GENESIS_SIGNATURE) {
+      // The oldest record: if it's the genesis block, it must link to GENESIS_SIGNATURE
+      if (record.previousSignature && record.previousSignature !== GENESIS_SIGNATURE && logs.length === 1) {
+        // Single isolated non-genesis record check
+      } else if (record.previousSignature !== GENESIS_SIGNATURE && (record.sequenceNumber === 1 || !record.sequenceNumber)) {
         return {
           valid: false,
           verifiedCount: i,
@@ -249,4 +368,12 @@ export function verifyAuditLogIntegrity(records?: AuditRecord[]): AuditIntegrity
     genesisSignature: GENESIS_SIGNATURE,
     headSignature: logs[0].signature || null,
   };
+}
+
+/**
+ * Validates the cryptographic integrity of records stored in PostgreSQL.
+ */
+export async function verifyPersistedAuditLogIntegrity(): Promise<AuditIntegrityReport> {
+  const persistedLogs = await getPersistedAuditLogs();
+  return verifyAuditLogIntegrity(persistedLogs);
 }

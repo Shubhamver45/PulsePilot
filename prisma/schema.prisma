@@ -49,11 +49,25 @@ enum AuditAction {
   EXPERIMENT_CREATED
   EXPERIMENT_APPROVED
   FLAG_ACTIVATED
+  TRAFFIC_SPLIT_UPDATED
+  GRADUAL_STAGE_UPDATED
+  GRADUAL_STAGE_FAILED
+  ROLLOUT_RECOMMENDED
+  ROLLOUT_APPROVED
+  ROLLOUT_APPROVED_EXECUTED
+  ROLLOUT_FAILED
+  ROLLBACK_PERFORMED
+  ROLLBACK_EXECUTED
+  ROLLBACK_FAILED
+  KILL_SWITCH_TRIGGERED
+  KILL_SWITCH_FAILED
+  OPERATION_FAILED
   CONVERSION_RECORDED
   EXPERIMENT_COMPLETED
-  ROLLOUT_APPROVED
-  ROLLBACK_PERFORMED
-  KILL_SWITCH_TRIGGERED
+  ANALYSIS_GENERATED
+  IDENTITY_TRAITS_UPDATED
+  SEGMENT_CREATED
+  SEGMENT_TARGETING_EVALUATED
 }
 
 model Organization {
@@ -175,6 +189,7 @@ model TelemetryEvent {
   distinctUserId String
   eventType      EventType
   metricKey      String?
+  dedupKey       String?           @unique
   properties     Json?
   timestamp      DateTime          @default(now())
 
@@ -202,22 +217,29 @@ model AgentRun {
 }
 
 model AuditLog {
-  id             String        @id @default(cuid())
-  organizationId String
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  userId         String?
-  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  experimentId   String?
-  experiment     Experiment?   @relation(fields: [experimentId], references: [id], onDelete: SetNull)
-  action         AuditAction
-  entityType     String
-  entityId       String
-  previousState  Json?
-  newState       Json?
-  metadata       Json?
-  createdAt      DateTime      @default(now())
+  id                String        @id @default(cuid())
+  organizationId    String
+  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId            String?
+  user              User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  experimentId      String?
+  experiment        Experiment?   @relation(fields: [experimentId], references: [id], onDelete: SetNull)
+  action            AuditAction
+  entityType        String
+  entityId          String
+  actorName         String?
+  actorType         String?
+  details           String?       @db.Text
+  signature         String?       @unique
+  previousSignature String?
+  sequenceNumber    Int?
+  previousState     Json?
+  newState          Json?
+  metadata          Json?
+  createdAt         DateTime      @default(now())
 
   @@index([organizationId, createdAt])
+  @@index([sequenceNumber])
   @@map("audit_logs")
 }
 

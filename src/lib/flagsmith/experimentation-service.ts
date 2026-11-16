@@ -12,6 +12,8 @@
  * 7. Integration health check
  */
 
+import { compareVariants } from "../analytics/stats.ts";
+
 export interface FlagsmithVariationConfig {
   key: string;
   name: string;
@@ -344,11 +346,111 @@ export async function createRealFlagsmithExperiment(
 }
 
 // -----------------------------------------------------------------------------
-// 3. RETRIEVE EXPERIMENT RESULTS (ACTUAL FLAGSMITH SCORECARDS)
+// 3. RETRIEVE EXPERIMENT RESULTS (ACTUAL FLAGSMITH & POSTGRESQL SCORECARDS)
 // -----------------------------------------------------------------------------
 export async function getFlagsmithExperimentResults(
   featureFlagName: string = "checkout_experience"
 ): Promise<FlagsmithExperimentResults | null> {
+  // If database is available, dynamically aggregate from PostgreSQL prisma.telemetryEvent
+  if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
+    try {
+      const { prisma } = await import("@/lib/db/prisma");
+      const experiment = await prisma.experiment.findUnique({
+        where: { flagsmithFeatureName: featureFlagName },
+        include: { variants: true },
+      });
+
+      if (experiment && experiment.variants.length > 0) {
+        const grouped = await prisma.telemetryEvent.groupBy({
+          by: ["variantId", "eventType"],
+          where: { experimentId: experiment.id },
+          _count: { id: true },
+        });
+
+        const countsByVariant: Record<string, { exposures: number; conversions: number }> = {};
+        for (const v of experiment.variants) {
+          countsByVariant[v.id] = { exposures: 0, conversions: 0 };
+        }
+
+        for (const row of grouped) {
+          if (countsByVariant[row.variantId]) {
+            if (row.eventType === "EXPOSURE") {
+              countsByVariant[row.variantId].exposures = row._count.id;
+            } else if (row.eventType === "CONVERSION") {
+              countsByVariant[row.variantId].conversions = row._count.id;
+            }
+          }
+        }
+
+        const totalDbExposures = Object.values(countsByVariant).reduce((acc, c) => acc + c.exposures, 0);
+        const totalDbConversions = Object.values(countsByVariant).reduce((acc, c) => acc + c.conversions, 0);
+
+        if (totalDbExposures > 0) {
+          const controlVariant = experiment.variants.find((v) => v.isControl) || experiment.variants[0];
+          const controlCounts = countsByVariant[controlVariant.id] || { exposures: 1, conversions: 0 };
+          const controlRate = controlCounts.exposures > 0 ? controlCounts.conversions / controlCounts.exposures : 0;
+
+          const variations: ExperimentVariationResult[] = experiment.variants.map((v) => {
+            const counts = countsByVariant[v.id] || { exposures: 0, conversions: 0 };
+            const rate = counts.exposures > 0 ? counts.conversions / counts.exposures : 0;
+            const isControl = v.id === controlVariant.id;
+
+            let expectedLiftPercent = 0;
+            let chanceToWin = 0.5;
+            let credibleInterval95: [number, number] = [0, 0];
+
+            if (!isControl && counts.exposures > 0 && controlCounts.exposures > 0) {
+              const comp = compareVariants(
+                { key: controlVariant.key, name: controlVariant.name, isControl: true, exposures: controlCounts.exposures, conversions: controlCounts.conversions },
+                { key: v.key, name: v.name, isControl: false, exposures: counts.exposures, conversions: counts.conversions }
+              );
+              expectedLiftPercent = Number(comp.relativeUpliftPercent.toFixed(1));
+              chanceToWin = Number(comp.bayesianProbabilityToBeatControl.toFixed(3));
+              credibleInterval95 = [Number(comp.confidenceInterval95[0].toFixed(4)), Number(comp.confidenceInterval95[1].toFixed(4))];
+            }
+
+            return {
+              variantKey: v.key,
+              variantName: v.name,
+              isControl,
+              exposures: counts.exposures,
+              conversions: counts.conversions,
+              conversionRate: Number(rate.toFixed(4)),
+              expectedLiftPercent: !isControl ? expectedLiftPercent : undefined,
+              chanceToWin: !isControl ? chanceToWin : undefined,
+              credibleInterval95: !isControl ? credibleInterval95 : undefined,
+            };
+          });
+
+          const nonControlVariations = variations.filter((v) => !v.isControl);
+          const leadingVar = nonControlVariations.sort((a, b) => (b.chanceToWin || 0) - (a.chanceToWin || 0))[0];
+
+          return {
+            experimentId: experiment.id,
+            name: experiment.title,
+            featureFlagName: experiment.flagsmithFeatureName,
+            status: experiment.status as any,
+            lastRefreshedAt: new Date().toISOString(),
+            warehouseConnected: true,
+            variations,
+            primaryMetric: {
+              key: experiment.primaryMetric,
+              name: experiment.primaryMetric,
+            },
+            summary: {
+              totalExposures: totalDbExposures,
+              totalConversions: totalDbConversions,
+              leadingVariationKey: leadingVar?.variantKey || null,
+              statisticalCertaintyReached: (leadingVar?.chanceToWin || 0) >= 0.95 && totalDbExposures >= experiment.sampleSizeTarget,
+            },
+          };
+        }
+      }
+    } catch (dbErr: any) {
+      console.warn("[PostgreSQL Telemetry Aggregate Error]:", dbErr.message);
+    }
+  }
+
   initDefaultDemoExperiment();
   const exp = activeFlagsmithExperiments.get(featureFlagName);
   if (!exp) return null;
@@ -360,19 +462,12 @@ export async function getFlagsmithExperimentResults(
 }
 
 // -----------------------------------------------------------------------------
-// 4. REFRESH EXPERIMENT RESULTS (TRIGGER WAREHOUSE SYNC)
+// 4. REFRESH EXPERIMENT RESULTS (TRIGGER WAREHOUSE / DB SYNC)
 // -----------------------------------------------------------------------------
 export async function refreshFlagsmithExperimentResults(
   featureFlagName: string = "checkout_experience"
 ): Promise<FlagsmithExperimentResults | null> {
-  initDefaultDemoExperiment();
-  const exp = activeFlagsmithExperiments.get(featureFlagName);
-  if (!exp) return null;
-
-  exp.lastRefreshedAt = new Date().toISOString();
-  activeFlagsmithExperiments.set(featureFlagName, exp);
-
-  return exp;
+  return getFlagsmithExperimentResults(featureFlagName);
 }
 
 // -----------------------------------------------------------------------------
