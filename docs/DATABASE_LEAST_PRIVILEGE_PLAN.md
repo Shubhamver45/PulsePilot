@@ -111,3 +111,4 @@ Once provisioned:
   - Set `DATABASE_URL` to the `pulsepilot_app` connection string.
   - Set `DIRECT_URL` / `MIGRATION_DATABASE_URL` to the `pulsepilot_migration` connection string.
 - This guarantees zero possibility of trigger bypass even under total application runtime compromise.
+
