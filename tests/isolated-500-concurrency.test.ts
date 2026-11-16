@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { verifyAuditLogIntegrity } from "../src/lib/audit/audit-logger.ts";
 
-const ISOLATED_DATABASE_URL = "postgresql://postgres:Chessislife%4045@db.czqhiuidekvozuoqdmyd.supabase.co:5432/pulsepilot_test_isolated";
+const ISOLATED_DATABASE_URL =
+  process.env.ISOLATED_DATABASE_URL ||
+  process.env.DATABASE_URL ||
+  "";
 
 const prisma = new PrismaClient({
   datasources: { db: { url: ISOLATED_DATABASE_URL } },
