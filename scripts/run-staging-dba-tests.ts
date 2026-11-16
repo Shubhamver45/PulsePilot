@@ -1,134 +1,178 @@
 /**
- * PulsePilot AI — Staging DBA Execution & Live Acceptance Runner
+ * PulsePilot AI — Hardened Staging DBA Execution & Live Acceptance Runner
  * 
  * Safety Protocol:
- * - Phase 1: Staging Connection Safety
- *   1. Require a dedicated STAGING_DATABASE_URL environment variable.
- *   2. Fail closed if STAGING_DATABASE_URL is missing (exit 1).
- *   3. Inspect the staging hostname and Supabase project reference.
- *   4. Compare the project reference against known production reference: czqhiuidekvozuoqdmyd.
- *   5. Abort immediately if they match (exit 1).
- *   6. NEVER silently fall back to DATABASE_URL.
- *   7. NEVER print connection strings, passwords, tokens, or credentials in logs.
+ * 1. Requires mandatory STAGING_PROJECT_REF with format validation.
+ * 2. Requires dedicated STAGING_DATABASE_URL and STAGING_DIRECT_URL.
+ * 3. Rejects non-Supabase endpoints and rejects production references (czqhiuidekvozuoqdmyd).
+ * 4. Strictly prohibits silent fallback to DATABASE_URL or DIRECT_URL.
+ * 5. Redacts all passwords, secrets, and credentials in logs.
+ * 6. Connects to the database and performs a live read-only server identity check:
+ *    - current_database(), current_user, session_user, inet_server_addr, inet_server_port, version.
+ * 7. Explicitly asserts that current_database() = 'postgres' is NOT treated as staging proof.
+ * 8. Inspects prerequisite roles (pulsepilot_app, pulsepilot_revocation_maint) to confirm
+ *    NOSUPERUSER and NOBYPASSRLS attributes before any acceptance operations.
  */
 
 import fs from "fs";
 import path from "path";
-
-const KNOWN_PRODUCTION_PROJECT_REF = "czqhiuidekvozuoqdmyd";
-
-interface SanitizedTargetInfo {
-  protocol: string;
-  hostname: string;
-  port: string;
-  database: string;
-  username: string;
-  projectRef: string;
-}
-
-function extractSanitizedTarget(urlStr: string): SanitizedTargetInfo {
-  try {
-    const parsed = new URL(urlStr);
-    const hostParts = parsed.hostname.split(".");
-    
-    // In Supabase, host is typically db.<project-ref>.supabase.co or <project-ref>.supabase.co
-    let projectRef = "non_supabase_host";
-    if (parsed.hostname.includes("supabase.co")) {
-      if (hostParts[0] === "db" && hostParts.length >= 2) {
-        projectRef = hostParts[1];
-      } else {
-        projectRef = hostParts[0];
-      }
-    }
-
-    return {
-      protocol: parsed.protocol.replace(":", ""),
-      hostname: parsed.hostname,
-      port: parsed.port || "5432",
-      database: parsed.pathname.replace("/", "") || "postgres",
-      username: parsed.username || "anonymous",
-      projectRef,
-    };
-  } catch (err) {
-    throw new Error("Invalid URL format in STAGING_DATABASE_URL.");
-  }
-}
+import { PrismaClient } from "@prisma/client";
+import {
+  loadAndValidateStagingEnv,
+  verifyServerIdentity,
+  type ServerIdentityRecord,
+} from "./staging-safety.ts";
 
 async function runStagingSafetyGate() {
   console.log("=====================================================================");
-  console.log("   PULSEPILOT AI — SEC-03.1 STAGING PROVISIONING GATE RUNNER         ");
+  console.log("   PULSEPILOT AI — SEC-03.2 HARDENED STAGING DBA ACCEPTANCE RUNNER    ");
   console.log("=====================================================================\n");
 
-  // 1. Strict Enforcement: Require STAGING_DATABASE_URL (No DATABASE_URL fallback)
-  // Check process.env or .env.staging
-  if (!process.env.STAGING_DATABASE_URL) {
-    const stagingEnvPath = path.resolve(".env.staging");
-    if (fs.existsSync(stagingEnvPath)) {
-      const content = fs.readFileSync(stagingEnvPath, "utf8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith("STAGING_DATABASE_URL=")) {
-          process.env.STAGING_DATABASE_URL = trimmed.split("=").slice(1).join("=").replace(/^["']|["']$/g, "").trim();
-        }
-      }
-    }
-  }
-
-  const stagingUrl = process.env.STAGING_DATABASE_URL;
-
-  if (!stagingUrl || stagingUrl.trim() === "") {
-    console.error("❌ [CRITICAL SAFETY HALT: MISSING STAGING_DATABASE_URL]");
-    console.error("A dedicated STAGING_DATABASE_URL environment variable is strictly required.");
-    console.error("Rule Enforcement: Silent fallback to DATABASE_URL is strictly prohibited to prevent accidental production mutation.");
-    console.error("Action Required: Provision an isolated Supabase staging database and set:");
-    console.error("  export STAGING_DATABASE_URL=\"postgresql://postgres:<PASSWORD>@db.<staging-ref>.supabase.co:5432/postgres\"\n");
+  // 1. Strict Enforcement & Environment Validation Gate
+  let config;
+  try {
+    config = loadAndValidateStagingEnv();
+  } catch (err: any) {
+    console.error(`❌ [CRITICAL SAFETY HALT] ${err.message}\n`);
+    console.error("Rule Enforcement: Silent fallback to DATABASE_URL is strictly prohibited.");
+    console.error("Action Required: Configure .env.staging with isolated staging credentials:");
+    console.error("  STAGING_PROJECT_REF=\"<your-staging-project-ref>\"");
+    console.error("  STAGING_DATABASE_URL=\"postgresql://postgres:<PASSWORD>@db.<staging-ref>.supabase.co:5432/postgres\"");
+    console.error("  STAGING_DIRECT_URL=\"postgresql://postgres:<PASSWORD>@db.<staging-ref>.supabase.co:5432/postgres\"\n");
     console.log("📄 Staging DBA SQL execution script is ready at: scripts/staging-dba-execution.sql");
     console.log("📄 Acceptance Runbook documented in: SEC03_REVOCATION_FINAL_SECURITY_SIGNOFF.md\n");
     process.exit(1);
   }
 
-  // 2. Parse & Sanitize Target Connection (Zero secret leakage)
-  let targetInfo: SanitizedTargetInfo;
-  try {
-    targetInfo = extractSanitizedTarget(stagingUrl);
-  } catch (err: any) {
-    console.error(`❌ [ERROR] ${err.message}`);
-    process.exit(1);
-  }
-
   console.log("Staging Target Sanitized Inspection (Zero Secret Leakage):");
-  console.log(`  • Protocol:    ${targetInfo.protocol}`);
-  console.log(`  • Hostname:    ${targetInfo.hostname}`);
-  console.log(`  • Port:        ${targetInfo.port}`);
-  console.log(`  • Database:    ${targetInfo.database}`);
-  console.log(`  • Role/User:   ${targetInfo.username}`);
-  console.log(`  • Project Ref: ${targetInfo.projectRef}\n`);
+  console.log(`  • Staging Project Ref: ${config.stagingProjectRef}`);
+  console.log(`  • Pooled Target Host:  ${config.dbEndpoint.hostname}:${config.dbEndpoint.port}`);
+  console.log(`  • Direct Target Host:  ${config.directEndpoint.hostname}:${config.directEndpoint.port}`);
+  console.log(`  • Database Name:       ${config.directEndpoint.database}`);
+  console.log(`  • Target User:         ${config.directEndpoint.username}`);
+  console.log(`  • Target Endpoint:     ${config.directEndpoint.sanitizedUrl}\n`);
 
-  // 3. Collision Check: Verify Project Ref Does Not Match Production
-  const isProductionCollision =
-    targetInfo.projectRef.toLowerCase() === KNOWN_PRODUCTION_PROJECT_REF.toLowerCase() ||
-    targetInfo.hostname.toLowerCase().includes(KNOWN_PRODUCTION_PROJECT_REF.toLowerCase());
-
-  if (isProductionCollision) {
-    console.error("🛑 [CRITICAL SECURITY ALERT: PRODUCTION COLLISION DETECTED] 🛑");
-    console.error(`Target project reference '${targetInfo.projectRef}' matches KNOWN PRODUCTION ('${KNOWN_PRODUCTION_PROJECT_REF}')!`);
-    console.error("Cardinal Rule Violation: Remote SQL execution against production is STRICTLY BLOCKED.");
-    console.error("The migration must NOT be run against this database.\n");
-    process.exit(1);
-  }
-
-  // 4. Staging Script Existence
+  // 2. Staging Script Existence Check
   const scriptPath = path.resolve("scripts/staging-dba-execution.sql");
   if (!fs.existsSync(scriptPath)) {
     console.error(`❌ [ERROR] Expected SQL script not found at ${scriptPath}`);
     process.exit(1);
   }
+  console.log(`✅ Staging DBA execution script verified at: ${scriptPath}`);
 
-  console.log("✅ Target database verified as non-production staging instance.");
-  console.log("✅ Project reference is isolated from production.");
-  console.log(`✅ Staging DBA execution script verified at: ${scriptPath}\n`);
-  console.log("Next Step: The DBA can execute the script using psql or the Supabase SQL Editor:");
-  console.log(`  psql "${stagingUrl.replace(/:[^:]*@/, ":***@")}" -f scripts/staging-dba-execution.sql\n`);
+  // 3. Connect to Staging Database & Execute Live Read-Only Server Identity Check
+  console.log("\n🔍 Connecting to staging endpoint to perform read-only identity verification...");
+
+  const prisma = new PrismaClient({
+    datasources: {
+      db: { url: config.stagingDirectUrl },
+    },
+    log: ["error"],
+  });
+
+  try {
+    const identityRows = await prisma.$queryRawUnsafe<
+      Array<{
+        current_database: string;
+        current_user: string;
+        session_user: string;
+        inet_server_addr: string | null;
+        inet_server_port: number | null;
+        version: string;
+      }>
+    >(
+      `SELECT current_database(), current_user, session_user, inet_server_addr()::text, inet_server_port(), version()`
+    );
+
+    if (!identityRows || identityRows.length === 0) {
+      console.error("❌ Failed to query connected server identity.");
+      await prisma.$disconnect();
+      process.exit(1);
+    }
+
+    const row = identityRows[0];
+    const identityRecord: ServerIdentityRecord = {
+      current_database: row.current_database,
+      current_user: row.current_user,
+      session_user: row.session_user,
+      inet_server_addr: row.inet_server_addr,
+      inet_server_port: row.inet_server_port,
+      version: row.version,
+      derived_project_ref: config.directEndpoint.projectRef,
+    };
+
+    const verification = verifyServerIdentity(identityRecord, config.stagingProjectRef);
+
+    console.log("\n✅ Actual Connected Server Identity Verification Report:");
+    console.log(`  • current_database(): ${row.current_database}`);
+    console.log(`  • current_user:       ${row.current_user}`);
+    console.log(`  • session_user:       ${row.session_user}`);
+    console.log(`  • inet_server_addr(): ${row.inet_server_addr || "n/a (managed host)"}`);
+    console.log(`  • inet_server_port(): ${row.inet_server_port || "5432"}`);
+    console.log(`  • pg_version:         ${row.version.split(" on ")[0]}`);
+    console.log(`  • derived_project_ref:${identityRecord.derived_project_ref}`);
+
+    for (const warning of verification.warnings) {
+      console.log(`  ⚠️  [NOTICE] ${warning}`);
+    }
+
+    // 4. Role and Privilege Inspection
+    console.log("\n🔍 Inspecting staging database roles and attributes...");
+    const roles = await prisma.$queryRawUnsafe<
+      Array<{
+        rolname: string;
+        rolsuper: boolean;
+        rolbypassrls: boolean;
+        rolcanlogin: boolean;
+      }>
+    >(
+      `SELECT rolname, rolsuper, rolbypassrls, rolcanlogin 
+       FROM pg_roles 
+       WHERE rolname IN ('pulsepilot_app', 'pulsepilot_revocation_maint', 'postgres', 'service_role')
+       ORDER BY rolname`
+    );
+
+    const roleMap = new Map(roles.map((r) => [r.rolname, r]));
+
+    // Check pulsepilot_app
+    const appRole = roleMap.get("pulsepilot_app");
+    if (!appRole) {
+      console.log("  ⚠️  Role 'pulsepilot_app' does not yet exist. Run Step 1 of scripts/staging-dba-execution.sql.");
+    } else {
+      console.log(`  ✅ Role 'pulsepilot_app': rolsuper=${appRole.rolsuper}, rolbypassrls=${appRole.rolbypassrls}, rolcanlogin=${appRole.rolcanlogin}`);
+      if (appRole.rolsuper || appRole.rolbypassrls) {
+        console.error("❌ [SECURITY ALERT] pulsepilot_app has rolsuper=true or rolbypassrls=true!");
+        await prisma.$disconnect();
+        process.exit(1);
+      }
+    }
+
+    // Check pulsepilot_revocation_maint
+    const maintRole = roleMap.get("pulsepilot_revocation_maint");
+    if (!maintRole) {
+      console.log("  ⚠️  Role 'pulsepilot_revocation_maint' does not yet exist. Will be provisioned during migration.");
+    } else {
+      console.log(`  ✅ Role 'pulsepilot_revocation_maint': rolsuper=${maintRole.rolsuper}, rolbypassrls=${maintRole.rolbypassrls}, rolcanlogin=${maintRole.rolcanlogin}`);
+      if (maintRole.rolsuper || maintRole.rolbypassrls || maintRole.rolcanlogin) {
+        console.error("❌ [SECURITY ALERT] pulsepilot_revocation_maint must have NOLOGIN, NOSUPERUSER, NOBYPASSRLS!");
+        await prisma.$disconnect();
+        process.exit(1);
+      }
+    }
+
+    await prisma.$disconnect();
+
+    console.log("\n=====================================================================");
+    console.log("   ✅ STAGING ENDPOINT & ACTUAL IDENTITY FULLY VERIFIED              ");
+    console.log("=====================================================================\n");
+    console.log("Next Step: Execute the 5-stage DBA runbook via psql or Supabase SQL Editor:");
+    console.log(`  psql "${config.directEndpoint.sanitizedUrl}" -f scripts/staging-dba-execution.sql\n`);
+  } catch (err: any) {
+    await prisma.$disconnect().catch(() => {});
+    console.error(`\n❌ [STAGING CONNECTION FAILED]: ${err.message}\n`);
+    console.error("Verify staging credentials, database readiness, and network access.");
+    process.exit(1);
+  }
 }
 
 runStagingSafetyGate().catch((err) => {

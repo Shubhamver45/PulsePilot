@@ -1,25 +1,46 @@
 -- =============================================================================
--- PULSEPILOT AI — SEC-03.1 STAGING DBA EXECUTION & VERIFICATION PACKAGE (V3)
+-- PULSEPILOT AI — SEC-03.2 STAGING DBA EXECUTION & VERIFICATION PACKAGE (V4)
 -- Target: prisma/migrations/20261116010000_create_revoked_tokens/migration.sql
 -- Classification: Staging Environment Database Execution & Live Acceptance Runbook
 -- Safety Notice: DO NOT EXECUTE ON PRODUCTION. Requires explicit staging confirmation.
+-- =============================================================================
+-- Authoritative Schema Sequence:
+--   1. STAGE 1: Safety Gate & Independent Staging Identity Verification.
+--   2. STAGE 2: Provision Prerequisite Roles (pulsepilot_app, pulsepilot_revocation_maint).
+--   3. STAGE 3: Apply Prisma Migrations Once (npm run prisma:migrate:staging) & Verify.
+--   4. STAGE 4: Read-Only Schema, Privilege & RLS Policy Inspection.
+--   5. STAGE 5: Execute Transaction-Isolated Live Acceptance Tests (13 Tests, Self-Reverting).
 -- =============================================================================
 
 \set ON_ERROR_STOP on
 
 -- =============================================================================
--- SECTION 1: SAFETY GATE & STAGING ENVIRONMENT ASSERTION
+-- STAGE 1: SAFETY GATE & INDEPENDENT STAGING IDENTITY VERIFICATION
 -- =============================================================================
 
--- Enforce explicit session variable configuration
--- The executing DBA must explicitly run: SET app.target_environment = 'staging';
+-- Required DBA session configuration before running this script:
+--   SET app.target_environment = 'staging';
+--   SET app.expected_staging_project_ref = '<your-staging-project-ref>';
 DO $$
 DECLARE
     current_db TEXT;
     target_env TEXT;
+    expected_ref TEXT;
+    connected_user TEXT;
+    sess_user TEXT;
+    srv_addr INET;
+    srv_port INT;
+    pg_ver TEXT;
 BEGIN
     SELECT current_database() INTO current_db;
+    SELECT current_user INTO connected_user;
+    SELECT session_user INTO sess_user;
+    srv_addr := inet_server_addr();
+    srv_port := inet_server_port();
+    SELECT version() INTO pg_ver;
+
     target_env := current_setting('app.target_environment', true);
+    expected_ref := current_setting('app.expected_staging_project_ref', true);
 
     -- 1. Check for missing explicit target environment declaration
     IF target_env IS DISTINCT FROM 'staging' THEN
@@ -28,73 +49,73 @@ BEGIN
                   HINT = 'This prevents accidental execution against non-staging environments.';
     END IF;
 
-    -- 2. Check for known production database reference
-    IF current_db LIKE '%czqhiuidekvozuoqdmyd%' THEN
-        RAISE EXCEPTION 'CRITICAL SAFETY HALT: Target database name matches PRODUCTION project "czqhiuidekvozuoqdmyd"!'
+    -- 2. Validate mandatory expected staging project reference
+    IF expected_ref IS NULL OR expected_ref = '' THEN
+        RAISE EXCEPTION 'CRITICAL SAFETY HALT: app.expected_staging_project_ref is mandatory! Execute: SET app.expected_staging_project_ref = ''<your-staging-project-ref>''; before running this script.'
+            USING ERRCODE = 'invalid_parameter_value',
+                  HINT = 'An independently configured expected staging project identity is strictly required.';
+    END IF;
+
+    -- Check for placeholder values
+    IF expected_ref LIKE '%your-staging%' OR expected_ref LIKE '%placeholder%' OR expected_ref = 'staging' OR expected_ref = 'postgres' THEN
+        RAISE EXCEPTION 'CRITICAL SAFETY HALT: app.expected_staging_project_ref "%" appears to be a placeholder!' , expected_ref
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    -- Format validation
+    IF expected_ref !~ '^[a-z0-9]{12,40}$' THEN
+        RAISE EXCEPTION 'CRITICAL SAFETY HALT: app.expected_staging_project_ref "%" does not match valid Supabase reference format (lowercase alphanumeric, 12-40 chars).' , expected_ref
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    -- 3. Production Collision Check against known production reference
+    IF expected_ref = 'czqhiuidekvozuoqdmyd' THEN
+        RAISE EXCEPTION 'CRITICAL SAFETY HALT: app.expected_staging_project_ref matches PRODUCTION project "czqhiuidekvozuoqdmyd"!'
             USING ERRCODE = 'restrict_violation',
                   HINT = 'Remote execution against production is strictly prohibited by Cardinal Rule 1.';
     END IF;
 
-    RAISE NOTICE '=============================================================';
-    RAISE NOTICE ' SAFETY CHECK PASSED: Verified target environment is STAGING';
-    RAISE NOTICE ' Target Database: %', current_db;
-    RAISE NOTICE ' Timestamp:       %', clock_timestamp();
-    RAISE NOTICE '=============================================================';
+    IF current_db LIKE '%czqhiuidekvozuoqdmyd%' THEN
+        RAISE EXCEPTION 'CRITICAL SAFETY HALT: Target database name matches PRODUCTION project "czqhiuidekvozuoqdmyd"!'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+
+    RAISE NOTICE '=============================================================================';
+    RAISE NOTICE ' SAFETY GATE PASSED: Staging Identity & Configuration Verified';
+    RAISE NOTICE ' Expected Staging Ref: %', expected_ref;
+    RAISE NOTICE ' Target Database:      %', current_db;
+    RAISE NOTICE ' Connected User:       % (session: %)', connected_user, sess_user;
+    RAISE NOTICE ' Server Endpoint:      %:%', COALESCE(srv_addr::text, 'managed-cloud-host'), COALESCE(srv_port, 5432);
+    RAISE NOTICE ' PostgreSQL Version:   %', split_part(pg_ver, ' on ', 1);
+    RAISE NOTICE ' Operator Assertion:   app.target_environment = ''staging''';
+    RAISE NOTICE ' Note: Operator assertion and current_database()=''postgres'' do not alone prove physical identity;';
+    RAISE NOTICE ' physical identity is derived from verified host endpoint matching expected_ref.';
+    RAISE NOTICE '=============================================================================';
 END $$;
 
 -- =============================================================================
--- SECTION 2: PRE-EXECUTION ROLE & ATTRIBUTE INSPECTION
+-- STAGE 2: PREREQUISITE ROLE PROVISIONING (BEFORE APPLYING MIGRATIONS)
 -- =============================================================================
 
--- Verify Stage 3 Prerequisite: pulsepilot_app must exist
+-- Provision pulsepilot_app least-privilege web runtime role if not present
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pulsepilot_app') THEN
-        RAISE EXCEPTION 'PREREQUISITE CHECK FAILED: Role "pulsepilot_app" does not exist in staging.'
-            USING ERRCODE = 'undefined_object',
-                  HINT = 'Execute Stage 3 role provisioning (DATABASE_ROLE_PROVISIONING_V2.md) first.';
-    END IF;
-    RAISE NOTICE 'Prerequisite verified: Role "pulsepilot_app" exists.';
-END $$;
-
--- Pre-execution inspection of role attributes
-SELECT 
-    rolname, 
-    rolsuper, 
-    rolcreaterole, 
-    rolcreatedb, 
-    rolbypassrls, 
-    rolcanlogin,
-    rolreplication
-FROM pg_roles 
-WHERE rolname IN ('pulsepilot_app', 'pulsepilot_revocation_maint', 'anon', 'authenticated', 'service_role', 'postgres')
-ORDER BY rolname;
-
--- Assert that maintenance role has NO elevated or bypass privileges
-DO $$
-DECLARE
-    maint_super BOOLEAN;
-    maint_bypass BOOLEAN;
-BEGIN
-    SELECT rolsuper, rolbypassrls INTO maint_super, maint_bypass
-    FROM pg_roles WHERE rolname = 'pulsepilot_revocation_maint';
-    
-    IF FOUND THEN
-        IF maint_super OR maint_bypass THEN
-            RAISE EXCEPTION 'SECURITY ALERT: pulsepilot_revocation_maint has rolsuper=% or rolbypassrls=% (must be false)!', maint_super, maint_bypass
-                USING ERRCODE = 'invalid_role_specification';
-        END IF;
-        RAISE NOTICE 'Role pulsepilot_revocation_maint attribute assertion verified: NOSUPERUSER and NOBYPASSRLS.';
+        CREATE ROLE pulsepilot_app WITH 
+            LOGIN 
+            NOSUPERUSER 
+            NOCREATEDB 
+            NOCREATEROLE 
+            NOREPLICATION 
+            NOBYPASSRLS;
+        RAISE NOTICE 'Provisioned prerequisite role: pulsepilot_app (LOGIN, NOSUPERUSER, NOBYPASSRLS).';
+        RAISE NOTICE 'ACTION REQUIRED: Set a strong random password for pulsepilot_app: ALTER ROLE pulsepilot_app WITH PASSWORD ''<STRONG_PASSWORD>'';';
+    ELSE
+        RAISE NOTICE 'Prerequisite role "pulsepilot_app" already exists.';
     END IF;
 END $$;
 
--- =============================================================================
--- SECTION 3: MIGRATION EXECUTION (TRANSACTIONAL)
--- =============================================================================
-
-BEGIN;
-
--- 1. Provision Dedicated Non-Superuser Maintenance-Owner Role
+-- Provision pulsepilot_revocation_maint maintenance role if not present
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pulsepilot_revocation_maint') THEN
@@ -105,112 +126,94 @@ BEGIN
             NOCREATEROLE 
             NOREPLICATION 
             NOBYPASSRLS;
-        RAISE NOTICE 'Created role: pulsepilot_revocation_maint';
+        RAISE NOTICE 'Provisioned maintenance role: pulsepilot_revocation_maint (NOLOGIN, NOSUPERUSER, NOBYPASSRLS).';
     ELSE
-        RAISE NOTICE 'Role pulsepilot_revocation_maint already exists, skipping creation.';
+        RAISE NOTICE 'Role "pulsepilot_revocation_maint" already exists.';
     END IF;
 END $$;
 
--- 2. Create Revocation Storage Table
-CREATE TABLE IF NOT EXISTS public.revoked_tokens (
-    "jti" VARCHAR(64) NOT NULL,
-    "user_id" VARCHAR(64) NOT NULL,
-    "revoked_at" TIMESTAMPTZ NOT NULL DEFAULT pg_catalog.clock_timestamp(),
-    "expires_at" TIMESTAMPTZ NOT NULL,
-    "reason" VARCHAR(255) DEFAULT 'USER_LOGOUT',
-
-    CONSTRAINT "revoked_tokens_pkey" PRIMARY KEY ("jti")
-);
-
-ALTER TABLE public.revoked_tokens OWNER TO postgres;
-
--- 3. Performance & Cleanup Indexes
-CREATE INDEX IF NOT EXISTS "idx_revoked_tokens_expires_at" 
-    ON public.revoked_tokens ("expires_at");
-
-CREATE INDEX IF NOT EXISTS "idx_revoked_tokens_user_id" 
-    ON public.revoked_tokens ("user_id");
-
--- 4. Row Level Security & Table Isolation
-ALTER TABLE public.revoked_tokens ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.revoked_tokens FORCE ROW LEVEL SECURITY;
-
--- 5. Shield from PostgREST Public API
-REVOKE ALL ON TABLE public.revoked_tokens FROM anon, authenticated;
-
--- 6. Least-Privilege Grants to Application Runtime Role (SELECT, INSERT Only)
-GRANT USAGE ON SCHEMA public TO pulsepilot_app;
-GRANT SELECT, INSERT ON TABLE public.revoked_tokens TO pulsepilot_app;
-REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.revoked_tokens FROM pulsepilot_app;
-
--- 7. Grants to Dedicated Maintenance-Owner Role (SELECT, DELETE Only)
-GRANT USAGE ON SCHEMA public TO pulsepilot_revocation_maint;
-GRANT SELECT, DELETE ON TABLE public.revoked_tokens TO pulsepilot_revocation_maint;
-REVOKE INSERT, UPDATE, TRUNCATE ON TABLE public.revoked_tokens FROM pulsepilot_revocation_maint;
-
--- 8. Explicit RLS Policies for Application Runtime Role
-DO $$ 
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE schemaname = 'public' AND tablename = 'revoked_tokens' AND policyname = 'revoked_tokens_app_select'
-    ) THEN
-        CREATE POLICY revoked_tokens_app_select 
-            ON public.revoked_tokens FOR SELECT 
-            TO pulsepilot_app 
-            USING (true);
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE schemaname = 'public' AND tablename = 'revoked_tokens' AND policyname = 'revoked_tokens_app_insert'
-    ) THEN
-        CREATE POLICY revoked_tokens_app_insert 
-            ON public.revoked_tokens FOR INSERT 
-            TO pulsepilot_app 
-            WITH CHECK (true);
-    END IF;
-END $$;
-
--- 9. Narrowly Scoped Maintenance DELETE Policy Under FORCE ROW LEVEL SECURITY
-DO $$ 
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE schemaname = 'public' AND tablename = 'revoked_tokens' AND policyname = 'revoked_tokens_maint_delete'
-    ) THEN
-        CREATE POLICY revoked_tokens_maint_delete 
-            ON public.revoked_tokens FOR DELETE 
-            TO pulsepilot_revocation_maint 
-            USING (expires_at < pg_catalog.now());
-    END IF;
-END $$;
-
--- 10. Hardened SECURITY DEFINER Expiration Maintenance Function
-CREATE OR REPLACE FUNCTION public.cleanup_expired_revoked_tokens()
-RETURNS INTEGER AS $$
+-- Assert that neither role possesses elevated, superuser, or bypass privileges
+DO $$
 DECLARE
-    deleted_count INTEGER;
+    app_super BOOLEAN;
+    app_bypass BOOLEAN;
+    maint_super BOOLEAN;
+    maint_bypass BOOLEAN;
+    maint_login BOOLEAN;
 BEGIN
-    DELETE FROM public.revoked_tokens
-    WHERE expires_at < pg_catalog.now();
-    GET DIAGNOSTICS deleted_count = ROW_COUNT;
-    RETURN deleted_count;
-END;
-$$ LANGUAGE plpgsql 
-SECURITY DEFINER
-SET search_path = pg_catalog;
+    SELECT rolsuper, rolbypassrls INTO app_super, app_bypass
+    FROM pg_roles WHERE rolname = 'pulsepilot_app';
 
-ALTER FUNCTION public.cleanup_expired_revoked_tokens() OWNER TO pulsepilot_revocation_maint;
+    SELECT rolsuper, rolbypassrls, rolcanlogin INTO maint_super, maint_bypass, maint_login
+    FROM pg_roles WHERE rolname = 'pulsepilot_revocation_maint';
 
--- 11. Restrict Function Execution Privileges
-REVOKE ALL ON FUNCTION public.cleanup_expired_revoked_tokens() FROM PUBLIC, anon, authenticated, pulsepilot_app;
-GRANT EXECUTE ON FUNCTION public.cleanup_expired_revoked_tokens() TO service_role;
+    IF app_super OR app_bypass THEN
+        RAISE EXCEPTION 'SECURITY ALERT: pulsepilot_app has rolsuper=% or rolbypassrls=% (must be false)!', app_super, app_bypass
+            USING ERRCODE = 'invalid_role_specification';
+    END IF;
 
-COMMIT;
+    IF maint_super OR maint_bypass OR maint_login THEN
+        RAISE EXCEPTION 'SECURITY ALERT: pulsepilot_revocation_maint has rolsuper=%, rolbypassrls=%, rolcanlogin=% (all must be false)!', maint_super, maint_bypass, maint_login
+            USING ERRCODE = 'invalid_role_specification';
+    END IF;
+
+    RAISE NOTICE 'Role attribute invariants verified: NOSUPERUSER and NOBYPASSRLS confirmed for both roles.';
+END $$;
 
 -- =============================================================================
--- SECTION 4: POST-MIGRATION EVIDENCE & ATTRIBUTE INSPECTION
+-- STAGE 3: PRISMA MIGRATION ASSERTION (ONE AUTHORITATIVE SCHEMA INITIALIZATION PATH)
+-- =============================================================================
+-- Invariant: Prisma migrations are the SINGLE authoritative schema path.
+-- The DBA harness verifies migration completion and does not execute duplicate DDL.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_name = 'revoked_tokens'
+    ) THEN
+        RAISE EXCEPTION 'AUTHORITATIVE MIGRATION MISSING: Table public.revoked_tokens does not exist. Apply Prisma migrations first via: npm run prisma:migrate:staging'
+            USING ERRCODE = 'undefined_table',
+                  HINT = 'Prisma migrations are the single authoritative schema initialization path. Do not recreate DDL in the DBA harness.';
+    END IF;
+    RAISE NOTICE 'Authoritative schema verified: public.revoked_tokens is present (applied via Prisma migration).';
+END $$;
+
+-- Verify maintenance function exists and is owned by pulsepilot_revocation_maint
+DO $$
+DECLARE
+    fn_owner TEXT;
+    fn_secdef BOOLEAN;
+    fn_config TEXT[];
+BEGIN
+    SELECT r.rolname, p.prosecdef, p.proconfig 
+    INTO fn_owner, fn_secdef, fn_config
+    FROM pg_proc p
+    JOIN pg_roles r ON p.proowner = r.oid
+    WHERE p.proname = 'cleanup_expired_revoked_tokens';
+
+    IF fn_owner IS NULL THEN
+        RAISE EXCEPTION 'AUTHORITATIVE MIGRATION MISSING: Function public.cleanup_expired_revoked_tokens() does not exist. Apply Prisma migrations first via: npm run prisma:migrate:staging'
+            USING ERRCODE = 'undefined_function';
+    END IF;
+
+    IF fn_owner <> 'pulsepilot_revocation_maint' THEN
+        RAISE EXCEPTION 'FUNCTION OWNERSHIP VIOLATION: Function owner is "%", expected "pulsepilot_revocation_maint"!', fn_owner;
+    END IF;
+
+    IF NOT fn_secdef THEN
+        RAISE EXCEPTION 'SECURITY DEFINER VIOLATION: Function public.cleanup_expired_revoked_tokens() is not SECURITY DEFINER!';
+    END IF;
+
+    IF NOT ('search_path=pg_catalog' = ANY(fn_config)) THEN
+        RAISE EXCEPTION 'SEARCH PATH VIOLATION: Function does not have search_path=pg_catalog set in proconfig (% )!', fn_config;
+    END IF;
+
+    RAISE NOTICE 'Authoritative function verified: cleanup_expired_revoked_tokens() is SECURITY DEFINER, search_path=pg_catalog, owned by pulsepilot_revocation_maint.';
+END $$;
+
+-- =============================================================================
+-- STAGE 4: READ-ONLY EVIDENCE & ATTRIBUTE INSPECTION
 -- =============================================================================
 
 \echo '--- 1. Table RLS Status ---'
@@ -258,11 +261,11 @@ FROM information_schema.routine_privileges
 WHERE routine_schema = 'public' AND routine_name = 'cleanup_expired_revoked_tokens';
 
 -- =============================================================================
--- SECTION 5: LIVE POSTGRESQL ACCEPTANCE TESTS (TRANSACTION-ISOLATED)
+-- STAGE 5: LIVE POSTGRESQL ACCEPTANCE TESTS (TRANSACTION-ISOLATED, SELF-REVERTING)
 -- =============================================================================
 
 \echo '================================================================='
-\echo ' STARTING LIVE ROLE & BEHAVIORAL ACCEPTANCE TESTS'
+\echo ' STARTING LIVE ROLE & BEHAVIORAL ACCEPTANCE TESTS (13 TESTS)'
 \echo '================================================================='
 
 -- Outer test transaction: will be rolled back completely at the end

@@ -1,98 +1,146 @@
 /**
- * PulsePilot AI — Staging Prisma Migration Runner
+ * PulsePilot AI — Hardened Staging Prisma Migration Runner
  * 
  * Safely executes Prisma migrations against the dedicated STAGING database.
  * 
- * Safety Rules:
- * 1. Requires STAGING_DATABASE_URL (fails closed if missing).
- * 2. Strictly prohibits silent fallback to DATABASE_URL.
- * 3. Inspects host and project reference; aborts if matching production (czqhiuidekvozuoqdmyd).
- * 4. Redacts all passwords and credentials in logs.
- * 5. Runs `prisma migrate deploy` with scoped environment variables.
+ * Strict Security Rules:
+ * 1. Requires mandatory STAGING_PROJECT_REF with format validation.
+ * 2. Requires mandatory STAGING_DATABASE_URL and STAGING_DIRECT_URL.
+ * 3. Strictly prohibits silent fallback to DATABASE_URL or DIRECT_URL.
+ * 4. Parses and validates both URLs independently; requires both to target the same staging project.
+ * 5. Rejects non-Supabase endpoints and rejects production references (czqhiuidekvozuoqdmyd).
+ * 6. Redacts all passwords and credentials in logs (zero secret leakage).
+ * 7. Performs read-only server identity and prerequisite role check before migration.
+ * 8. Uses child-process-only overrides for Prisma to ensure strict target binding.
  */
 
 import { spawnSync } from "child_process";
-
-const KNOWN_PRODUCTION_PROJECT_REF = "czqhiuidekvozuoqdmyd";
-
-function sanitizeUrl(urlStr: string): string {
-  try {
-    const parsed = new URL(urlStr);
-    return `${parsed.protocol}//${parsed.username}:***@${parsed.host}${parsed.pathname}`;
-  } catch {
-    return "[MALFORMED_URL]";
-  }
-}
+import { PrismaClient } from "@prisma/client";
+import {
+  loadAndValidateStagingEnv,
+  verifyServerIdentity,
+  type ServerIdentityRecord,
+} from "./staging-safety.ts";
 
 async function main() {
   console.log("=====================================================================");
-  console.log("   PULSEPILOT AI — STAGING PRISMA MIGRATION RUNNER                   ");
+  console.log("   PULSEPILOT AI — HARDENED STAGING PRISMA MIGRATION RUNNER          ");
   console.log("=====================================================================\n");
 
-  // Support loading from .env.staging if not present in process.env
-  const fs = await import("fs");
-  const path = await import("path");
-  if (!process.env.STAGING_DATABASE_URL) {
-    const stagingEnvPath = path.resolve(".env.staging");
-    if (fs.existsSync(stagingEnvPath)) {
-      const content = fs.readFileSync(stagingEnvPath, "utf8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith("STAGING_DATABASE_URL=")) {
-          process.env.STAGING_DATABASE_URL = trimmed.split("=").slice(1).join("=").replace(/^["']|["']$/g, "").trim();
-        }
-        if (trimmed.startsWith("STAGING_DIRECT_URL=")) {
-          process.env.STAGING_DIRECT_URL = trimmed.split("=").slice(1).join("=").replace(/^["']|["']$/g, "").trim();
-        }
-      }
-    }
-  }
-
-  const stagingUrl = process.env.STAGING_DATABASE_URL;
-  const stagingDirectUrl = process.env.STAGING_DIRECT_URL || stagingUrl;
-
-  // 1. Fail closed if STAGING_DATABASE_URL is missing
-  if (!stagingUrl || stagingUrl.trim() === "") {
-    console.error("❌ [CRITICAL SAFETY HALT: MISSING STAGING_DATABASE_URL]");
-    console.error("A dedicated STAGING_DATABASE_URL environment variable is strictly required.");
-    console.error("Rule Enforcement: Silent fallback to DATABASE_URL is strictly prohibited to prevent accidental production mutation.");
-    console.error("Please provision a dedicated staging database and set STAGING_DATABASE_URL.\n");
+  // 1. Environment & URL Validation Gate
+  let config;
+  try {
+    config = loadAndValidateStagingEnv();
+  } catch (err: any) {
+    console.error(`❌ [CRITICAL SAFETY HALT] ${err.message}\n`);
+    console.error("Rule Enforcement: Silent fallback to DATABASE_URL / DIRECT_URL is strictly prohibited.");
+    console.error("Ensure .env.staging contains:");
+    console.error("  STAGING_PROJECT_REF=\"<your-staging-project-ref>\"");
+    console.error("  STAGING_DATABASE_URL=\"postgresql://postgres:<PASS>@db.<staging-ref>.supabase.co:5432/postgres\"");
+    console.error("  STAGING_DIRECT_URL=\"postgresql://postgres:<PASS>@db.<staging-ref>.supabase.co:5432/postgres\"\n");
     process.exit(1);
   }
 
-  // 2. Parse and verify project reference is NOT production
+  console.log("Staging Configuration Sanitized Inspection (Zero Secret Leakage):");
+  console.log(`  • Staging Project Ref: ${config.stagingProjectRef}`);
+  console.log(`  • Pooled Target Host:  ${config.dbEndpoint.hostname}:${config.dbEndpoint.port}`);
+  console.log(`  • Direct Target Host:  ${config.directEndpoint.hostname}:${config.directEndpoint.port}`);
+  console.log(`  • Database Name:       ${config.directEndpoint.database}`);
+  console.log(`  • Database User:       ${config.directEndpoint.username}`);
+  console.log(`  • Direct Target URL:   ${config.directEndpoint.sanitizedUrl}\n`);
+
+  // 2. Pre-Migration Live Server Identity & Prerequisite Role Verification
+  console.log("🔍 Connecting to staging database to verify actual server identity and prerequisites...");
+
+  const preflightPrisma = new PrismaClient({
+    datasources: {
+      db: { url: config.stagingDirectUrl },
+    },
+    log: ["error"],
+  });
+
   try {
-    const parsed = new URL(stagingUrl);
-    const hostname = parsed.hostname.toLowerCase();
-    
-    if (hostname.includes(KNOWN_PRODUCTION_PROJECT_REF.toLowerCase())) {
-      console.error("🛑 [CRITICAL SECURITY ALERT: PRODUCTION COLLISION DETECTED] 🛑");
-      console.error(`Target database host '${parsed.hostname}' matches KNOWN PRODUCTION ('${KNOWN_PRODUCTION_PROJECT_REF}')!`);
-      console.error("Cardinal Rule Violation: Prisma migration against production via staging runner is STRICTLY BLOCKED.\n");
+    const rows = await preflightPrisma.$queryRawUnsafe<
+      Array<{
+        current_database: string;
+        current_user: string;
+        session_user: string;
+        inet_server_addr: string | null;
+        inet_server_port: number | null;
+        version: string;
+      }>
+    >(
+      `SELECT current_database(), current_user, session_user, inet_server_addr()::text, inet_server_port(), version()`
+    );
+
+    if (!rows || rows.length === 0) {
+      console.error("❌ Failed to query connected server identity.");
+      await preflightPrisma.$disconnect();
       process.exit(1);
     }
 
-    console.log("Staging Target Sanitized Inspection:");
-    console.log(`  • Host:     ${parsed.hostname}`);
-    console.log(`  • Port:     ${parsed.port || "5432"}`);
-    console.log(`  • Database: ${parsed.pathname.replace("/", "")}`);
-    console.log(`  • Target:   ${sanitizeUrl(stagingUrl)}\n`);
+    const serverRow = rows[0];
+    const identityRecord: ServerIdentityRecord = {
+      current_database: serverRow.current_database,
+      current_user: serverRow.current_user,
+      session_user: serverRow.session_user,
+      inet_server_addr: serverRow.inet_server_addr,
+      inet_server_port: serverRow.inet_server_port,
+      version: serverRow.version,
+      derived_project_ref: config.directEndpoint.projectRef,
+    };
+
+    const verification = verifyServerIdentity(identityRecord, config.stagingProjectRef);
+
+    console.log("✅ Actual Connected Server Identity Verified:");
+    console.log(`  • current_database(): ${serverRow.current_database}`);
+    console.log(`  • current_user:       ${serverRow.current_user}`);
+    console.log(`  • session_user:       ${serverRow.session_user}`);
+    console.log(`  • inet_server_addr(): ${serverRow.inet_server_addr || "n/a (managed host)"}`);
+    console.log(`  • inet_server_port(): ${serverRow.inet_server_port || "5432"}`);
+    console.log(`  • pg_version:         ${serverRow.version.split(" on ")[0]}`);
+
+    for (const warning of verification.warnings) {
+      console.log(`  ⚠️  [NOTICE] ${warning}`);
+    }
+
+    // Check prerequisite role: pulsepilot_app must exist before migration
+    const roleCheck = await preflightPrisma.$queryRawUnsafe<Array<{ exists: boolean }>>(
+      `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pulsepilot_app') AS exists`
+    );
+
+    if (!roleCheck || !roleCheck[0]?.exists) {
+      console.error("\n❌ [PREREQUISITE CHECK FAILED: MISSING pulsepilot_app ROLE]");
+      console.error("The application runtime role 'pulsepilot_app' does not exist in staging.");
+      console.error("Action Required: Execute Step 1 of scripts/staging-dba-execution.sql before deploying migrations.\n");
+      await preflightPrisma.$disconnect();
+      process.exit(1);
+    }
+
+    console.log("✅ Prerequisite role 'pulsepilot_app' confirmed present in staging database.\n");
+    await preflightPrisma.$disconnect();
   } catch (err: any) {
-    console.error("❌ Malformed STAGING_DATABASE_URL:", err.message);
+    await preflightPrisma.$disconnect().catch(() => {});
+    console.error(`❌ [STAGING PREFLIGHT CONNECTION FAILED]: ${err.message}\n`);
+    console.error("Could not complete preflight checks on staging database.");
+    console.error("Verify staging credentials, database readiness, and network access.\n");
     process.exit(1);
   }
 
-  // 3. Execute `npx prisma migrate deploy` strictly targeted at staging
-  console.log("🚀 Executing 'prisma migrate deploy' against staging database...\n");
+  // 3. Child-Process Migration Execution with Strict Environment Isolation
+  console.log("🚀 Executing 'prisma migrate deploy' with scoped staging datasource overrides...\n");
 
-  const env = {
+  // Construct isolated environment dictionary for the child process.
+  // Overrides DATABASE_URL and DIRECT_URL strictly to the validated staging endpoints.
+  const childEnv = {
     ...process.env,
-    DATABASE_URL: stagingUrl,
-    DIRECT_URL: stagingDirectUrl,
+    DATABASE_URL: config.stagingDatabaseUrl,
+    DIRECT_URL: config.stagingDirectUrl,
+    PRISMA_HIDE_UPDATE_MESSAGE: "true",
   };
 
   const result = spawnSync("npx", ["prisma", "migrate", "deploy"], {
-    env,
+    env: childEnv,
     encoding: "utf8",
     stdio: "inherit",
   });
@@ -102,11 +150,12 @@ async function main() {
     process.exit(result.status || 1);
   }
 
-  console.log("\n✅ Staging migrations successfully applied.");
+  console.log("\n=====================================================================");
+  console.log("   ✅ STAGING PRISMA MIGRATIONS APPLIED SUCCESSFULLY                 ");
+  console.log("=====================================================================\n");
 }
 
 main().catch((err) => {
-  console.error("Staging migration runner failed:", err);
+  console.error("Staging migration runner fatal error:", err);
   process.exit(1);
 });
-
