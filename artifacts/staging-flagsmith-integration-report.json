@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-11-16T19:07:00.647Z",
+  "targetEnvironment": {
+    "projectId": "53867",
+    "environmentId": 115953,
+    "environmentKey": "4Y72D2...sNsz",
+    "environmentName": "Development"
+  },
+  "humanApprovalConfirmed": true,
+  "steps": [
+    {
+      "step": "1. Management API Preflight",
+      "operation": "GET",
+      "endpoint": "/projects/53867/features/",
+      "httpStatus": 200,
+      "latencyMs": 2728.85,
+      "success": true,
+      "details": {
+        "existingFeaturesCount": 2
+      }
+    },
+    {
+      "step": "2. Edge API Preflight",
+      "operation": "GET",
+      "endpoint": "/flags/",
+      "httpStatus": 200,
+      "latencyMs": 391.36,
+      "success": true,
+      "details": {
+        "edgeFlagsCount": 2
+      }
+    },
+    {
+      "step": "3. Feature Provisioning",
+      "operation": "POST",
+      "endpoint": "/projects/53867/features/",
+      "httpStatus": 201,
+      "latencyMs": 2560.78,
+      "success": true,
+      "details": {
+        "featureId": 294335,
+        "featureName": "exp_staging_audit_1794856020648"
+      }
+    },
+    {
+      "step": "4. Read-After-Write Verification",
+      "operation": "GET",
+      "endpoint": "/flags/ (Edge Evaluator)",
+      "httpStatus": 200,
+      "latencyMs": 1636.45,
+      "success": true,
+      "details": {
+        "observedState": {
+          "id": 1836971,
+          "feature": {
+            "id": 294335,
+            "name": "exp_staging_audit_1794856020648",
+            "created_date": "2026-11-16T19:07:04.883379Z",
+            "description": "PulsePilot DevSecOps Staging Audit Test (Auto-Cleaned)",
+            "initial_value": "{\"layout\":\"wizard_v1\"}",
+            "default_enabled": true,
+            "type": "MULTIVARIATE"
+          },
+          "feature_state_value": "{\"layout\":\"wizard_v1\"}",
+          "environment": 115953,
+          "identity": null,
+          "feature_segment": null,
+          "enabled": true,
+          "multivariate_feature_state_values": [
+            {
+              "id": 35383,
+              "multivariate_feature_option": {
+                "id": 35383,
+                "uuid": "4152be5b-1297-4b54-a679-1ff2de196896",
+                "type": "unicode",
+                "integer_value": null,
+                "string_value": "{\"layout\":\"express_single_page\"}",
+                "boolean_value": null,
+                "default_percentage_allocation": 50,
+                "key": null
+              },
+              "percentage_allocation": 50
+            }
+          ]
+        }
+      }
+    },
+    {
+      "step": "5. Feature Cleanup",
+      "operation": "DELETE",
+      "endpoint": "/projects/53867/features/294335/",
+      "httpStatus": 204,
+      "latencyMs": 1227.67,
+      "success": true,
+      "details": {
+        "deletedFeatureId": 294335
+      }
+    }
+  ],
+  "readAfterWriteComparison": {
+    "expectedFeatureName": "exp_staging_audit_1794856020648",
+    "observedFeatureName": "exp_staging_audit_1794856020648",
+    "expectedVariantsCount": 1,
+    "observedVariantsCount": 1,
+    "expectedControlAllocation": 50,
+    "observedControlAllocation": 50,
+    "matches": true
+  },
+  "cleanupVerified": true,
+  "overallSuccess": true
+}

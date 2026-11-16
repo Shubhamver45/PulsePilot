@@ -26,7 +26,7 @@ import type { AuthUser } from "@/lib/auth/auth-service";
 export interface ExperimentProposal {
   proposalId: string;
   configurationHash: string;
-  status: "PENDING_APPROVAL" | "APPROVED" | "EXECUTED" | "REJECTED" | "EXPIRED";
+  status: "PENDING_APPROVAL" | "APPROVED" | "EXECUTING" | "EXECUTED" | "REJECTED" | "EXPIRED";
   targetEnvironment: string;
   strategy: ExperimentStrategy;
   duplicateCheck: {
@@ -41,6 +41,8 @@ export interface ExperimentProposal {
     errors: string[];
   };
   instrumentationPlan: {
+    isTemplate: boolean;
+    templateNotice: string;
     targetFiles: string[];
     requiredSdk: string;
     flagEvaluationCode: string;
@@ -56,7 +58,7 @@ export interface ExperimentProposal {
   executionResult?: any;
 }
 
-// Durable in-memory proposal registry with TTL
+// Durable in-memory fallback registry for offline unit testing & local mock mode
 const proposalRegistry = new Map<string, ExperimentProposal>();
 
 /**
@@ -88,10 +90,13 @@ export function computeConfigurationHash(strategy: ExperimentStrategy): string {
 }
 
 /**
- * Generates an application code instrumentation plan and concrete diff
- * demonstrating how the developer integrates this feature flag into their codebase.
+ * Generates an application code instrumentation reference template.
+ * Clearly labeled as an integration template for developer guidance,
+ * avoiding any false claim of automated workspace repository mutation.
  */
 export function generateInstrumentationPlan(strategy: ExperimentStrategy): {
+  isTemplate: boolean;
+  templateNotice: string;
   targetFiles: string[];
   requiredSdk: string;
   flagEvaluationCode: string;
@@ -132,20 +137,22 @@ await fetch("/api/telemetry/track", {
   }),
 });`;
 
-  const proposedDiff = `--- a/src/components/CheckoutContainer.tsx
-+++ b/src/components/CheckoutContainer.tsx
-@@ -14,6 +14,14 @@ export function CheckoutContainer({ user, cart }: CheckoutProps) {
-+  // PulsePilot Flagsmith Experiment: ${flagName}
-+  const checkoutLayout = flagsmith.getValue("${flagName}");
+  const proposedDiff = `--- a/src/components/CheckoutContainer.tsx.example
++++ b/src/components/CheckoutContainer.tsx.example
+@@ -14,6 +14,16 @@
++  // PulsePilot Flagsmith Reference Integration Template: ${flagName}
++  // NOTE: This is an example integration template for developer guidance.
++  // Adapt component names, prop types, and paths to match your codebase.
++  const variantConfig = flagsmith.getValue("${flagName}");
 +  
 +  // Record First-Touch Exposure Event
 +  useEffect(() => {
-+    recordExposure("${flagName}", user.id, checkoutLayout);
-+  }, [checkoutLayout, user.id]);
++    recordExposure("${flagName}", user.id, variantConfig?.layout || "control");
++  }, [variantConfig, user.id]);
 +
    return (
 -    <MultiStepCheckoutForm cart={cart} user={user} />
-+    checkoutLayout === "single_page" ? (
++    variantConfig?.layout === "single_page" ? (
 +      <SinglePageCheckoutForm cart={cart} user={user} onComplete={() => recordConversion("${primaryMetric}")} />
 +    ) : (
 +      <MultiStepCheckoutForm cart={cart} user={user} onComplete={() => recordConversion("${primaryMetric}")} />
@@ -154,8 +161,11 @@ await fetch("/api/telemetry/track", {
  }`;
 
   return {
-    targetFiles: ["src/components/CheckoutContainer.tsx", "src/lib/analytics/tracker.ts"],
-    requiredSdk: "flagsmith-nodejs (or @flagsmith/flagsmith)",
+    isTemplate: true,
+    templateNotice:
+      "Reference integration template for developer guidance. This is not an automated in-place repository patch; adapt component names, file paths, and transaction objects to match your application codebase.",
+    targetFiles: ["src/components/CheckoutContainer.tsx.example"],
+    requiredSdk: "flagsmith (or flagsmith-nodejs)",
     flagEvaluationCode,
     exposureTrackingCode,
     conversionTrackingCode,
@@ -165,7 +175,7 @@ await fetch("/api/telemetry/track", {
 
 /**
  * Creates a formal Experiment Proposal awaiting human sign-off.
- * Performs live duplicate checks against Flagsmith and PostgreSQL.
+ * Performs live duplicate checks against Flagsmith and persists proposal to PostgreSQL.
  */
 export async function createExperimentProposal(
   strategy: ExperimentStrategy,
@@ -258,19 +268,82 @@ export async function createExperimentProposal(
     expiresAt,
   };
 
+  // Persist to PostgreSQL if database is configured
+  if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
+    try {
+      await prisma.experimentProposal.create({
+        data: {
+          id: proposalId,
+          configurationHash,
+          status: "PENDING_APPROVAL",
+          targetEnvironment,
+          flagsmithFeatureName: strategy.flagsmith_feature_name,
+          strategy: strategy as any,
+          duplicateCheck: proposal.duplicateCheck as any,
+          validation: proposal.validation as any,
+          instrumentationPlan: proposal.instrumentationPlan as any,
+          proposedBy: proposal.proposedBy,
+          proposedAt: now,
+          expiresAt: new Date(expiresAt),
+        },
+      });
+    } catch (dbErr: any) {
+      console.warn("[Proposal Service] Database proposal insert note:", dbErr.message);
+    }
+  }
+
+  // Fallback cache for immediate in-memory and test resolution
   proposalRegistry.set(proposalId, proposal);
 
   return proposal;
 }
 
 /**
- * Retrieves a proposal by its unique ID.
+ * Retrieves a proposal by its unique ID from PostgreSQL with fallback to in-memory store.
+ * Automatically checks and updates expired status.
  */
-export function getProposal(proposalId: string): ExperimentProposal | null {
+export async function getProposal(proposalId: string): Promise<ExperimentProposal | null> {
+  // 1. Try PostgreSQL lookup if available
+  if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
+    try {
+      const record = await prisma.experimentProposal.findUnique({
+        where: { id: proposalId },
+      });
+      if (record) {
+        let status = record.status as ExperimentProposal["status"];
+        if (status === "PENDING_APPROVAL" && new Date() > record.expiresAt) {
+          status = "EXPIRED";
+          await prisma.experimentProposal.update({
+            where: { id: proposalId },
+            data: { status: "EXPIRED" },
+          }).catch(() => {});
+        }
+        return {
+          proposalId: record.id,
+          configurationHash: record.configurationHash,
+          status,
+          targetEnvironment: record.targetEnvironment,
+          strategy: record.strategy as any,
+          duplicateCheck: record.duplicateCheck as any,
+          validation: record.validation as any,
+          instrumentationPlan: record.instrumentationPlan as any,
+          proposedBy: record.proposedBy,
+          proposedAt: record.proposedAt.toISOString(),
+          expiresAt: record.expiresAt.toISOString(),
+          executedAt: record.executedAt?.toISOString(),
+          executedBy: record.executedBy || undefined,
+          executionResult: record.executionResult || undefined,
+        };
+      }
+    } catch (dbErr: any) {
+      console.warn("[Proposal Service] Database proposal lookup note:", dbErr.message);
+    }
+  }
+
+  // 2. In-memory fallback
   const proposal = proposalRegistry.get(proposalId);
   if (!proposal) return null;
 
-  // Check TTL
   if (proposal.status === "PENDING_APPROVAL" && new Date().toISOString() > proposal.expiresAt) {
     proposal.status = "EXPIRED";
     proposalRegistry.set(proposalId, proposal);
@@ -281,13 +354,14 @@ export function getProposal(proposalId: string): ExperimentProposal | null {
 
 /**
  * Rejects or cancels an active experiment proposal.
+ * Persists status: REJECTED to PostgreSQL.
  */
 export async function rejectProposal(
   proposalId: string,
   user: AuthUser,
   reason: string = "Rejected by reviewer"
 ): Promise<{ success: boolean; message: string }> {
-  const proposal = getProposal(proposalId);
+  const proposal = await getProposal(proposalId);
   if (!proposal) {
     throw new Error(`Proposal '${proposalId}' not found.`);
   }
@@ -298,6 +372,17 @@ export async function rejectProposal(
 
   proposal.status = "REJECTED";
   proposalRegistry.set(proposalId, proposal);
+
+  if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
+    try {
+      await prisma.experimentProposal.update({
+        where: { id: proposalId },
+        data: { status: "REJECTED" },
+      });
+    } catch (dbErr: any) {
+      console.warn("[Proposal Service] Database proposal rejection note:", dbErr.message);
+    }
+  }
 
   try {
     await recordAuditLog({
@@ -360,7 +445,7 @@ export async function approveAndExecuteProposal(
   }
 
   // 2. Proposal Lookup
-  const proposal = getProposal(proposalId);
+  const proposal = await getProposal(proposalId);
   if (!proposal) {
     throw new Error(`Proposal '${proposalId}' was not found. Please regenerate the experiment proposal.`);
   }
@@ -387,7 +472,7 @@ export async function approveAndExecuteProposal(
     );
   }
 
-  // 5. Anti-Tamper Configuration Hash Verification
+  // 6. Anti-Tamper Configuration Hash Verification
   const recomputedHash = computeConfigurationHash(proposal.strategy);
   if (submittedHash !== proposal.configurationHash || submittedHash !== recomputedHash) {
     throw new Error(
@@ -395,14 +480,14 @@ export async function approveAndExecuteProposal(
     );
   }
 
-  // 6. Validation Error Gate
+  // 7. Validation Error Gate
   if (!proposal.validation.isValid) {
     throw new Error(
       `Proposal contains validation errors: ${proposal.validation.errors.join("; ")}`
     );
   }
 
-  // 7. Production Confirmation Guard
+  // 8. Production Confirmation Guard
   if (proposal.targetEnvironment === "production" && !options?.confirmedProductionTarget) {
     throw new Error(
       "Production mutation blocked: Target is 'production' but confirmedProductionTarget was not explicitly asserted."
@@ -411,6 +496,72 @@ export async function approveAndExecuteProposal(
 
   const strategy = proposal.strategy;
   const verifiedAuthorizer = approvingUser.fullName || approvingUser.email;
+
+  // 9. Atomic State Transition to EXECUTING (PostgreSQL Multi-Instance Lock + Local Mutex)
+  const isDbConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock"));
+  let lockedInDb = false;
+
+  if (isDbConfigured) {
+    try {
+      const updateResult = await prisma.experimentProposal.updateMany({
+        where: {
+          id: proposalId,
+          status: "PENDING_APPROVAL",
+          configurationHash: submittedHash,
+          expiresAt: { gt: new Date() },
+        },
+        data: {
+          status: "EXECUTING",
+          approvedBy: verifiedAuthorizer,
+          approvedAt: new Date(),
+        },
+      });
+
+      if (updateResult.count === 0) {
+        const latest = await prisma.experimentProposal.findUnique({ where: { id: proposalId } });
+        if (latest?.status === "EXECUTED") {
+          throw new Error(
+            `Proposal '${proposalId}' has already been executed at ${latest.executedAt?.toISOString()}. Replay attacks are prohibited (PROPOSAL_ALREADY_EXECUTED).`
+          );
+        }
+        if (latest?.status === "EXECUTING") {
+          throw new Error(
+            `Proposal '${proposalId}' is currently being executed by another process. Concurrent execution blocked.`
+          );
+        }
+        if (latest?.status === "REJECTED") {
+          throw new Error(`Proposal '${proposalId}' has been rejected and cannot be executed.`);
+        }
+        if (latest?.expiresAt && latest.expiresAt <= new Date()) {
+          throw new Error(
+            `Proposal '${proposalId}' expired at ${latest.expiresAt.toISOString()}. Approvals must be signed within 15 minutes of generation.`
+          );
+        }
+        if (latest && latest.configurationHash !== submittedHash) {
+          throw new Error(
+            `CRITICAL SECURITY VIOLATION: PROPOSAL_TAMPERED - Configuration hash mismatch. Approved hash: ${submittedHash}, Current hash: ${latest.configurationHash}.`
+          );
+        }
+        throw new Error(`Proposal '${proposalId}' is not in a valid state for execution.`);
+      }
+      lockedInDb = true;
+    } catch (dbErr: any) {
+      if (
+        dbErr.message?.includes("PROPOSAL_ALREADY_EXECUTED") ||
+        dbErr.message?.includes("Concurrent execution blocked") ||
+        dbErr.message?.includes("PROPOSAL_TAMPERED")
+      ) {
+        throw dbErr;
+      }
+      console.warn("[Proposal Service] Database atomic transition note:", dbErr.message);
+    }
+  }
+
+  // In-memory mutex transition
+  if (proposal.status !== "PENDING_APPROVAL") {
+    throw new Error(`Proposal '${proposalId}' status '${proposal.status}' is not eligible for execution.`);
+  }
+  proposal.status = "EXECUTING";
 
   // 8. Provision Feature Flag in Flagsmith
   const flagsmithPayload = {
@@ -427,6 +578,15 @@ export async function approveAndExecuteProposal(
   const fsResult = await createFlagsmithMultivariateFeature(flagsmithPayload);
 
   if (!fsResult.success) {
+    proposal.status = "PENDING_APPROVAL";
+    proposalRegistry.set(proposalId, proposal);
+    if (isDbConfigured && lockedInDb) {
+      await prisma.experimentProposal.update({
+        where: { id: proposalId },
+        data: { status: "PENDING_APPROVAL" },
+      }).catch(() => {});
+    }
+
     await recordAuditLog({
       action: "OPERATION_FAILED",
       actor: { name: verifiedAuthorizer, type: "human" },
@@ -449,6 +609,14 @@ export async function approveAndExecuteProposal(
   // 9. Read-After-Write Edge Verification
   const edgeVerification = await getLiveRemoteFeatureState(strategy.flagsmith_feature_name);
   if (!edgeVerification.success || !edgeVerification.state) {
+    proposal.status = "PENDING_APPROVAL";
+    proposalRegistry.set(proposalId, proposal);
+    if (isDbConfigured && lockedInDb) {
+      await prisma.experimentProposal.update({
+        where: { id: proposalId },
+        data: { status: "PENDING_APPROVAL" },
+      }).catch(() => {});
+    }
     throw new Error(
       `Read-after-write verification failed: Feature '${strategy.flagsmith_feature_name}' could not be verified on Flagsmith edge.`
     );
@@ -543,6 +711,24 @@ export async function approveAndExecuteProposal(
   proposal.status = "EXECUTED";
   proposal.executedAt = executedAt;
   proposal.executedBy = verifiedAuthorizer;
+  proposal.executionResult = fsResult;
+  proposalRegistry.set(proposalId, proposal);
+
+  if (isDbConfigured && lockedInDb) {
+    try {
+      await prisma.experimentProposal.update({
+        where: { id: proposalId },
+        data: {
+          status: "EXECUTED",
+          executedBy: verifiedAuthorizer,
+          executedAt: new Date(executedAt),
+          executionResult: fsResult as any,
+        },
+      });
+    } catch (updateErr: any) {
+      console.warn("[Proposal Service] Database proposal completion note:", updateErr.message);
+    }
+  }
 
   const operationId = `op_fs_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
 

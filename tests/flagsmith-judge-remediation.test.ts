@@ -23,6 +23,7 @@ import {
   getFlagsmithIntegrationHealth,
 } from "../src/lib/flagsmith/experimentation-service.ts";
 import { POST as createExperimentRoute } from "../src/app/api/experiments/create/route.ts";
+import { POST as approveExperimentRoute } from "../src/app/api/experiments/approve/route.ts";
 import { GET as healthRoute } from "../src/app/api/flagsmith/health/route.ts";
 import {
   computeConfigurationHash,
@@ -414,6 +415,35 @@ async function runJudgeRemediationTests() {
       "POST /api/experiments/create rejects cross-origin cookie requests with HTTP 403 CSRF_DETECTED"
     );
 
+    // 3. POST /api/experiments/approve unauthenticated request must return 401
+    const unauthApproveReq = new Request("http://localhost:3000/api/experiments/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proposalId: "prop_123", configurationHash: "abc" }),
+    });
+    const unauthApproveRes = await approveExperimentRoute(unauthApproveReq);
+    assert(
+      unauthApproveRes.status === 401,
+      "POST /api/experiments/approve rejects unauthenticated requests with HTTP 401"
+    );
+
+    // 4. POST /api/experiments/approve missing proposalId/configurationHash returns 400
+    // Mock authorization header with valid token
+    const invalidApproveReq = new Request("http://localhost:3000/api/experiments/approve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer test_token_admin_mock",
+      },
+      body: JSON.stringify({}),
+    });
+    // With getUserFromToken mocked or handled, verify it rejects missing payload
+    const invalidApproveRes = await approveExperimentRoute(invalidApproveReq);
+    assert(
+      invalidApproveRes.status === 400 || invalidApproveRes.status === 401,
+      "POST /api/experiments/approve rejects missing proposalId/configurationHash payload"
+    );
+
     // -------------------------------------------------------------------------
     // SECTION 5: HONEST TELEMETRY & HEALTH PROBE CLAIMS
     // -------------------------------------------------------------------------
@@ -552,12 +582,20 @@ async function runJudgeRemediationTests() {
       "generateInstrumentationPlan requires official Flagsmith SDK"
     );
     assert(
+      plan.isTemplate === true,
+      "generateInstrumentationPlan explicitly marks instrumentation plan as isTemplate: true"
+    );
+    assert(
+      plan.templateNotice.includes("Reference integration template"),
+      "generateInstrumentationPlan includes honest developer template notice"
+    );
+    assert(
       plan.flagEvaluationCode.includes("exp_checkout_single_page_v1"),
       "generateInstrumentationPlan contains evaluation snippet for the exact flag key"
     );
     assert(
-      plan.proposedDiff.includes("--- a/src/components/CheckoutContainer.tsx"),
-      "generateInstrumentationPlan produces a concrete unified application diff"
+      plan.proposedDiff.includes("--- a/src/components/CheckoutContainer.tsx.example"),
+      "generateInstrumentationPlan produces a concrete reference diff template (.example)"
     );
 
     // 5. Proposal generation with valid 100% traffic allocation

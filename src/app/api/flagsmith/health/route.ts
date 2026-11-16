@@ -13,7 +13,7 @@ export type FlagsmithHealthStatus =
   | "UNAVAILABLE"
   | "NOT_VERIFIED";
 
-export async function GET() {
+export async function GET(request: Request) {
   const apiUrl = getApiUrl();
   const eventsUrl = getEventsUrl();
   const projectId = process.env.FLAGSMITH_PROJECT_ID || "53867";
@@ -24,6 +24,16 @@ export async function GET() {
 
   const managementAuth = getManagementAuthHeader();
   const hasManagementKey = Boolean(managementAuth.Authorization);
+
+  let requestedFeatureName: string | null = null;
+  if (request?.url) {
+    try {
+      const { searchParams } = new URL(request.url);
+      requestedFeatureName = searchParams.get("featureName") || searchParams.get("flag");
+    } catch {
+      // Ignore URL parsing errors
+    }
+  }
 
   let measuredLatencyMs: number | null = null;
   let liveFlags: any[] = [];
@@ -52,12 +62,16 @@ export async function GET() {
       if (res.ok) {
         liveFlags = await res.json();
         isEnvironmentConnected = true;
-        const matched = Array.isArray(liveFlags)
-          ? liveFlags.find((f: any) => f.feature?.name === "exp_checkout_layout_v2")
-          : null;
-        if (matched) {
-          activeFeatureState = matched;
-          environmentNumericId = matched.environment || null;
+
+        if (Array.isArray(liveFlags) && liveFlags.length > 0) {
+          const matched = requestedFeatureName
+            ? liveFlags.find((f: any) => f.feature?.name === requestedFeatureName)
+            : liveFlags.find((f: any) => f.feature?.type === "MULTIVARIATE" || f.feature?.name?.startsWith("exp_")) || liveFlags[0];
+
+          if (matched) {
+            activeFeatureState = matched;
+            environmentNumericId = matched.environment || null;
+          }
         }
       } else {
         const errText = await res.text();
@@ -95,12 +109,16 @@ export async function GET() {
     managementApiError = "FLAGSMITH_ORG_API_TOKEN is not configured. Project-level mutation operations unavailable.";
   }
 
-  // 3. Fallback active feature lookup if not yet indexed in flags list
-  if (!activeFeatureState && isEnvironmentConnected) {
-    const remote = await getLiveRemoteFeatureState("exp_checkout_layout_v2");
-    if (remote.success && remote.state) {
-      activeFeatureState = remote.state;
-      environmentNumericId = remote.state.environment || null;
+  // 3. Explicit lookup if specific feature name was requested and not found in /flags/ list
+  if (!activeFeatureState && isEnvironmentConnected && requestedFeatureName) {
+    try {
+      const remote = await getLiveRemoteFeatureState(requestedFeatureName);
+      if (remote.success && remote.state) {
+        activeFeatureState = remote.state;
+        environmentNumericId = remote.state.environment || null;
+      }
+    } catch {
+      // Lookup error handled gracefully
     }
   }
 
@@ -116,13 +134,23 @@ export async function GET() {
     status = "UNAVAILABLE";
   }
 
-  // 5. Inspect Real Experimentation Data Availability (PostgreSQL Telemetry)
+  // 5. Active Query Ping for Database & Warehouse Status Verification
+  let isDatabaseConnected = false;
+  let dbLatencyMs: number | null = null;
+  let dbError: string | null = null;
   let telemetryEventCount = 0;
+
   if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
     try {
+      const dbPingStart = Date.now();
+      await prisma.$queryRawUnsafe("SELECT 1");
+      dbLatencyMs = Date.now() - dbPingStart;
+      isDatabaseConnected = true;
+
       telemetryEventCount = await prisma.telemetryEvent.count();
-    } catch {
-      // Telemetry store unavailable or cold
+    } catch (dbErr: any) {
+      isDatabaseConnected = false;
+      dbError = dbErr.message;
     }
   }
 
@@ -133,11 +161,17 @@ export async function GET() {
       ? "Configured"
       : "Not Configured";
 
-  const resolvedWarehouseStatus: "LOCAL_POSTGRESQL_TELEMETRY" | "EXTERNAL_WAREHOUSE_CONNECTED" | "NOT_CONFIGURED" =
+  const resolvedWarehouseStatus:
+    | "LOCAL_POSTGRESQL_TELEMETRY"
+    | "EXTERNAL_WAREHOUSE_CONNECTED"
+    | "DATABASE_UNAVAILABLE"
+    | "NOT_CONFIGURED" =
     process.env.SNOWFLAKE_ACCOUNT || process.env.BIGQUERY_PROJECT
       ? "EXTERNAL_WAREHOUSE_CONNECTED"
-      : process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")
+      : isDatabaseConnected
       ? "LOCAL_POSTGRESQL_TELEMETRY"
+      : process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")
+      ? "DATABASE_UNAVAILABLE"
       : "NOT_CONFIGURED";
 
   const responsePayload = {
@@ -160,6 +194,11 @@ export async function GET() {
         : "READ_ONLY_EVALUATIONS"
       : "UNCONFIGURED",
     warehouseStatus: resolvedWarehouseStatus,
+    database: {
+      isDatabaseConnected,
+      measuredLatencyMs: dbLatencyMs,
+      error: dbError,
+    },
     experimentationDataAvailable: telemetryEventCount > 0,
     recordedTelemetryEventsCount: telemetryEventCount,
     measuredLatencyMs: isEnvironmentConnected && measuredLatencyMs !== null ? measuredLatencyMs : null,
@@ -167,6 +206,7 @@ export async function GET() {
     diagnostics: {
       managementApiError,
       environmentApiError,
+      databaseError: dbError,
     },
 
     // Real Remote Flagsmith Details (Independently Verified from Live Flagsmith Call)
@@ -199,7 +239,7 @@ export async function GET() {
         "POST /api/v1/identities/ (Identity traits and segment evaluation)",
       ],
       architecturalRationale:
-        "Direct HTTPS REST integration with Flagsmith v2 Feature Versioning provides sub-200ms typed mutations, eliminates container cold-starts inherent to CLI subprocesses, and guarantees strict read-after-write verification.",
+        "Direct HTTPS REST integration with Flagsmith v2 Feature Versioning provides direct serverless typed mutations, eliminates container cold-starts inherent to CLI subprocesses, and guarantees strict read-after-write verification.",
     },
   };
 

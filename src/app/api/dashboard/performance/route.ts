@@ -45,6 +45,15 @@ export async function GET(request: Request) {
         select: {
           eventType: true,
           timestamp: true,
+          distinctUserId: true,
+          experimentId: true,
+          variant: {
+            select: {
+              id: true,
+              key: true,
+              isControl: true,
+            },
+          },
           properties: true,
         },
         orderBy: { timestamp: "asc" },
@@ -54,29 +63,84 @@ export async function GET(request: Request) {
       const organicEvents = events.filter((e) => (e.properties as any)?.isSynthetic !== true);
 
       if (organicEvents.length > 0) {
-        // Group organic events by date
-        const dateMap = new Map<string, { exposures: number; conversions: number }>();
+        // 1. Build First-Touch Identity Exposure Attribution Mapping
+        // Map: distinctUserId -> { isControl: boolean; variantKey: string }
+        const userExposureMap = new Map<string, { isControl: boolean; variantKey: string }>();
+
+        for (const ev of organicEvents) {
+          if (ev.eventType === "EXPOSURE" && ev.variant) {
+            if (!userExposureMap.has(ev.distinctUserId)) {
+              userExposureMap.set(ev.distinctUserId, {
+                isControl: Boolean(ev.variant.isControl),
+                variantKey: ev.variant.key,
+              });
+            }
+          }
+        }
+
+        // 2. Group events by date with deduplicated identity exposure & conversion tracking
+        interface DayBucket {
+          controlExposures: Set<string>;
+          treatmentExposures: Set<string>;
+          controlConversions: Set<string>;
+          treatmentConversions: Set<string>;
+        }
+
+        const dateMap = new Map<string, DayBucket>();
 
         for (const ev of organicEvents) {
           const dateStr = ev.timestamp.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-          const current = dateMap.get(dateStr) || { exposures: 0, conversions: 0 };
-          if (ev.eventType === "EXPOSURE") {
-            current.exposures++;
-          } else if (ev.eventType === "CONVERSION") {
-            current.conversions++;
+          let bucket = dateMap.get(dateStr);
+          if (!bucket) {
+            bucket = {
+              controlExposures: new Set<string>(),
+              treatmentExposures: new Set<string>(),
+              controlConversions: new Set<string>(),
+              treatmentConversions: new Set<string>(),
+            };
+            dateMap.set(dateStr, bucket);
           }
-          dateMap.set(dateStr, current);
+
+          // Resolve variant attribution from event or user's first exposure
+          const exposure = userExposureMap.get(ev.distinctUserId);
+          const isControl = ev.variant?.isControl ?? exposure?.isControl ?? false;
+
+          if (ev.eventType === "EXPOSURE") {
+            if (isControl) {
+              bucket.controlExposures.add(ev.distinctUserId);
+            } else {
+              bucket.treatmentExposures.add(ev.distinctUserId);
+            }
+          } else if (ev.eventType === "CONVERSION") {
+            // Deduplicated conversion attributed to initial assigned variant
+            if (isControl) {
+              bucket.controlConversions.add(ev.distinctUserId);
+            } else {
+              bucket.treatmentConversions.add(ev.distinctUserId);
+            }
+          }
         }
 
-        const liveDataPoints: PerformanceDataPoint[] = Array.from(dateMap.entries()).map(([date, counts]) => {
-          const conversionRate = counts.exposures > 0 ? (counts.conversions / counts.exposures) * 100 : 0;
+        const liveDataPoints: PerformanceDataPoint[] = Array.from(dateMap.entries()).map(([date, b]) => {
+          const controlExp = b.controlExposures.size;
+          const treatmentExp = b.treatmentExposures.size;
+          const controlConv = b.controlConversions.size;
+          const treatmentConv = b.treatmentConversions.size;
+
+          const controlRate = controlExp > 0 ? (controlConv / controlExp) * 100 : 0;
+          const treatmentRate = treatmentExp > 0 ? (treatmentConv / treatmentExp) * 100 : 0;
+
+          const dayExposures = controlExp + treatmentExp;
+          const dayConversions = controlConv + treatmentConv;
+          const overallRate = dayExposures > 0 ? (dayConversions / dayExposures) * 100 : 0;
+
           return {
             date,
-            exposures: counts.exposures,
-            conversions: counts.conversions,
-            conversionRate: Number(conversionRate.toFixed(2)),
-            controlRate: Number(conversionRate.toFixed(2)),
-            treatmentRate: Number(conversionRate.toFixed(2)),
+            exposures: dayExposures,
+            conversions: dayConversions,
+            conversionRate: Number(overallRate.toFixed(2)),
+            controlRate: Number(controlRate.toFixed(2)),
+            treatmentRate: Number(treatmentRate.toFixed(2)),
           };
         });
 
@@ -115,4 +179,3 @@ export async function GET(request: Request) {
     averageConversionRate: 0,
   });
 }
-

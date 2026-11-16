@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server";
-import { ExperimentStrategySchema } from "@/lib/ai/schemas";
-import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
 import { getUserFromToken } from "@/lib/auth/auth-service";
-import {
-  createExperimentProposal,
-  approveAndExecuteProposal,
-} from "@/lib/flagsmith/proposal-service";
+import { approveAndExecuteProposal } from "@/lib/flagsmith/proposal-service";
 
 export async function POST(request: Request) {
   try {
@@ -109,7 +104,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. Enforce Strict RBAC (Only ADMIN and EDITOR roles can create experiments)
+    // 4. Enforce Strict RBAC (Only ADMIN and EDITOR roles can create/execute experiments)
     if (user.role !== "ADMIN" && user.role !== "EDITOR") {
       return NextResponse.json(
         {
@@ -123,24 +118,29 @@ export async function POST(request: Request) {
 
     const body = await request.json();
 
-    let proposalId = body.proposalId;
-    let configurationHash = body.configurationHash;
-    let targetEnvironment = body.targetEnvironment || "development";
-
-    // 5. If called directly with a strategy, generate proposal on-the-fly
-    if (!proposalId && body.strategy) {
-      const parsedStrategy = ExperimentStrategySchema.parse(body.strategy);
-      const proposal = await createExperimentProposal(parsedStrategy, user, targetEnvironment);
-      proposalId = proposal.proposalId;
-      configurationHash = proposal.configurationHash;
+    // 5. Strict Human-in-the-Loop Gate: Direct execution from raw strategy is rejected
+    if (body.strategy && !body.proposalId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "PROPOSAL_REVIEW_REQUIRED",
+          message:
+            "Direct execution from raw strategy is prohibited. PulsePilot requires a strict Human-in-the-Loop two-step handshake: submit your strategy to /api/experiments/propose for validation and proposal generation, review the proposal in the UI, and then submit proposalId and configurationHash to /api/experiments/approve.",
+        },
+        { status: 400 }
+      );
     }
+
+    const proposalId = body.proposalId;
+    const configurationHash = body.configurationHash;
 
     if (!proposalId || !configurationHash) {
       return NextResponse.json(
         {
           success: false,
           error: "INVALID_PROPOSAL_PAYLOAD",
-          message: "A valid proposalId and configurationHash (or strategy) is required for execution.",
+          message:
+            "A valid proposalId and configurationHash are required for execution. First generate a proposal via /api/experiments/propose.",
         },
         { status: 400 }
       );
@@ -155,25 +155,6 @@ export async function POST(request: Request) {
         confirmedProductionTarget: body.confirmedProductionTarget,
       }
     );
-
-    // 7. Mirror to local fallback store for offline tests
-    if (body.strategy) {
-      const allVariants = [
-        body.strategy.control_variant,
-        ...body.strategy.treatment_variants,
-      ];
-      flagsmithMockStore.setFlag({
-        name: executionResult.flagsmithFeatureName,
-        enabled: true,
-        type: "MULTIVARIATE",
-        value: JSON.stringify(body.strategy.control_variant.featureValue),
-        multivariateOptions: allVariants.map((v: any) => ({
-          key: v.key,
-          trafficAllocation: v.trafficAllocation,
-          value: JSON.stringify(v.featureValue),
-        })),
-      });
-    }
 
     return NextResponse.json({
       ...executionResult,

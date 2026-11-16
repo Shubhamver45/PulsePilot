@@ -132,6 +132,34 @@ export async function getLiveRemoteFeatureState(
         };
       }
 
+      // If multivariate_feature_state_values is missing (client /flags/ endpoint omits it),
+      // enrich from project feature definition using Management API
+      if (!matched.multivariate_feature_state_values || matched.multivariate_feature_state_values.length === 0) {
+        const featureId = matched.feature?.id || matched.id;
+        const projectId = process.env.FLAGSMITH_PROJECT_ID;
+        const authHeaders = getManagementAuthHeader();
+        if (projectId && authHeaders.Authorization && featureId) {
+          try {
+            const featRes = await fetch(`${apiUrl}/projects/${projectId}/features/${featureId}/`, {
+              headers: { ...authHeaders, "Content-Type": "application/json" },
+              cache: "no-store",
+            });
+            if (featRes.ok) {
+              const featData = await featRes.json();
+              if (Array.isArray(featData.multivariate_options)) {
+                matched.multivariate_feature_state_values = featData.multivariate_options.map((opt: any) => ({
+                  id: opt.id,
+                  multivariate_feature_option: opt,
+                  percentage_allocation: opt.default_percentage_allocation,
+                }));
+              }
+            }
+          } catch {
+            // Fail open: return matched state as-is
+          }
+        }
+      }
+
       return {
         success: true,
         state: matched,

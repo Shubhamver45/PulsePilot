@@ -255,17 +255,13 @@ export default function AIExperimentStudioPage() {
       setIsDeploying(true);
       setDeploymentError(null);
 
-      const res = await fetch("/api/experiments/create", {
+      const res = await fetch("/api/experiments/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           proposalId: proposal?.proposalId,
           configurationHash: proposal?.configurationHash,
-          strategy,
           targetEnvironment,
-          approvedBy: currentUser
-            ? `${currentUser.fullName} (${currentUser.role})`
-            : "Sarah Lin (Product Lead)",
         }),
       });
 
@@ -1150,17 +1146,25 @@ export default function AIExperimentStudioPage() {
             </div>
           </div>
 
-          {/* Proposed Application Code Diff Preview */}
+          {/* Proposed Application Code Diff Preview (Developer Reference Template) */}
           {proposal?.instrumentationPlan?.proposedDiff && (
-            <div className="p-4 rounded-lg bg-surface border border-border space-y-2 text-xs">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-text flex items-center gap-1.5">
-                  <Code2 className="w-3.5 h-3.5 text-primary" /> Proposed Application Instrumentation Diff
-                </span>
+            <div className="p-4 rounded-lg bg-surface border border-border space-y-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-text flex items-center gap-1.5">
+                    <Code2 className="w-3.5 h-3.5 text-primary" /> Application Instrumentation Reference
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-700 border border-amber-500/20">
+                    Developer Template
+                  </span>
+                </div>
                 <span className="text-[10px] text-text-secondary font-mono">
-                  {proposal.instrumentationPlan.targetFiles?.join(", ") || "src/components/CheckoutContainer.tsx"}
+                  {proposal.instrumentationPlan.targetFiles?.join(", ") || "src/components/CheckoutContainer.tsx.example"}
                 </span>
               </div>
+              <p className="text-[11px] text-text-secondary leading-relaxed bg-surface-subtle p-2.5 rounded border border-border/60">
+                ℹ️ <strong>Guidance Template:</strong> {proposal.instrumentationPlan.templateNotice || "Reference integration template for developer guidance. This is not an automated in-place repository patch; adapt component names, file paths, and transaction objects to match your application codebase."}
+              </p>
               <pre className="p-3 bg-surface-subtle border border-border rounded font-mono text-[11px] text-text overflow-x-auto max-h-48 leading-relaxed">
                 {proposal.instrumentationPlan.proposedDiff}
               </pre>
