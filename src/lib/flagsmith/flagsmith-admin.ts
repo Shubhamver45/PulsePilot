@@ -504,3 +504,235 @@ export async function rollbackFlagsmithToControl(
 ): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
   return rolloutFlagsmithWinner(featureName, controlValue);
 }
+
+/**
+ * Update or persist identity traits on Flagsmith.
+ * Uses official Flagsmith identities endpoint: POST /api/v1/identities/
+ */
+export async function setFlagsmithIdentityTraits(
+  identifier: string,
+  traits: { trait_key: string; trait_value: any }[]
+): Promise<{
+  success: boolean;
+  identity?: string;
+  traits?: any[];
+  flags?: any[];
+  error?: string;
+}> {
+  const apiUrl = getApiUrl();
+  const envKey =
+    process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
+    process.env.FLAGSMITH_ENVIRONMENT_KEY;
+
+  if (!envKey || envKey === "mock") {
+    return {
+      success: false,
+      error: "Flagsmith environment key is not configured.",
+    };
+  }
+
+  try {
+    const res = await fetch(`${apiUrl}/identities/`, {
+      method: "POST",
+      headers: {
+        "X-Environment-Key": envKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        identifier,
+        traits: traits.map((t) => ({
+          trait_key: t.trait_key,
+          trait_value: t.trait_value,
+        })),
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return {
+        success: false,
+        error: `Flagsmith API Error (${res.status}): Failed to set identity traits: ${errText}`,
+      };
+    }
+
+    const data = await res.json();
+    return {
+      success: true,
+      identity: data.identifier || identifier,
+      traits: data.traits || [],
+      flags: data.flags || [],
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Network error setting Flagsmith identity traits: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Retrieve identity traits and flags from Flagsmith: GET /api/v1/identities/?identifier=...
+ */
+export async function getFlagsmithIdentityTraitsAndFlags(
+  identifier: string
+): Promise<{
+  success: boolean;
+  identity?: string;
+  traits?: any[];
+  flags?: any[];
+  error?: string;
+}> {
+  const apiUrl = getApiUrl();
+  const envKey =
+    process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
+    process.env.FLAGSMITH_ENVIRONMENT_KEY;
+
+  if (!envKey || envKey === "mock") {
+    return {
+      success: false,
+      error: "Flagsmith environment key is not configured.",
+    };
+  }
+
+  try {
+    const res = await fetch(
+      `${apiUrl}/identities/?identifier=${encodeURIComponent(identifier)}`,
+      {
+        method: "GET",
+        headers: {
+          "X-Environment-Key": envKey,
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+      }
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return {
+        success: false,
+        error: `Flagsmith API Error (${res.status}): Failed to retrieve identity: ${errText}`,
+      };
+    }
+
+    const data = await res.json();
+    return {
+      success: true,
+      identity: data.identifier || identifier,
+      traits: data.traits || [],
+      flags: data.flags || [],
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Network error retrieving Flagsmith identity: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Creates or verifies a Flagsmith project segment.
+ * Checks existing segments on project first, creates if missing.
+ */
+export async function getOrCreateFlagsmithSegment(input: {
+  name: string;
+  description: string;
+  ruleProperty: string;
+  ruleOperator?: string;
+  ruleValue: string;
+}): Promise<{
+  success: boolean;
+  segment?: any;
+  created?: boolean;
+  error?: string;
+}> {
+  const projectId = process.env.FLAGSMITH_PROJECT_ID;
+  const authHeaders = getManagementAuthHeader();
+  const apiUrl = getApiUrl();
+
+  if (!projectId) {
+    return { success: false, error: "FLAGSMITH_PROJECT_ID is not configured." };
+  }
+
+  if (!authHeaders.Authorization) {
+    return {
+      success: false,
+      error: "FLAGSMITH_ORG_API_TOKEN is required for segment management.",
+    };
+  }
+
+  try {
+    // 1. List existing segments
+    const listRes = await fetch(`${apiUrl}/projects/${projectId}/segments/`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+      },
+    });
+
+    if (listRes.ok) {
+      const listData = await listRes.json();
+      const segments = Array.isArray(listData.results) ? listData.results : Array.isArray(listData) ? listData : [];
+      const existing = segments.find((s: any) => s.name === input.name);
+      if (existing) {
+        return { success: true, segment: existing, created: false };
+      }
+    }
+
+    // 2. Create segment
+    const createRes = await fetch(`${apiUrl}/projects/${projectId}/segments/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+      },
+      body: JSON.stringify({
+        name: input.name,
+        description: input.description,
+        project: Number(projectId),
+        rules: [
+          {
+            type: "ALL",
+            rules: [],
+            conditions: [
+              {
+                operator: input.ruleOperator || "EQUAL",
+                property: input.ruleProperty,
+                value: input.ruleValue,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!createRes.ok) {
+      const errText = await createRes.text();
+      return {
+        success: false,
+        error: `Flagsmith Segment Creation Error (${createRes.status}): ${errText}`,
+      };
+    }
+
+    const created = await createRes.json();
+    return { success: true, segment: created, created: true };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Network error creating Flagsmith segment: ${err.message}`,
+    };
+  }
+}
+
+/**
+ * Evaluates whether a set of traits satisfies the "Beta Testers" segment rule.
+ */
+export function evaluateBetaTesterSegment(traits: { trait_key: string; trait_value: any }[]): boolean {
+  if (!Array.isArray(traits)) return false;
+  return traits.some(
+    (t) =>
+      t.trait_key === "beta_tester" &&
+      (t.trait_value === true || t.trait_value === "true" || t.trait_value === 1)
+  );
+}

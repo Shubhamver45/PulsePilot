@@ -6,6 +6,10 @@
 import {
   createFlagsmithMultivariateFeature,
   getLiveRemoteFeatureState,
+  evaluateBetaTesterSegment,
+  setFlagsmithIdentityTraits,
+  getFlagsmithIdentityTraitsAndFlags,
+  getOrCreateFlagsmithSegment,
 } from "../src/lib/flagsmith/flagsmith-admin.ts";
 import { flagsmithMockStore } from "../src/lib/flagsmith/flagsmith-mock.ts";
 import {
@@ -265,6 +269,108 @@ async function runFlagsmithIntegrationTests() {
   assert(
     zeroSecretsInErrors === true,
     "No credentials, tokens, or secret values appear in API guard error responses"
+  );
+
+  // ---------------------------------------------------------------------------
+  // 6. IDENTITY TRAITS & SEGMENT TARGETING EVALUATION
+  // ---------------------------------------------------------------------------
+  console.log("\nSECTION 6: IDENTITY TRAITS & SEGMENT TARGETING EVALUATION");
+
+  // 1. Alex identity traits & Beta Testers segment matching
+  const alexTraits = flagsmithMockStore.getTraits("user_alex_dev");
+  const alexSegments = flagsmithMockStore.getSegmentsForIdentity("user_alex_dev");
+  const alexPlan = alexTraits.find((t) => t.trait_key === "plan")?.trait_value;
+  const alexBeta = alexTraits.find((t) => t.trait_key === "beta_tester")?.trait_value;
+  const alexDevice = alexTraits.find((t) => t.trait_key === "device")?.trait_value;
+  const alexIsBeta = evaluateBetaTesterSegment(alexTraits);
+
+  assert(
+    alexPlan === "enterprise" &&
+      alexBeta === true &&
+      alexDevice === "desktop" &&
+      alexSegments.includes("Beta Testers") &&
+      alexIsBeta === true,
+    "Alex (user_alex_dev) traits resolve correctly and match 'Beta Testers' segment"
+  );
+
+  // 2. Elena identity traits & Standard Users segment matching
+  const elenaTraits = flagsmithMockStore.getTraits("user_elena_ai");
+  const elenaSegments = flagsmithMockStore.getSegmentsForIdentity("user_elena_ai");
+  const elenaPlan = elenaTraits.find((t) => t.trait_key === "plan")?.trait_value;
+  const elenaBeta = elenaTraits.find((t) => t.trait_key === "beta_tester")?.trait_value;
+  const elenaDevice = elenaTraits.find((t) => t.trait_key === "device")?.trait_value;
+  const elenaIsBeta = evaluateBetaTesterSegment(elenaTraits);
+
+  assert(
+    elenaPlan === "standard" &&
+      elenaBeta === false &&
+      elenaDevice === "mobile" &&
+      !elenaSegments.includes("Beta Testers") &&
+      elenaSegments.includes("Standard Users") &&
+      elenaIsBeta === false,
+    "Elena (user_elena_ai) traits resolve correctly and match 'Standard Users' (default) segment"
+  );
+
+  // 3. Dynamic trait mutation & reactive segment re-assignment
+  flagsmithMockStore.setTraits("user_elena_ai", [{ trait_key: "beta_tester", trait_value: true }]);
+  const elenaPromotedSegments = flagsmithMockStore.getSegmentsForIdentity("user_elena_ai");
+  const elenaPromotedIsBeta = evaluateBetaTesterSegment(flagsmithMockStore.getTraits("user_elena_ai"));
+
+  assert(
+    elenaPromotedSegments.includes("Beta Testers") && elenaPromotedIsBeta === true,
+    "Dynamic trait mutation: Setting Elena's 'beta_tester' to true reacts immediately with Beta Testers segment inclusion"
+  );
+
+  // Revert Elena's trait back to false
+  flagsmithMockStore.setTraits("user_elena_ai", [{ trait_key: "beta_tester", trait_value: false }]);
+  const elenaRevertedSegments = flagsmithMockStore.getSegmentsForIdentity("user_elena_ai");
+  assert(
+    !elenaRevertedSegments.includes("Beta Testers") && elenaRevertedSegments.includes("Standard Users"),
+    "Safe trait restoration: Setting Elena's 'beta_tester' to false restores standard segment"
+  );
+
+  // 4. Missing credentials guard for traits API
+  const missingTraitsKey = await setFlagsmithIdentityTraits("user_test", [
+    { trait_key: "beta_tester", trait_value: true },
+  ]);
+  // When credentials are deleted or environment key is missing
+  const prevEnvKey = process.env.FLAGSMITH_SERVER_SIDE_API_KEY;
+  delete process.env.FLAGSMITH_SERVER_SIDE_API_KEY;
+  delete process.env.FLAGSMITH_ENVIRONMENT_KEY;
+  const guardedTraitsResult = await setFlagsmithIdentityTraits("user_test", [
+    { trait_key: "beta_tester", trait_value: true },
+  ]);
+  assert(
+    guardedTraitsResult.success === false && guardedTraitsResult.error?.includes("not configured"),
+    "Missing Flagsmith credentials rejected with explicit error response on trait updates"
+  );
+  if (prevEnvKey) {
+    process.env.FLAGSMITH_SERVER_SIDE_API_KEY = prevEnvKey;
+  }
+
+  // 5. Telemetry attribution retains identity, traits, and segment metadata without secret leakage
+  const simulatedTelemetry = {
+    distinctUserId: "user_alex_dev",
+    experimentFlag: "exp_checkout_layout_v2",
+    variantKey: "variant_single_page",
+    properties: {
+      traits: alexTraits,
+      segments: alexSegments,
+      cartTotal: 1249.0,
+      isSynthetic: false,
+    },
+  };
+  let telemetrySafe = true;
+  try {
+    assertZeroSecretLeakage(simulatedTelemetry);
+  } catch {
+    telemetrySafe = false;
+  }
+  assert(
+    telemetrySafe === true &&
+      simulatedTelemetry.properties.traits.length === 3 &&
+      simulatedTelemetry.properties.segments[0] === "Beta Testers",
+    "Telemetry attribution payload preserves complete identity traits and segment context with zero secret leakage"
   );
 
   console.log("\n=====================================================================");

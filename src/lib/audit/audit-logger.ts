@@ -27,12 +27,20 @@ export interface AuditRecord {
     | "KILL_SWITCH_FAILED"
     | "OPERATION_FAILED"
     | "CONVERSION_RECORDED"
-    | "ANALYSIS_GENERATED";
+    | "ANALYSIS_GENERATED"
+    | "IDENTITY_TRAITS_UPDATED"
+    | "SEGMENT_CREATED"
+    | "SEGMENT_TARGETING_EVALUATED";
   actor: {
     name: string;
     type: "human" | "agent" | "system";
   };
-  entityType: "EXPERIMENT" | "FLAGSMITH_FLAG" | "TELEMETRY";
+  entityType:
+    | "EXPERIMENT"
+    | "FLAGSMITH_FLAG"
+    | "TELEMETRY"
+    | "FLAGSMITH_SEGMENT"
+    | "FLAGSMITH_IDENTITY";
   entityId: string;
   details: string;
   previousState?: any;

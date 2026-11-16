@@ -15,11 +15,31 @@ export interface MockFeatureFlag {
   }[];
 }
 
+export interface MockIdentityTrait {
+  trait_key: string;
+  trait_value: any;
+}
+
 class FlagsmithMockStore {
   private flags: Map<string, MockFeatureFlag> = new Map();
+  private identityTraits: Map<string, MockIdentityTrait[]> = new Map();
 
   constructor() {
     this.seedDefaultFlags();
+    this.seedDefaultIdentities();
+  }
+
+  private seedDefaultIdentities() {
+    this.identityTraits.set("user_alex_dev", [
+      { trait_key: "plan", trait_value: "enterprise" },
+      { trait_key: "beta_tester", trait_value: true },
+      { trait_key: "device", trait_value: "desktop" },
+    ]);
+    this.identityTraits.set("user_elena_ai", [
+      { trait_key: "plan", trait_value: "standard" },
+      { trait_key: "beta_tester", trait_value: false },
+      { trait_key: "device", trait_value: "mobile" },
+    ]);
   }
 
   private seedDefaultFlags() {
@@ -153,17 +173,55 @@ class FlagsmithMockStore {
     this.flags.set(flag.name, flag);
   }
 
+  public getTraits(identity: string): MockIdentityTrait[] {
+    return this.identityTraits.get(identity) || [];
+  }
+
+  public setTraits(identity: string, traits: MockIdentityTrait[]) {
+    const existing = this.identityTraits.get(identity) || [];
+    const traitMap = new Map(existing.map((t) => [t.trait_key, t.trait_value]));
+    for (const t of traits) {
+      traitMap.set(t.trait_key, t.trait_value);
+    }
+    const updated = Array.from(traitMap.entries()).map(([trait_key, trait_value]) => ({
+      trait_key,
+      trait_value,
+    }));
+    this.identityTraits.set(identity, updated);
+    return updated;
+  }
+
+  public getSegmentsForIdentity(identity: string): string[] {
+    const traits = this.getTraits(identity);
+    const isBeta = traits.some(
+      (t) => t.trait_key === "beta_tester" && (t.trait_value === true || t.trait_value === "true")
+    );
+    return isBeta ? ["Beta Testers"] : ["Standard Users"];
+  }
+
   /**
    * Evaluates which variant an identity receives based on deterministic hashing.
    */
-  public evaluateForIdentity(flagName: string, identity: string): { enabled: boolean; value: string; variantKey: string } {
+  public evaluateForIdentity(
+    flagName: string,
+    identity: string
+  ): {
+    enabled: boolean;
+    value: string;
+    variantKey: string;
+    traits: MockIdentityTrait[];
+    segments: string[];
+  } {
+    const traits = this.getTraits(identity);
+    const segments = this.getSegmentsForIdentity(identity);
+
     const flag = this.flags.get(flagName);
     if (!flag || !flag.enabled) {
-      return { enabled: false, value: flag?.value ?? "", variantKey: "control" };
+      return { enabled: false, value: flag?.value ?? "", variantKey: "control", traits, segments };
     }
 
     if (flag.type === "BOOLEAN" || flag.multivariateOptions.length === 0) {
-      return { enabled: true, value: flag.value, variantKey: "control" };
+      return { enabled: true, value: flag.value, variantKey: "control", traits, segments };
     }
 
     // Deterministic hash based on identity string (e.g. 0 to 99)
@@ -176,11 +234,17 @@ class FlagsmithMockStore {
     for (const opt of flag.multivariateOptions) {
       cumulative += opt.trafficAllocation;
       if (hash < cumulative) {
-        return { enabled: true, value: opt.value, variantKey: opt.key };
+        return { enabled: true, value: opt.value, variantKey: opt.key, traits, segments };
       }
     }
 
-    return { enabled: true, value: flag.multivariateOptions[0].value, variantKey: flag.multivariateOptions[0].key };
+    return {
+      enabled: true,
+      value: flag.multivariateOptions[0].value,
+      variantKey: flag.multivariateOptions[0].key,
+      traits,
+      segments,
+    };
   }
 
   public rolloutWinner(flagName: string, winningVariantKey: string) {

@@ -32,6 +32,11 @@ import {
   Cpu,
   BarChart3,
   ExternalLink,
+  Target,
+  Users,
+  ToggleLeft,
+  ToggleRight,
+  Info,
 } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -211,6 +216,16 @@ export default function DemoStorePage() {
   const [distinctUserId, setDistinctUserId] = useState<string>("user_alex_dev");
   const [customIdentityInput, setCustomIdentityInput] = useState("");
 
+  // Flagsmith Identity Traits & Segment Targeting State
+  const [identityTraits, setIdentityTraits] = useState<Array<{ trait_key: string; trait_value: any }>>([
+    { trait_key: "plan", trait_value: "enterprise" },
+    { trait_key: "beta_tester", trait_value: true },
+    { trait_key: "device", trait_value: "desktop" },
+  ]);
+  const [identitySegments, setIdentitySegments] = useState<string[]>(["Beta Testers"]);
+  const [isUpdatingTrait, setIsUpdatingTrait] = useState(false);
+  const [traitFeedback, setTraitFeedback] = useState<string | null>(null);
+
   // Evaluated Flagsmith Experiment State
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluatedVariant, setEvaluatedVariant] = useState<{
@@ -324,12 +339,86 @@ export default function DemoStorePage() {
         setEvaluationSource(data.source);
       }
 
+      if (Array.isArray(data.traits) && data.traits.length > 0) {
+        setIdentityTraits(data.traits);
+      }
+      if (Array.isArray(data.segments) && data.segments.length > 0) {
+        setIdentitySegments(data.segments);
+      }
+
       // Reset step
       setMultiStepIndex(1);
     } catch (err) {
       console.error("Flagsmith evaluation failed:", err);
     } finally {
       setIsEvaluating(false);
+    }
+  };
+
+  const handleToggleBetaTesterTrait = async () => {
+    setIsUpdatingTrait(true);
+    setTraitFeedback(null);
+    try {
+      const currentBetaTrait = identityTraits.find((t) => t.trait_key === "beta_tester");
+      const currentVal = currentBetaTrait?.trait_value;
+      const newVal = !(currentVal === true || currentVal === "true" || currentVal === 1);
+
+      const updatedTraits = identityTraits.map((t) =>
+        t.trait_key === "beta_tester" ? { ...t, trait_value: newVal } : t
+      );
+      if (!updatedTraits.some((t) => t.trait_key === "beta_tester")) {
+        updatedTraits.push({ trait_key: "beta_tester", trait_value: newVal });
+      }
+
+      const res = await fetch("/api/flagsmith/traits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identity: distinctUserId,
+          traits: updatedTraits,
+        }),
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        setIdentityTraits(result.traits || updatedTraits);
+        setIdentitySegments(result.segments || (newVal ? ["Beta Testers"] : ["Standard Users"]));
+        setTraitFeedback(
+          `Updated 'beta_tester' to ${newVal ? "true" : "false"} via Flagsmith API (${
+            result.source === "flagsmith_remote_api" ? "Live Flagsmith Cloud" : "Local Mock Sandbox"
+          })`
+        );
+        setTimeout(() => setTraitFeedback(null), 4000);
+        await evaluateFlagsmith(distinctUserId);
+      } else {
+        setTraitFeedback("Failed to update trait on Flagsmith API.");
+        setTimeout(() => setTraitFeedback(null), 4000);
+      }
+    } catch (err: any) {
+      console.error("Trait toggle error:", err);
+      setTraitFeedback(`Error: ${err.message}`);
+      setTimeout(() => setTraitFeedback(null), 4000);
+    } finally {
+      setIsUpdatingTrait(false);
+    }
+  };
+
+  const handleSelectIdentity = (userId: string) => {
+    setDistinctUserId(userId);
+    setExposureLogged(false);
+    setConversionLogged(false);
+    if (userId === "user_alex_dev") {
+      setShippingForm((prev) => ({
+        ...prev,
+        fullName: "Alex Rivera",
+        email: "alex.rivera@example.com",
+      }));
+    } else if (userId === "user_elena_ai") {
+      setShippingForm((prev) => ({
+        ...prev,
+        fullName: "Elena Rostova",
+        email: "elena.rostova@example.com",
+      }));
     }
   };
 
@@ -354,6 +443,8 @@ export default function DemoStorePage() {
             cartSubtotal: calculateSubtotal(),
             assignedLayout: evaluatedVariant.layout,
             isSynthetic: false,
+            traits: identityTraits,
+            segments: identitySegments,
           },
         }),
       }).catch((e) => console.warn("Exposure tracking error:", e));
@@ -424,6 +515,8 @@ export default function DemoStorePage() {
             itemsCount: cart.reduce((c, i) => c + i.quantity, 0),
             variantLayout: evaluatedVariant.layout,
             isSynthetic: false,
+            traits: identityTraits,
+            segments: identitySegments,
           },
         }),
       });
@@ -524,79 +617,242 @@ export default function DemoStorePage() {
         }
       />
 
-      {/* TOP BAR: IDENTITY SELECTOR & FLAGSMITH VARIANT FLOATING BADGE */}
-      <div className="p-4 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50/80 via-white to-violet-50/50 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        {/* Identity Controller */}
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-            <User className="w-4 h-4 text-primary" />
+      {/* IDENTITY TARGETING & FLAGSMITH TRAITS PANEL */}
+      <div className="p-4 rounded-xl border border-violet-200 bg-gradient-to-br from-white via-violet-50/20 to-white shadow-xs space-y-3.5">
+        {/* Header Row */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-violet-100">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-violet-100 border border-violet-200 text-violet-700 flex items-center justify-center shrink-0">
+              <Target className="w-4 h-4 text-violet-700" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-text uppercase tracking-wider">
+                  Flagsmith Identity Traits & Segment Targeting
+                </h3>
+                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-violet-100 text-violet-800 font-bold border border-violet-200">
+                  Project #53867
+                </span>
+              </div>
+              <p className="text-[11px] text-text-secondary mt-0.5">
+                Targeting rule: <code className="font-mono text-violet-700 font-semibold bg-violet-50 px-1 py-0.2 rounded">beta_tester = true</code> mapped to Flagsmith Segment #1197309
+              </p>
+            </div>
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <label className="text-[11px] font-bold text-text-secondary uppercase tracking-wider block">
-                Visitor Identity (Deterministic Flagsmith Hashing)
-              </label>
-              <span className="text-[10px] text-emerald-700 bg-emerald-100 font-bold px-1.5 py-0.2 rounded font-mono">
-                Stable ID
+
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <span
+              className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border flex items-center gap-1.5 ${
+                evaluationSource === "flagsmith_remote_api"
+                  ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                  : "bg-amber-50 text-amber-800 border-amber-300"
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${evaluationSource === "flagsmith_remote_api" ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+              {evaluationSource === "flagsmith_remote_api" ? "LIVE FLAGSMITH EDGE" : "SANDBOX MOCK"}
+            </span>
+
+            <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+              Flag: {activeFlag}
+            </span>
+          </div>
+        </div>
+
+        {/* 3-Column Interactive Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Card 1: Identity & Persona Switcher */}
+          <div className="p-3 rounded-lg bg-surface border border-border/80 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                <Users className="w-3 h-3 text-primary" /> Active Visitor Identity
+              </span>
+              <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded font-bold">
+                Deterministic
               </span>
             </div>
-            <div className="flex items-center gap-2 mt-1">
+
+            {/* Quick Persona Buttons */}
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => handleSelectIdentity("user_alex_dev")}
+                className={`px-2 py-1.5 rounded-md text-xs font-semibold text-left transition-all border ${
+                  distinctUserId === "user_alex_dev"
+                    ? "bg-violet-600 text-white border-violet-600 shadow-xs"
+                    : "bg-white text-text border-border hover:bg-surface-subtle"
+                }`}
+              >
+                <div className="font-bold flex items-center justify-between">
+                  <span>Alex Rivera</span>
+                  {distinctUserId === "user_alex_dev" && <Check className="w-3 h-3 text-white" />}
+                </div>
+                <div className={`text-[10px] ${distinctUserId === "user_alex_dev" ? "text-violet-200" : "text-text-muted"}`}>
+                  Beta Tester (Enterprise)
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSelectIdentity("user_elena_ai")}
+                className={`px-2 py-1.5 rounded-md text-xs font-semibold text-left transition-all border ${
+                  distinctUserId === "user_elena_ai"
+                    ? "bg-violet-600 text-white border-violet-600 shadow-xs"
+                    : "bg-white text-text border-border hover:bg-surface-subtle"
+                }`}
+              >
+                <div className="font-bold flex items-center justify-between">
+                  <span>Elena Rostova</span>
+                  {distinctUserId === "user_elena_ai" && <Check className="w-3 h-3 text-white" />}
+                </div>
+                <div className={`text-[10px] ${distinctUserId === "user_elena_ai" ? "text-violet-200" : "text-text-muted"}`}>
+                  Standard (Non-Beta)
+                </div>
+              </button>
+            </div>
+
+            {/* Dropdown for other identities */}
+            <div className="flex items-center gap-1.5 pt-1">
               <select
                 value={distinctUserId}
-                onChange={(e) => {
-                  setDistinctUserId(e.target.value);
-                  setExposureLogged(false);
-                  setConversionLogged(false);
-                }}
-                className="text-xs font-mono font-bold bg-white border border-border rounded-md px-2.5 py-1 text-text shadow-xs focus:ring-1 focus:ring-primary focus:outline-hidden"
+                onChange={(e) => handleSelectIdentity(e.target.value)}
+                className="text-[11px] font-mono bg-white border border-border rounded px-2 py-1 text-text shadow-xs w-full focus:ring-1 focus:ring-primary focus:outline-hidden"
               >
-                <option value="user_alex_dev">user_alex_dev (Evaluates to: Single-Page Treatment)</option>
-                <option value="user_elena_ai">user_elena_ai (Evaluates to: Multi-Step Control)</option>
-                <option value="user_control_1">user_control_1 (Evaluates to: Multi-Step Control)</option>
-                <option value="user_sarah_prod">user_sarah_prod (Evaluates to: Single-Page Treatment)</option>
-                <option value="user_david_lead">user_david_lead (Evaluates to: Single-Page Treatment)</option>
+                <option value="user_alex_dev">user_alex_dev (Alex)</option>
+                <option value="user_elena_ai">user_elena_ai (Elena)</option>
+                <option value="user_control_1">user_control_1 (QA Control)</option>
+                <option value="user_sarah_prod">user_sarah_prod (QA Treatment)</option>
+                <option value="user_david_lead">user_david_lead (QA Lead)</option>
               </select>
 
               <button
                 onClick={() => {
                   const randomId = `visitor_${Math.random().toString(36).slice(2, 8)}`;
-                  setDistinctUserId(randomId);
-                  setExposureLogged(false);
-                  setConversionLogged(false);
+                  handleSelectIdentity(randomId);
                 }}
-                className="p-1 rounded-md border border-border bg-white hover:bg-surface-subtle text-text-secondary"
-                title="Generate Random Stable Visitor ID"
+                className="p-1 rounded border border-border bg-white hover:bg-surface-subtle text-text-secondary shrink-0"
+                title="Generate Random Visitor ID"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isEvaluating ? "animate-spin" : ""}`} />
               </button>
             </div>
           </div>
-        </div>
 
-        {/* Live Evaluated Variant Pill with Explicit Mode Indicator */}
-        <div className="flex items-center gap-2.5 self-start md:self-auto p-2 rounded-lg bg-white border border-violet-200 shadow-xs">
-          <div className="text-right">
-            <div className="flex items-center gap-1.5 justify-end">
-              <span
-                className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${
-                  evaluationSource === "flagsmith_remote_api"
-                    ? "bg-emerald-50 text-emerald-800 border-emerald-300"
-                    : "bg-amber-50 text-amber-800 border-amber-300"
-                }`}
-              >
-                {evaluationSource === "flagsmith_remote_api" ? "LIVE FLAGSMITH" : "SANDBOX MOCK"}
+          {/* Card 2: Flagsmith Identity Traits */}
+          <div className="p-3 rounded-lg bg-surface border border-border/80 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                <Sliders className="w-3 h-3 text-primary" /> Flagsmith Server Traits
               </span>
-              <span className="text-[10px] text-text-muted uppercase font-mono">Assigned Variation</span>
+              <span className="text-[10px] font-mono text-text-muted">
+                {identityTraits.length} traits loaded
+              </span>
             </div>
-            <div className="text-xs font-bold text-text font-mono flex items-center gap-1.5 justify-end mt-0.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
-              <span>{evaluatedVariant.variantName}</span>
+
+            <div className="space-y-1.5">
+              {/* Plan Trait */}
+              <div className="flex items-center justify-between text-xs py-0.5">
+                <span className="text-text-secondary font-mono text-[11px]">plan:</span>
+                <span className="font-mono text-[11px] font-bold px-1.5 py-0.2 rounded bg-violet-50 text-violet-700 border border-violet-200">
+                  {identityTraits.find((t) => t.trait_key === "plan")?.trait_value ?? "none"}
+                </span>
+              </div>
+
+              {/* Device Trait */}
+              <div className="flex items-center justify-between text-xs py-0.5">
+                <span className="text-text-secondary font-mono text-[11px]">device:</span>
+                <span className="font-mono text-[11px] font-medium px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                  {identityTraits.find((t) => t.trait_key === "device")?.trait_value ?? "desktop"}
+                </span>
+              </div>
+
+              {/* Beta Tester Trait with Live Toggle */}
+              <div className="flex items-center justify-between text-xs py-1 border-t border-border/60">
+                <span className="text-text-secondary font-mono text-[11px] font-semibold">beta_tester:</span>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`font-mono text-[11px] font-bold px-1.5 py-0.2 rounded border ${
+                      identityTraits.find((t) => t.trait_key === "beta_tester")?.trait_value === true ||
+                      identityTraits.find((t) => t.trait_key === "beta_tester")?.trait_value === "true"
+                        ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+                        : "bg-slate-100 text-slate-600 border-slate-200"
+                    }`}
+                  >
+                    {String(identityTraits.find((t) => t.trait_key === "beta_tester")?.trait_value ?? "false")}
+                  </span>
+
+                  <button
+                    type="button"
+                    disabled={isUpdatingTrait}
+                    onClick={handleToggleBetaTesterTrait}
+                    className="text-[10px] font-semibold text-primary hover:text-primary-dark underline flex items-center gap-0.5 disabled:opacity-50"
+                    title="Toggle beta_tester trait live on Flagsmith API"
+                  >
+                    {isUpdatingTrait ? (
+                      <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                    ) : (
+                      "Toggle"
+                    )}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-          <span className="px-2 py-1 rounded text-[11px] font-bold bg-primary text-white font-mono shrink-0">
-            {evaluatedVariant.badge}
-          </span>
+
+          {/* Card 3: Flagsmith Segment Membership & Evaluated Variant */}
+          <div className="p-3 rounded-lg bg-surface border border-border/80 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                <Layers className="w-3 h-3 text-primary" /> Segment & Variation
+              </span>
+              <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded font-bold">
+                Live Edge
+              </span>
+            </div>
+
+            {/* Segment Membership Pill */}
+            <div className="py-1">
+              <div className="text-[10px] text-text-muted uppercase font-mono mb-1">Targeted Segment:</div>
+              {identitySegments.includes("Beta Testers") ? (
+                <div className="p-1.5 rounded-md bg-violet-50 border border-violet-200 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-violet-600 shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-violet-900 truncate">Beta Testers Segment</div>
+                    <div className="text-[10px] text-violet-700 font-mono">Matched: beta_tester == true</div>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-1.5 rounded-md bg-slate-50 border border-slate-200 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-slate-400 shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-800 truncate">Standard Users Segment</div>
+                    <div className="text-[10px] text-slate-600 font-mono">Default: beta_tester == false</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Evaluated Variant */}
+            <div className="pt-1 border-t border-border/60 flex items-center justify-between">
+              <div>
+                <div className="text-[10px] text-text-muted uppercase font-mono">Assigned Layout</div>
+                <div className="text-xs font-bold text-text font-mono truncate max-w-[140px]">
+                  {evaluatedVariant.variantName}
+                </div>
+              </div>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-primary text-white font-mono shrink-0">
+                {evaluatedVariant.badge}
+              </span>
+            </div>
+          </div>
         </div>
+
+        {/* Live Feedback Toast / Notification */}
+        {traitFeedback && (
+          <div className="p-2 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2 animate-in fade-in duration-200">
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+            <span className="font-medium">{traitFeedback}</span>
+          </div>
+        )}
       </div>
 
       {/* DEMO TRAFFIC SIMULATOR DRAWER / ACCORDION */}

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
+import { evaluateBetaTesterSegment } from "@/lib/flagsmith/flagsmith-admin";
 import {
   checkProductionEvaluationGuard,
   checkProductionRemoteFetchGuard,
@@ -49,6 +50,10 @@ export async function GET(request: Request) {
             // Keep as string
           }
 
+          const traits = Array.isArray(data.traits) ? data.traits : [];
+          const isBeta = evaluateBetaTesterSegment(traits);
+          const segments = isBeta ? ["Beta Testers"] : ["Standard Users"];
+
           return NextResponse.json({
             flag,
             identity,
@@ -56,6 +61,9 @@ export async function GET(request: Request) {
             variantKey: typeof parsedValue === "object" && parsedValue?.layout ? parsedValue.layout : (matched.feature_state_value || "control"),
             value: matched.feature_state_value,
             parsedValue,
+            traits,
+            segments,
+            isBetaTester: isBeta,
             source: "flagsmith_remote_api",
           });
         }
@@ -98,6 +106,9 @@ export async function GET(request: Request) {
     enabled: result.enabled,
     variantKey: result.variantKey,
     value: result.value,
+    traits: result.traits,
+    segments: result.segments,
+    isBetaTester: result.segments.includes("Beta Testers"),
     source: "local_deterministic_fallback",
   });
 }
