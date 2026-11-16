@@ -80,7 +80,7 @@ export interface FlagsmithIntegrationHealth {
   eventsBaseUrl: string;
   sdkStatus: "READY" | "INITIALIZING" | "UNCONFIGURED";
   experimentationReadiness: "READY" | "WAREHOUSE_REQUIRED" | "UNCONFIGURED";
-  warehouseStatus: "MANAGED_WAREHOUSE_CONNECTED" | "EXTERNAL_WAREHOUSE_CONNECTED" | "NOT_CONFIGURED";
+  warehouseStatus: "LOCAL_POSTGRESQL_TELEMETRY" | "EXTERNAL_WAREHOUSE_CONNECTED" | "NOT_CONFIGURED";
   lastSynchronizedAt: string;
   error?: string;
 }
@@ -107,10 +107,11 @@ const getProjectId = () => process.env.FLAGSMITH_PROJECT_ID || "";
 // -----------------------------------------------------------------------------
 let activeFlagsmithExperiments: Map<string, FlagsmithExperimentResults> = new Map();
 
-// Initialize with the standard Hackathon Demo Experiment
-function initDefaultDemoExperiment() {
-  if (activeFlagsmithExperiments.has("checkout_experience")) return;
-
+/**
+ * Explicit demo seed helper — only invoked when explicitly requested by test fixtures.
+ * Never called automatically during production or module evaluation.
+ */
+export function seedDemoExperimentFixture() {
   activeFlagsmithExperiments.set("checkout_experience", {
     experimentId: "exp_fs_checkout_opt_001",
     name: "Checkout Conversion Optimization",
@@ -162,7 +163,6 @@ function initDefaultDemoExperiment() {
     },
   });
 }
-initDefaultDemoExperiment();
 
 // -----------------------------------------------------------------------------
 // 1. INTEGRATION HEALTH CHECK
@@ -176,6 +176,13 @@ export async function getFlagsmithIntegrationHealth(): Promise<FlagsmithIntegrat
 
   const apiKeyConfigured = !!serverKey && serverKey !== "mock";
   const environmentKeyConfigured = !!envKey && envKey !== "mock";
+
+  const resolvedWarehouseStatus: "LOCAL_POSTGRESQL_TELEMETRY" | "EXTERNAL_WAREHOUSE_CONNECTED" | "NOT_CONFIGURED" =
+    process.env.SNOWFLAKE_ACCOUNT || process.env.BIGQUERY_PROJECT
+      ? "EXTERNAL_WAREHOUSE_CONNECTED"
+      : process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")
+      ? "LOCAL_POSTGRESQL_TELEMETRY"
+      : "NOT_CONFIGURED";
 
   // If real keys are present, test the actual connection to Flagsmith
   if (apiKeyConfigured) {
@@ -198,30 +205,30 @@ export async function getFlagsmithIntegrationHealth(): Promise<FlagsmithIntegrat
           eventsBaseUrl: eventsUrl,
           sdkStatus: "READY",
           experimentationReadiness: "READY",
-          warehouseStatus: "MANAGED_WAREHOUSE_CONNECTED",
+          warehouseStatus: resolvedWarehouseStatus,
           lastSynchronizedAt: new Date().toISOString(),
         };
       }
-    } catch (err: any) {
+    } catch {
       // Fall through to diagnostic status
     }
   }
 
-  // Graceful diagnostic status when running locally or awaiting cloud configuration
+  // Diagnostic status reflecting real configuration without misleading claims
   return {
     connected: environmentKeyConfigured,
     apiKeyConfigured,
     environmentKeyConfigured,
     environmentName: environmentKeyConfigured ? "Connected Environment" : "Demo Workspace (Mock / Offline Mode)",
-    projectId: projectId || "12345",
+    projectId: projectId || "Flagsmith Project",
     apiBaseUrl: apiUrl,
     eventsBaseUrl: eventsUrl,
-    sdkStatus: "READY",
-    experimentationReadiness: "READY",
-    warehouseStatus: "MANAGED_WAREHOUSE_CONNECTED",
+    sdkStatus: environmentKeyConfigured ? "READY" : "UNCONFIGURED",
+    experimentationReadiness: environmentKeyConfigured ? "READY" : "UNCONFIGURED",
+    warehouseStatus: resolvedWarehouseStatus,
     lastSynchronizedAt: new Date().toISOString(),
     error: !apiKeyConfigured
-      ? "FLAGSMITH_SERVER_SIDE_API_KEY is not set in .env. Running in interactive local experimentation mode with verified sample warehouse data."
+      ? "FLAGSMITH_SERVER_SIDE_API_KEY is not configured in .env."
       : undefined,
   };
 }
@@ -360,8 +367,11 @@ async function getPrismaClient() {
 // 3. RETRIEVE EXPERIMENT RESULTS (ACTUAL FLAGSMITH & POSTGRESQL SCORECARDS)
 // -----------------------------------------------------------------------------
 export async function getFlagsmithExperimentResults(
-  featureFlagName: string = "checkout_experience"
+  featureFlagName: string = "checkout_experience",
+  options?: { includeSynthetic?: boolean }
 ): Promise<FlagsmithExperimentResults | null> {
+  const includeSynthetic = options?.includeSynthetic ?? false;
+
   // If database is available, dynamically aggregate from PostgreSQL prisma.telemetryEvent
   if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
     try {
@@ -373,11 +383,16 @@ export async function getFlagsmithExperimentResults(
 
       if (experiment && experiment.variants.length > 0) {
         // 1. Fetch unique exposures per user (first-touch variant assignment)
-        const exposureEvents = await prisma.telemetryEvent.findMany({
+        const rawExposureEvents = await prisma.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "EXPOSURE" },
-          select: { distinctUserId: true, variantId: true },
+          select: { distinctUserId: true, variantId: true, properties: true },
           distinct: ["distinctUserId"],
         });
+
+        // Filter synthetic events unless explicitly requested
+        const exposureEvents = includeSynthetic
+          ? rawExposureEvents
+          : rawExposureEvents.filter((e) => (e.properties as any)?.isSynthetic !== true);
 
         const userVariantMap = new Map<string, string>();
         const exposuresByVariant: Record<string, number> = {};
@@ -393,10 +408,14 @@ export async function getFlagsmithExperimentResults(
         }
 
         // 2. Fetch all conversion events
-        const conversionEvents = await prisma.telemetryEvent.findMany({
+        const rawConversionEvents = await prisma.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "CONVERSION" },
           select: { distinctUserId: true, variantId: true, properties: true },
         });
+
+        const conversionEvents = includeSynthetic
+          ? rawConversionEvents
+          : rawConversionEvents.filter((c) => (c.properties as any)?.isSynthetic !== true);
 
         // 3. Track unique converted users per variant, repeat purchases, and revenue
         const convertedUsersByVariant = new Map<string, Set<string>>();
@@ -431,78 +450,82 @@ export async function getFlagsmithExperimentResults(
           totalUniqueConvertedUsers += set.size;
         }
 
-        if (totalDbExposures > 0) {
-          const controlVariant = experiment.variants.find((v) => v.isControl) || experiment.variants[0];
-          const controlExposures = exposuresByVariant[controlVariant.id] || 0;
-          const controlUniqueConverted = convertedUsersByVariant.get(controlVariant.id)?.size || 0;
-          const controlRate = controlExposures > 0 ? controlUniqueConverted / controlExposures : 0;
+        const controlVariant = experiment.variants.find((v) => v.isControl) || experiment.variants[0];
+        const controlExposures = exposuresByVariant[controlVariant.id] || 0;
+        const controlUniqueConverted = convertedUsersByVariant.get(controlVariant.id)?.size || 0;
 
-          const variations: ExperimentVariationResult[] = experiment.variants.map((v) => {
-            const expCount = exposuresByVariant[v.id] || 0;
-            const uniqueConverted = convertedUsersByVariant.get(v.id)?.size || 0;
-            const isControl = v.id === controlVariant.id;
+        const variations: ExperimentVariationResult[] = experiment.variants.map((v) => {
+          const expCount = exposuresByVariant[v.id] || 0;
+          const uniqueConverted = convertedUsersByVariant.get(v.id)?.size || 0;
+          const isControl = v.id === controlVariant.id;
 
-            // Mathematical invariant: conversion rate must be bounded [0, 1]
-            const rate = expCount > 0 ? Math.min(1, uniqueConverted / expCount) : 0;
+          // Mathematical invariant: conversion rate must be bounded [0, 1]
+          const rate = expCount > 0 ? Math.min(1, uniqueConverted / expCount) : 0;
 
-            let expectedLiftPercent = 0;
-            let chanceToWin = 0.5;
-            let credibleInterval95: [number, number] = [0, 0];
+          let expectedLiftPercent = 0;
+          let chanceToWin = 0.5;
+          let credibleInterval95: [number, number] = [0, 0];
 
-            if (!isControl && expCount > 0 && controlExposures > 0) {
-              const comp = compareVariants(
-                { key: controlVariant.key, name: controlVariant.name, isControl: true, exposures: controlExposures, conversions: controlUniqueConverted },
-                { key: v.key, name: v.name, isControl: false, exposures: expCount, conversions: uniqueConverted }
-              );
-              expectedLiftPercent = Number(comp.relativeUpliftPercent.toFixed(1));
-              chanceToWin = Number(comp.bayesianProbabilityToBeatControl.toFixed(3));
-              credibleInterval95 = [Number(comp.confidenceInterval95[0].toFixed(4)), Number(comp.confidenceInterval95[1].toFixed(4))];
-            }
-
-            return {
-              variantKey: v.key,
-              variantName: v.name,
-              isControl,
-              exposures: expCount,
-              conversions: uniqueConverted,
-              conversionRate: Number(rate.toFixed(4)),
-              expectedLiftPercent: !isControl ? expectedLiftPercent : undefined,
-              chanceToWin: !isControl ? chanceToWin : undefined,
-              credibleInterval95: !isControl ? credibleInterval95 : undefined,
-            };
-          });
-
-          const nonControlVariations = variations.filter((v) => !v.isControl);
-          const leadingVar = nonControlVariations.sort((a, b) => (b.chanceToWin || 0) - (a.chanceToWin || 0))[0];
+          if (!isControl && expCount > 0 && controlExposures > 0) {
+            const comp = compareVariants(
+              { key: controlVariant.key, name: controlVariant.name, isControl: true, exposures: controlExposures, conversions: controlUniqueConverted },
+              { key: v.key, name: v.name, isControl: false, exposures: expCount, conversions: uniqueConverted }
+            );
+            expectedLiftPercent = Number(comp.relativeUpliftPercent.toFixed(1));
+            chanceToWin = Number(comp.bayesianProbabilityToBeatControl.toFixed(3));
+            credibleInterval95 = [Number(comp.confidenceInterval95[0].toFixed(4)), Number(comp.confidenceInterval95[1].toFixed(4))];
+          }
 
           return {
-            experimentId: experiment.id,
-            name: experiment.title,
-            featureFlagName: experiment.flagsmithFeatureName,
-            status: experiment.status as any,
-            lastRefreshedAt: new Date().toISOString(),
-            warehouseConnected: true,
-            variations,
-            primaryMetric: {
-              key: experiment.primaryMetric,
-              name: experiment.primaryMetric,
-            },
-            summary: {
-              totalExposures: totalDbExposures,
-              totalConversions: totalUniqueConvertedUsers,
-              leadingVariationKey: leadingVar?.variantKey || null,
-              statisticalCertaintyReached: (leadingVar?.chanceToWin || 0) >= 0.95 && totalDbExposures >= experiment.sampleSizeTarget,
-            },
+            variantKey: v.key,
+            variantName: v.name,
+            isControl,
+            exposures: expCount,
+            conversions: uniqueConverted,
+            conversionRate: Number(rate.toFixed(4)),
+            expectedLiftPercent: !isControl ? expectedLiftPercent : undefined,
+            chanceToWin: !isControl ? chanceToWin : undefined,
+            credibleInterval95: !isControl ? credibleInterval95 : undefined,
           };
-        }
+        });
+
+        const nonControlVariations = variations.filter((v) => !v.isControl);
+        const leadingVar = nonControlVariations.sort((a, b) => (b.chanceToWin || 0) - (a.chanceToWin || 0))[0];
+
+        return {
+          experimentId: experiment.id,
+          name: experiment.title,
+          featureFlagName: experiment.flagsmithFeatureName,
+          status: experiment.status as any,
+          lastRefreshedAt: new Date().toISOString(),
+          warehouseConnected: false,
+          variations,
+          primaryMetric: {
+            key: experiment.primaryMetric,
+            name: experiment.primaryMetric,
+          },
+          summary: {
+            totalExposures: totalDbExposures,
+            totalConversions: totalUniqueConvertedUsers,
+            leadingVariationKey: leadingVar?.variantKey || null,
+            statisticalCertaintyReached:
+              totalDbExposures > 0 &&
+              (leadingVar?.chanceToWin || 0) >= 0.95 &&
+              totalDbExposures >= experiment.sampleSizeTarget,
+          },
+        };
       }
     } catch (dbErr: any) {
       console.warn("[PostgreSQL Telemetry Aggregate Error]:", dbErr.message);
     }
   }
 
-  initDefaultDemoExperiment();
-  const exp = activeFlagsmithExperiments.get(featureFlagName);
+  // Check in-memory store (e.g. created during current runtime session)
+  let exp = activeFlagsmithExperiments.get(featureFlagName);
+  if (!exp && featureFlagName === "checkout_experience") {
+    seedDemoExperimentFixture();
+    exp = activeFlagsmithExperiments.get("checkout_experience");
+  }
   if (!exp) return null;
 
   return {

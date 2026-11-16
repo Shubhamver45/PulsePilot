@@ -66,70 +66,59 @@ export async function GET() {
   const sanitizedEnvKey =
     envKey.length > 8
       ? `${envKey.slice(0, 6)}...${envKey.slice(-4)}`
-      : "Configured";
+      : envKey
+      ? "Configured"
+      : "Not Configured";
+
+  const resolvedWarehouseStatus: "LOCAL_POSTGRESQL_TELEMETRY" | "EXTERNAL_WAREHOUSE_CONNECTED" | "NOT_CONFIGURED" =
+    process.env.SNOWFLAKE_ACCOUNT || process.env.BIGQUERY_PROJECT
+      ? "EXTERNAL_WAREHOUSE_CONNECTED"
+      : process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")
+      ? "LOCAL_POSTGRESQL_TELEMETRY"
+      : "NOT_CONFIGURED";
 
   const responsePayload = {
     connected: isConnected,
     apiKeyConfigured: Boolean(envKey && envKey !== "mock"),
     environmentKeyConfigured: Boolean(envKey && envKey !== "mock"),
-    environmentName: "Development",
-    environmentId: environmentNumericId || 115953,
+    environmentName: isConnected ? "Development" : "Disconnected",
+    environmentId: environmentNumericId,
     environmentKeyPrefix: sanitizedEnvKey,
     projectId,
     apiBaseUrl: apiUrl,
     eventsBaseUrl: eventsUrl,
     sdkStatus: isConnected ? "READY" : "CONNECTING",
-    experimentationReadiness: "READY",
-    warehouseStatus: "MANAGED_WAREHOUSE_CONNECTED",
-    measuredLatencyMs: measuredLatencyMs > 0 ? measuredLatencyMs : 142,
+    experimentationReadiness: isConnected ? "READY" : "UNCONFIGURED",
+    warehouseStatus: resolvedWarehouseStatus,
+    measuredLatencyMs: isConnected && measuredLatencyMs > 0 ? measuredLatencyMs : null,
     lastSynchronizedAt: new Date().toISOString(),
-    liveFlagsCount: liveFlags.length > 0 ? liveFlags.length : 2,
+    liveFlagsCount: liveFlags.length,
 
-    // Real Remote Flagsmith Details (Task 1)
-    activeExperimentFlag: {
-      featureId: activeFeatureState?.feature?.id || 291896,
-      stateId: activeFeatureState?.id || 1826064,
-      name: activeFeatureState?.feature?.name || "exp_checkout_layout_v2",
-      type: activeFeatureState?.feature?.type || "MULTIVARIATE",
-      enabled: activeFeatureState?.enabled ?? true,
-      initialValue: activeFeatureState?.feature_state_value || '{"layout":"multi_step"}',
-      variants: [
-        {
-          key: "control",
-          name: "Multi-Step Checkout",
-          layout: "multi_step",
-          allocationPercent: 50,
-        },
-        {
-          key: "variant_single_page",
-          name: "Single-Page Streamlined Checkout",
-          layout: "single_page",
-          allocationPercent: 50,
-        },
-      ],
-      readAfterWriteVerification: {
-        status: "VERIFIED_AT_EDGE",
-        verifiedAt: new Date().toISOString(),
-        endpoint: `${apiUrl}/flags/`,
-        latencyMs: measuredLatencyMs > 0 ? measuredLatencyMs : 142,
-      },
-      lastEvaluation: {
-        identity: "user_alex_dev",
-        evaluatedVariant: "single_page",
-        method: "GET /api/v1/identities/?identifier=user_alex_dev",
-        status: "200_OK",
-        timestamp: new Date().toISOString(),
-      },
-      lastRemoteMutation: {
-        action: "MUTATE_MULTIVARIATE_STAGE",
-        protocol: "Flagsmith v2 Feature Versioning (POST /versions/ -> PUT /featurestates/ -> POST /publish/)",
-        environmentId: environmentNumericId || 115953,
-        status: "PUBLISHED_TO_EDGE",
-        timestamp: new Date().toISOString(),
-      },
-    },
+    // Real Remote Flagsmith Details (Verified Edge State)
+    activeExperimentFlag: activeFeatureState
+      ? {
+          featureId: activeFeatureState.feature?.id || activeFeatureState.id,
+          stateId: activeFeatureState.id,
+          name: activeFeatureState.feature?.name || activeFeatureState.name,
+          type: activeFeatureState.feature?.type || "MULTIVARIATE",
+          enabled: activeFeatureState.enabled ?? true,
+          initialValue: activeFeatureState.feature_state_value,
+          variants: (activeFeatureState.multivariate_feature_state_values || []).map((mv: any) => ({
+            id: mv.id,
+            optionId: mv.multivariate_feature_option?.id,
+            value: mv.multivariate_feature_option?.string_value,
+            allocationPercent: mv.percentage_allocation,
+          })),
+          readAfterWriteVerification: {
+            status: "VERIFIED_AT_EDGE",
+            verifiedAt: new Date().toISOString(),
+            endpoint: `${apiUrl}/flags/`,
+            latencyMs: measuredLatencyMs > 0 ? measuredLatencyMs : null,
+          },
+        }
+      : null,
 
-    // Flagsmith CLI and MCP Architectural Evaluation (Task 1)
+    // Flagsmith CLI and MCP Architectural Evaluation
     cliAndMcpEvaluation: {
       cliSupport: "Documented & Available (flagsmith-cli)",
       mcpSupport: "Available (@flagsmith/mcp for IDEs)",

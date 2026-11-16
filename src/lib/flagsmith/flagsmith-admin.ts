@@ -163,6 +163,8 @@ export async function createFlagsmithMultivariateFeature(
   error?: string;
   remoteCreated?: boolean;
   isExisting?: boolean;
+  verified?: boolean;
+  status?: "VERIFIED" | "PENDING_PROPAGATION" | "VERIFICATION_MISMATCH" | "ERROR";
   state?: any;
 }> {
   const projectId = process.env.FLAGSMITH_PROJECT_ID;
@@ -172,6 +174,7 @@ export async function createFlagsmithMultivariateFeature(
   if (!projectId) {
     return {
       success: false,
+      status: "ERROR",
       error: "FLAGSMITH_PROJECT_ID is not configured in .env.",
     };
   }
@@ -185,6 +188,8 @@ export async function createFlagsmithMultivariateFeature(
       featureId,
       isExisting: true,
       remoteCreated: false,
+      verified: true,
+      status: "VERIFIED",
       state: existingCheck.state,
     };
   }
@@ -193,6 +198,7 @@ export async function createFlagsmithMultivariateFeature(
   if (!authHeaders.Authorization) {
     return {
       success: false,
+      status: "ERROR",
       error:
         "FLAGSMITH_ORG_API_TOKEN is not configured. Project-level multivariate feature creation requires a Flagsmith Organisation API Token (Settings -> API Keys in Flagsmith).",
       remoteCreated: false,
@@ -232,6 +238,8 @@ export async function createFlagsmithMultivariateFeature(
             featureId: retryCheck.state.feature?.id || retryCheck.state.id,
             isExisting: true,
             remoteCreated: false,
+            verified: true,
+            status: "VERIFIED",
             state: retryCheck.state,
           };
         }
@@ -239,6 +247,7 @@ export async function createFlagsmithMultivariateFeature(
 
       return {
         success: false,
+        status: "ERROR",
         error: `Flagsmith Management API Error (${res.status}): ${errText}`,
         remoteCreated: false,
       };
@@ -249,12 +258,40 @@ export async function createFlagsmithMultivariateFeature(
 
     // 3. Read-After-Write Verification: Verify the feature is now visible in the environment
     const verification = await getLiveRemoteFeatureState(input.name);
-    if (!verification.success) {
+    if (!verification.success || !verification.state) {
       return {
-        success: true,
+        success: false,
         featureId: createdFeatureId,
         remoteCreated: true,
-        error: `Warning: Feature was created on Project, but not yet propagated to Environment: ${verification.error}`,
+        verified: false,
+        status: "PENDING_PROPAGATION",
+        error: `Feature created on project (ID: ${createdFeatureId}), but read-after-write verification failed: ${verification.error || "Feature not found in environment"}`,
+      };
+    }
+
+    // Verify feature identity matches
+    const remoteFeatureId = verification.state.feature?.id || verification.state.id;
+    if (createdFeatureId && remoteFeatureId && remoteFeatureId !== createdFeatureId) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        verified: false,
+        status: "VERIFICATION_MISMATCH",
+        error: `Feature ID mismatch: Project created ${createdFeatureId}, but environment returned ${remoteFeatureId}.`,
+      };
+    }
+
+    // Verify multivariate option presence
+    const remoteMvs = verification.state.multivariate_feature_state_values || [];
+    if (input.variants.length > 0 && remoteMvs.length === 0) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        verified: false,
+        status: "VERIFICATION_MISMATCH",
+        error: `Multivariate option mismatch: Requested ${input.variants.length} variants, but environment returned 0 multivariate options.`,
       };
     }
 
@@ -262,15 +299,61 @@ export async function createFlagsmithMultivariateFeature(
       success: true,
       featureId: createdFeatureId,
       remoteCreated: true,
+      verified: true,
+      status: "VERIFIED",
       state: verification.state,
     };
   } catch (err: any) {
     return {
       success: false,
+      status: "ERROR",
       error: `Network error connecting to Flagsmith Management API: ${err.message}`,
       remoteCreated: false,
     };
   }
+}
+
+/**
+ * Matches a variant key to an option in Flagsmith's multivariate_feature_state_values.
+ * Matches by:
+ * 1. Option ID or state value ID
+ * 2. string_value exact match (case-insensitive)
+ * 3. JSON parsed payload key, name, or layout
+ * 4. Substring containment
+ */
+export function matchVariantOptionIndex(mvs: any[], variantKey: string): number {
+  if (!mvs || !Array.isArray(mvs) || mvs.length === 0 || !variantKey) return -1;
+  const lowerKey = variantKey.trim().toLowerCase();
+
+  // Pass 1: exact match on string_value or ID
+  const exactIdx = mvs.findIndex((mv) => {
+    const opt = mv.multivariate_feature_option || {};
+    if (String(opt.id) === variantKey || String(mv.id) === variantKey) return true;
+    const strVal = typeof opt.string_value === "string" ? opt.string_value.trim().toLowerCase() : "";
+    return strVal === lowerKey;
+  });
+  if (exactIdx !== -1) return exactIdx;
+
+  // Pass 2: JSON payload match
+  const jsonIdx = mvs.findIndex((mv) => {
+    const opt = mv.multivariate_feature_option || {};
+    const strVal = typeof opt.string_value === "string" ? opt.string_value : "";
+    try {
+      const parsed = JSON.parse(strVal);
+      if (parsed.key && String(parsed.key).trim().toLowerCase() === lowerKey) return true;
+      if (parsed.name && String(parsed.name).trim().toLowerCase() === lowerKey) return true;
+      if (parsed.layout && String(parsed.layout).trim().toLowerCase() === lowerKey) return true;
+    } catch {}
+    return false;
+  });
+  if (jsonIdx !== -1) return jsonIdx;
+
+  // Pass 3: substring containment
+  return mvs.findIndex((mv) => {
+    const opt = mv.multivariate_feature_option || {};
+    const strVal = typeof opt.string_value === "string" ? opt.string_value.toLowerCase() : "";
+    return strVal.includes(lowerKey);
+  });
 }
 
 /**
@@ -285,8 +368,9 @@ async function mutateRemoteFeatureState(
     enabled?: boolean;
     feature_state_value?: any;
     multivariate_feature_state_values?: any[];
-  }
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
+  },
+  validateVerifiedStateFn?: (verifiedState: any) => { valid: boolean; error?: string }
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
   const authHeaders = getManagementAuthHeader();
   const apiUrl = getApiUrl();
 
@@ -296,6 +380,7 @@ async function mutateRemoteFeatureState(
       success: false,
       error: `Cannot ${mutationDescription}: ${remoteLookup.error}`,
       liveUpdated: false,
+      verified: false,
     };
   }
 
@@ -309,6 +394,7 @@ async function mutateRemoteFeatureState(
       success: false,
       error: `FLAGSMITH_ORG_API_TOKEN is required for remote ${mutationDescription}. Please provide a valid Organisation API token in .env.`,
       liveUpdated: false,
+      verified: false,
     };
   }
 
@@ -344,6 +430,7 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Failed to fetch draft feature state in v2 version (${draftFsRes.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
 
@@ -377,6 +464,7 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Failed to update draft feature state in v2 version (${updateDraftRes.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
 
@@ -399,6 +487,7 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Failed to publish v2 feature version (${publishRes.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
     } else {
@@ -420,16 +509,40 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Flagsmith ${mutationDescription} Error (${res.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
     }
 
     // 3. Read-After-Write Verification
     const verified = await getLiveRemoteFeatureState(featureName);
+    if (!verified.success || !verified.state) {
+      return {
+        success: false,
+        error: `Verification failed after ${mutationDescription}: Feature '${featureName}' state could not be verified on remote edge (${verified.error || "Not found"}).`,
+        liveUpdated: false,
+        verified: false,
+      };
+    }
+
+    // Custom verification check
+    if (validateVerifiedStateFn) {
+      const check = validateVerifiedStateFn(verified.state);
+      if (!check.valid) {
+        return {
+          success: false,
+          error: `Verification mismatch after ${mutationDescription}: ${check.error || "Remote state did not match requested changes."}`,
+          liveUpdated: false,
+          verified: false,
+          verifiedState: verified.state,
+        };
+      }
+    }
 
     return {
       success: true,
       liveUpdated: true,
+      verified: true,
       verifiedState: verified.state,
     };
   } catch (err: any) {
@@ -437,6 +550,7 @@ async function mutateRemoteFeatureState(
       success: false,
       error: `Network error during Flagsmith ${mutationDescription}: ${err.message}`,
       liveUpdated: false,
+      verified: false,
     };
   }
 }
@@ -448,18 +562,54 @@ async function mutateRemoteFeatureState(
 export async function rolloutFlagsmithWinner(
   featureName: string,
   winningVariantValue: string
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "rollout winner", (draft) => ({
-    enabled: true,
-    feature_state_value:
-      typeof winningVariantValue === "string"
-        ? { type: "unicode", string_value: winningVariantValue }
-        : winningVariantValue,
-    multivariate_feature_state_values: (draft.multivariate_feature_state_values || []).map((mv: any) => ({
-      ...mv,
-      percentage_allocation: 0,
-    })),
-  }));
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  return mutateRemoteFeatureState(
+    featureName,
+    `rollout winner (${winningVariantValue})`,
+    (draft) => {
+      const currentMvs = draft.multivariate_feature_state_values || [];
+      const winnerIdx = matchVariantOptionIndex(currentMvs, winningVariantValue);
+
+      // Extract value to set on baseline
+      let finalValue = winningVariantValue;
+      if (winnerIdx !== -1) {
+        const opt = currentMvs[winnerIdx].multivariate_feature_option;
+        if (opt?.string_value) {
+          finalValue = opt.string_value;
+        }
+      }
+
+      const isTypedObject =
+        typeof draft.feature_state_value === "object" &&
+        draft.feature_state_value !== null &&
+        "type" in draft.feature_state_value;
+
+      return {
+        enabled: true,
+        feature_state_value: isTypedObject
+          ? { type: "unicode", string_value: finalValue }
+          : finalValue,
+        multivariate_feature_state_values: currentMvs.map((mv: any) => ({
+          ...mv,
+          percentage_allocation: 0,
+        })),
+      };
+    },
+    (verifiedState) => {
+      if (!verifiedState.enabled) {
+        return { valid: false, error: "Feature flag is disabled after 100% rollout." };
+      }
+      const verifiedMvs: any[] = verifiedState.multivariate_feature_state_values || [];
+      const nonZeroMvs = verifiedMvs.filter((mv: any) => (mv.percentage_allocation || 0) > 0);
+      if (nonZeroMvs.length > 0) {
+        return {
+          valid: false,
+          error: `Multivariate allocations not reset to 0% after 100% baseline rollout. Residual: ${nonZeroMvs.length} variants active.`,
+        };
+      }
+      return { valid: true };
+    }
+  );
 }
 
 /**
@@ -470,17 +620,110 @@ export async function updateFlagsmithCanaryStage(
   featureName: string,
   winningVariantKey: string,
   stagePercentage: number
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "canary update", (draft) => {
-    const currentMvs = draft.multivariate_feature_state_values || [];
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  // 1. Strict mathematical parameter validation
+  if (typeof stagePercentage !== "number" || isNaN(stagePercentage) || stagePercentage < 0 || stagePercentage > 100) {
     return {
-      enabled: true,
-      multivariate_feature_state_values: currentMvs.map((mv: any) => ({
-        ...mv,
-        percentage_allocation: stagePercentage,
-      })),
+      success: false,
+      error: `Invalid stage percentage: must be a number between 0 and 100. Received: ${stagePercentage}`,
     };
-  });
+  }
+
+  if (!winningVariantKey || typeof winningVariantKey !== "string" || !winningVariantKey.trim()) {
+    return {
+      success: false,
+      error: "winningVariantKey is required for canary stage allocation.",
+    };
+  }
+
+  const targetPercentage = Math.round(stagePercentage);
+
+  return mutateRemoteFeatureState(
+    featureName,
+    `canary update (${winningVariantKey} -> ${targetPercentage}%)`,
+    (draft) => {
+      const currentMvs: any[] = draft.multivariate_feature_state_values || [];
+
+      // Check if winningVariantKey is control
+      const isControlWinner = winningVariantKey.trim().toLowerCase() === "control";
+
+      if (isControlWinner) {
+        const controlIdx = matchVariantOptionIndex(currentMvs, "control");
+        if (controlIdx !== -1) {
+          // Explicit control option exists
+          return {
+            enabled: true,
+            multivariate_feature_state_values: currentMvs.map((mv, idx) => ({
+              ...mv,
+              percentage_allocation: idx === controlIdx ? targetPercentage : 0,
+            })),
+          };
+        } else {
+          // Control is baseline feature_state_value: baseline gets 100 - sum(treatments)
+          return {
+            enabled: true,
+            multivariate_feature_state_values: currentMvs.map((mv) => ({
+              ...mv,
+              percentage_allocation: 0,
+            })),
+          };
+        }
+      }
+
+      // Treatment variant winning
+      const winnerIdx = matchVariantOptionIndex(currentMvs, winningVariantKey);
+      if (winnerIdx === -1) {
+        const available = currentMvs
+          .map((m: any) => m.multivariate_feature_option?.string_value || m.id)
+          .join(", ");
+        throw new Error(
+          `Variant '${winningVariantKey}' not found among multivariate options for feature '${featureName}'. Configured options: [${available}]`
+        );
+      }
+
+      const controlIdx = matchVariantOptionIndex(currentMvs, "control");
+      if (controlIdx !== -1 && controlIdx !== winnerIdx) {
+        // Explicit control option exists: Winner + Control + Others = 100%
+        return {
+          enabled: true,
+          multivariate_feature_state_values: currentMvs.map((mv, idx) => {
+            if (idx === winnerIdx) return { ...mv, percentage_allocation: targetPercentage };
+            if (idx === controlIdx) return { ...mv, percentage_allocation: 100 - targetPercentage };
+            return { ...mv, percentage_allocation: 0 };
+          }),
+        };
+      }
+
+      // Control is baseline feature_state_value:
+      // Winner gets targetPercentage, all other treatment options get 0%, baseline implicitly receives 100 - targetPercentage.
+      return {
+        enabled: true,
+        multivariate_feature_state_values: currentMvs.map((mv, idx) => {
+          if (idx === winnerIdx) return { ...mv, percentage_allocation: targetPercentage };
+          return { ...mv, percentage_allocation: 0 };
+        }),
+      };
+    },
+    (verifiedState) => {
+      if (!verifiedState.enabled) {
+        return { valid: false, error: "Feature flag is disabled on remote environment after canary update." };
+      }
+      const verifiedMvs: any[] = verifiedState.multivariate_feature_state_values || [];
+      if (winningVariantKey.trim().toLowerCase() !== "control") {
+        const vWinnerIdx = matchVariantOptionIndex(verifiedMvs, winningVariantKey);
+        if (vWinnerIdx !== -1) {
+          const actualPct = verifiedMvs[vWinnerIdx].percentage_allocation;
+          if (actualPct !== targetPercentage) {
+            return {
+              valid: false,
+              error: `Allocation mismatch: requested ${targetPercentage}%, but remote edge reflects ${actualPct}%.`,
+            };
+          }
+        }
+      }
+      return { valid: true };
+    }
+  );
 }
 
 /**
@@ -489,10 +732,20 @@ export async function updateFlagsmithCanaryStage(
  */
 export async function triggerFlagsmithKillSwitch(
   featureName: string
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "kill-switch", () => ({
-    enabled: false,
-  }));
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  return mutateRemoteFeatureState(
+    featureName,
+    "kill-switch",
+    () => ({
+      enabled: false,
+    }),
+    (verifiedState) => {
+      if (verifiedState.enabled !== false) {
+        return { valid: false, error: "Feature flag remains enabled after kill-switch execution." };
+      }
+      return { valid: true };
+    }
+  );
 }
 
 /**
@@ -501,7 +754,7 @@ export async function triggerFlagsmithKillSwitch(
 export async function rollbackFlagsmithToControl(
   featureName: string,
   controlValue: string = "control"
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
   return rolloutFlagsmithWinner(featureName, controlValue);
 }
 
