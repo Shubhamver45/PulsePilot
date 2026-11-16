@@ -345,6 +345,17 @@ export async function createRealFlagsmithExperiment(
   return { success: true, experiment: newExperiment };
 }
 
+// Dynamic Prisma resolver supporting both Next.js webpack alias and standalone Node runners
+async function getPrismaClient() {
+  try {
+    const mod = await import("../db/prisma.ts");
+    return mod.prisma;
+  } catch {
+    const mod = await import("@/lib/db/prisma");
+    return mod.prisma;
+  }
+}
+
 // -----------------------------------------------------------------------------
 // 3. RETRIEVE EXPERIMENT RESULTS (ACTUAL FLAGSMITH & POSTGRESQL SCORECARDS)
 // -----------------------------------------------------------------------------
@@ -354,55 +365,94 @@ export async function getFlagsmithExperimentResults(
   // If database is available, dynamically aggregate from PostgreSQL prisma.telemetryEvent
   if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
     try {
-      const { prisma } = await import("@/lib/db/prisma");
+      const prisma = await getPrismaClient();
       const experiment = await prisma.experiment.findUnique({
         where: { flagsmithFeatureName: featureFlagName },
         include: { variants: true },
       });
 
       if (experiment && experiment.variants.length > 0) {
-        const grouped = await prisma.telemetryEvent.groupBy({
-          by: ["variantId", "eventType"],
-          where: { experimentId: experiment.id },
-          _count: { id: true },
+        // 1. Fetch unique exposures per user (first-touch variant assignment)
+        const exposureEvents = await prisma.telemetryEvent.findMany({
+          where: { experimentId: experiment.id, eventType: "EXPOSURE" },
+          select: { distinctUserId: true, variantId: true },
+          distinct: ["distinctUserId"],
         });
 
-        const countsByVariant: Record<string, { exposures: number; conversions: number }> = {};
+        const userVariantMap = new Map<string, string>();
+        const exposuresByVariant: Record<string, number> = {};
         for (const v of experiment.variants) {
-          countsByVariant[v.id] = { exposures: 0, conversions: 0 };
+          exposuresByVariant[v.id] = 0;
         }
 
-        for (const row of grouped) {
-          if (countsByVariant[row.variantId]) {
-            if (row.eventType === "EXPOSURE") {
-              countsByVariant[row.variantId].exposures = row._count.id;
-            } else if (row.eventType === "CONVERSION") {
-              countsByVariant[row.variantId].conversions = row._count.id;
+        for (const exp of exposureEvents) {
+          userVariantMap.set(exp.distinctUserId, exp.variantId);
+          if (exposuresByVariant[exp.variantId] !== undefined) {
+            exposuresByVariant[exp.variantId]++;
+          }
+        }
+
+        // 2. Fetch all conversion events
+        const conversionEvents = await prisma.telemetryEvent.findMany({
+          where: { experimentId: experiment.id, eventType: "CONVERSION" },
+          select: { distinctUserId: true, variantId: true, properties: true },
+        });
+
+        // 3. Track unique converted users per variant, repeat purchases, and revenue
+        const convertedUsersByVariant = new Map<string, Set<string>>();
+        const totalPurchasesByVariant: Record<string, number> = {};
+        const totalRevenueByVariant: Record<string, number> = {};
+
+        for (const v of experiment.variants) {
+          convertedUsersByVariant.set(v.id, new Set<string>());
+          totalPurchasesByVariant[v.id] = 0;
+          totalRevenueByVariant[v.id] = 0;
+        }
+
+        for (const conv of conversionEvents) {
+          // Attribute conversion to user's assigned exposed variant, or event's variant
+          const assignedVariantId = userVariantMap.get(conv.distinctUserId) || conv.variantId;
+          const userSet = convertedUsersByVariant.get(assignedVariantId);
+          if (userSet) {
+            userSet.add(conv.distinctUserId); // Deduplicates repeat conversions by same user
+            totalPurchasesByVariant[assignedVariantId] = (totalPurchasesByVariant[assignedVariantId] || 0) + 1;
+
+            const props = conv.properties as any;
+            const value = Number(props?.orderValue || props?.cartValue || props?.amount || 0);
+            if (!isNaN(value) && value > 0) {
+              totalRevenueByVariant[assignedVariantId] = (totalRevenueByVariant[assignedVariantId] || 0) + value;
             }
           }
         }
 
-        const totalDbExposures = Object.values(countsByVariant).reduce((acc, c) => acc + c.exposures, 0);
-        const totalDbConversions = Object.values(countsByVariant).reduce((acc, c) => acc + c.conversions, 0);
+        const totalDbExposures = Object.values(exposuresByVariant).reduce((acc, c) => acc + c, 0);
+        let totalUniqueConvertedUsers = 0;
+        for (const set of convertedUsersByVariant.values()) {
+          totalUniqueConvertedUsers += set.size;
+        }
 
         if (totalDbExposures > 0) {
           const controlVariant = experiment.variants.find((v) => v.isControl) || experiment.variants[0];
-          const controlCounts = countsByVariant[controlVariant.id] || { exposures: 1, conversions: 0 };
-          const controlRate = controlCounts.exposures > 0 ? controlCounts.conversions / controlCounts.exposures : 0;
+          const controlExposures = exposuresByVariant[controlVariant.id] || 0;
+          const controlUniqueConverted = convertedUsersByVariant.get(controlVariant.id)?.size || 0;
+          const controlRate = controlExposures > 0 ? controlUniqueConverted / controlExposures : 0;
 
           const variations: ExperimentVariationResult[] = experiment.variants.map((v) => {
-            const counts = countsByVariant[v.id] || { exposures: 0, conversions: 0 };
-            const rate = counts.exposures > 0 ? counts.conversions / counts.exposures : 0;
+            const expCount = exposuresByVariant[v.id] || 0;
+            const uniqueConverted = convertedUsersByVariant.get(v.id)?.size || 0;
             const isControl = v.id === controlVariant.id;
+
+            // Mathematical invariant: conversion rate must be bounded [0, 1]
+            const rate = expCount > 0 ? Math.min(1, uniqueConverted / expCount) : 0;
 
             let expectedLiftPercent = 0;
             let chanceToWin = 0.5;
             let credibleInterval95: [number, number] = [0, 0];
 
-            if (!isControl && counts.exposures > 0 && controlCounts.exposures > 0) {
+            if (!isControl && expCount > 0 && controlExposures > 0) {
               const comp = compareVariants(
-                { key: controlVariant.key, name: controlVariant.name, isControl: true, exposures: controlCounts.exposures, conversions: controlCounts.conversions },
-                { key: v.key, name: v.name, isControl: false, exposures: counts.exposures, conversions: counts.conversions }
+                { key: controlVariant.key, name: controlVariant.name, isControl: true, exposures: controlExposures, conversions: controlUniqueConverted },
+                { key: v.key, name: v.name, isControl: false, exposures: expCount, conversions: uniqueConverted }
               );
               expectedLiftPercent = Number(comp.relativeUpliftPercent.toFixed(1));
               chanceToWin = Number(comp.bayesianProbabilityToBeatControl.toFixed(3));
@@ -413,8 +463,8 @@ export async function getFlagsmithExperimentResults(
               variantKey: v.key,
               variantName: v.name,
               isControl,
-              exposures: counts.exposures,
-              conversions: counts.conversions,
+              exposures: expCount,
+              conversions: uniqueConverted,
               conversionRate: Number(rate.toFixed(4)),
               expectedLiftPercent: !isControl ? expectedLiftPercent : undefined,
               chanceToWin: !isControl ? chanceToWin : undefined,
@@ -439,7 +489,7 @@ export async function getFlagsmithExperimentResults(
             },
             summary: {
               totalExposures: totalDbExposures,
-              totalConversions: totalDbConversions,
+              totalConversions: totalUniqueConvertedUsers,
               leadingVariationKey: leadingVar?.variantKey || null,
               statisticalCertaintyReached: (leadingVar?.chanceToWin || 0) >= 0.95 && totalDbExposures >= experiment.sampleSizeTarget,
             },

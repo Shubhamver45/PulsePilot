@@ -54,6 +54,22 @@ export interface AuditRecord {
 
 export const GENESIS_SIGNATURE = "0000000000000000000000000000000000000000000000000000000000000000";
 
+export function canonicalJsonStringify(val: any): string {
+  if (val === null || val === undefined) return "{}";
+  if (typeof val !== "object") return JSON.stringify(val);
+  if (Array.isArray(val)) {
+    return "[" + val.map((item) => canonicalJsonStringify(item)).join(",") + "]";
+  }
+  const keys = Object.keys(val).sort();
+  return (
+    "{" +
+    keys
+      .map((k) => JSON.stringify(k) + ":" + canonicalJsonStringify(val[k]))
+      .join(",") +
+    "}"
+  );
+}
+
 export function computeRecordSignature(
   prevSig: string,
   record: {
@@ -74,7 +90,7 @@ export function computeRecordSignature(
     `${record.actor.type}:${record.actor.name}`,
     record.entityId,
     record.details,
-    JSON.stringify(record.metadata || {}),
+    canonicalJsonStringify(record.metadata || {}),
   ].join("|");
   return crypto.createHash("sha256").update(payload).digest("hex");
 }
@@ -139,102 +155,159 @@ if (!globalAuditStore.auditLogsStore) {
 
 const auditLogsStore = globalAuditStore.auditLogsStore;
 
-// Concurrency mutex queue to ensure atomic sequential appends
-let appendQueue: Promise<any> = Promise.resolve();
+export const AUDIT_ADVISORY_LOCK_ID = 8847291048591823;
+
+async function getPrisma() {
+  try {
+    const { prisma } = await import("../db/prisma.ts");
+    return prisma;
+  } catch {
+    const { prisma } = await import("@/lib/db/prisma");
+    return prisma;
+  }
+}
+
+// Local in-process mutex queue to prevent local connection-pool exhaustion
+let inProcessQueue: Promise<any> = Promise.resolve();
 
 export async function recordAuditLog(
   record: Omit<AuditRecord, "id" | "timestamp" | "signature" | "previousSignature" | "sequenceNumber">
 ): Promise<AuditRecord> {
+  const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+
+  if (!isDbConfigured) {
+    // In-memory / offline mock path
+    const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const timestamp = new Date().toISOString();
+    const previousSignature =
+      auditLogsStore.length > 0 && auditLogsStore[0].signature
+        ? auditLogsStore[0].signature
+        : GENESIS_SIGNATURE;
+    const sequenceNumber = (auditLogsStore[0]?.sequenceNumber || auditLogsStore.length) + 1;
+
+    const baseRecord = { ...record, id, timestamp };
+    const signature = computeRecordSignature(previousSignature, baseRecord);
+    const newRecord: AuditRecord = {
+      ...baseRecord,
+      previousSignature,
+      signature,
+      sequenceNumber,
+    };
+    auditLogsStore.unshift(newRecord);
+    if (auditLogsStore.length > 500) auditLogsStore.pop();
+    return newRecord;
+  }
+
+  // Queue locally per process, and synchronize across all serverless processes via PostgreSQL advisory lock
   return new Promise((resolve, reject) => {
-    appendQueue = appendQueue.then(async () => {
-      try {
-        const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const timestamp = new Date().toISOString();
+    inProcessQueue = inProcessQueue.then(async () => {
+      const MAX_RETRIES = 5;
+      let lastError: any = null;
 
-        let previousSignature = GENESIS_SIGNATURE;
-        let sequenceNumber = 1;
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const prisma = await getPrisma();
 
-        const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+          const persistedRecord = await prisma.$transaction(
+            async (tx) => {
+              // 1. Acquire transaction-scoped PostgreSQL advisory lock (distributed cross-instance mutex)
+              await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_ADVISORY_LOCK_ID})`;
 
-        if (isDbConfigured) {
-          try {
-            const { prisma } = await import("@/lib/db/prisma");
-            const lastDbLog = await prisma.auditLog.findFirst({
-              orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
-            });
-            if (lastDbLog?.signature) {
-              previousSignature = lastDbLog.signature;
-              sequenceNumber = (lastDbLog.sequenceNumber || 0) + 1;
-            } else if (auditLogsStore.length > 0 && auditLogsStore[0].signature) {
-              previousSignature = auditLogsStore[0].signature;
-              sequenceNumber = (auditLogsStore[0].sequenceNumber || auditLogsStore.length) + 1;
-            }
-          } catch {
-            if (auditLogsStore.length > 0 && auditLogsStore[0].signature) {
-              previousSignature = auditLogsStore[0].signature;
-              sequenceNumber = (auditLogsStore[0].sequenceNumber || auditLogsStore.length) + 1;
-            }
-          }
-        } else if (auditLogsStore.length > 0 && auditLogsStore[0].signature) {
-          previousSignature = auditLogsStore[0].signature;
-          sequenceNumber = (auditLogsStore[0].sequenceNumber || auditLogsStore.length) + 1;
-        }
+              // 2. Read the latest sequence number and previous signature ONLY after lock is held
+              const lastDbLog = await tx.auditLog.findFirst({
+                orderBy: { sequenceNumber: "desc" },
+              });
 
-        const baseRecord = {
-          ...record,
-          id,
-          timestamp,
-        };
+              const previousSignature = lastDbLog?.signature || GENESIS_SIGNATURE;
+              const sequenceNumber = (lastDbLog?.sequenceNumber || 0) + 1;
 
-        const signature = computeRecordSignature(previousSignature, baseRecord);
+              const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              const timestamp = new Date().toISOString();
 
-        const newRecord: AuditRecord = {
-          ...baseRecord,
-          previousSignature,
-          signature,
-          sequenceNumber,
-        };
+              const baseRecord = {
+                ...record,
+                id,
+                timestamp,
+              };
 
-        auditLogsStore.unshift(newRecord);
-        if (auditLogsStore.length > 500) {
-          auditLogsStore.pop();
-        }
+              const signature = computeRecordSignature(previousSignature, baseRecord);
 
-        // Persist to PostgreSQL Prisma store if configured (server-side persistence)
-        if (isDbConfigured) {
-          try {
-            const { prisma } = await import("@/lib/db/prisma");
-            const org = await prisma.organization.findFirst();
-            if (org) {
-              await prisma.auditLog.create({
+              const auditRecord: AuditRecord = {
+                ...baseRecord,
+                previousSignature,
+                signature,
+                sequenceNumber,
+              };
+
+              const org = await tx.organization.findFirst();
+              if (!org) {
+                throw new Error("Cannot persist audit log: No organization found in database.");
+              }
+
+              // 3. Insert record within the same transaction
+              await tx.auditLog.create({
                 data: {
-                  id: newRecord.id,
+                  id: auditRecord.id,
                   organizationId: org.id,
-                  action: newRecord.action as any,
-                  entityType: newRecord.entityType,
-                  entityId: newRecord.entityId,
-                  actorName: newRecord.actor.name,
-                  actorType: newRecord.actor.type,
-                  details: newRecord.details,
-                  signature: newRecord.signature,
-                  previousSignature: newRecord.previousSignature,
-                  sequenceNumber: newRecord.sequenceNumber,
-                  previousState: newRecord.previousState || undefined,
-                  newState: newRecord.newState || undefined,
-                  metadata: newRecord.metadata || undefined,
-                  createdAt: new Date(newRecord.timestamp),
+                  action: auditRecord.action as any,
+                  entityType: auditRecord.entityType,
+                  entityId: auditRecord.entityId,
+                  actorName: auditRecord.actor.name,
+                  actorType: auditRecord.actor.type,
+                  details: auditRecord.details,
+                  signature: auditRecord.signature,
+                  previousSignature: auditRecord.previousSignature,
+                  sequenceNumber: auditRecord.sequenceNumber,
+                  previousState: auditRecord.previousState || undefined,
+                  newState: auditRecord.newState || undefined,
+                  metadata: auditRecord.metadata || undefined,
+                  createdAt: new Date(auditRecord.timestamp),
                 },
               });
-            }
-          } catch (dbErr: any) {
-            console.warn("[AuditLog DB Persistence Warning]:", dbErr.message);
-          }
-        }
 
-        resolve(newRecord);
-      } catch (err) {
-        reject(err);
+              return auditRecord;
+            },
+            {
+              maxWait: 20000,
+              timeout: 20000,
+            }
+          );
+
+          // 4. Synchronize in-memory cache upon verified transaction commit
+          auditLogsStore.unshift(persistedRecord);
+          if (auditLogsStore.length > 500) {
+            auditLogsStore.pop();
+          }
+
+          resolve(persistedRecord);
+          return;
+        } catch (err: any) {
+          lastError = err;
+          const isRetryable =
+            err.code === "P2002" || // Unique constraint violation (sequenceNumber/signature)
+            err.code === "P2034" || // Transaction conflict
+            err.code === "P2028" || // Transaction API error
+            err.message?.includes("Unable to start a transaction") ||
+            err.message?.includes("could not serialize access") ||
+            err.message?.includes("deadlock detected") ||
+            err.message?.includes("canceling statement due to lock timeout");
+
+          if (isRetryable && attempt < MAX_RETRIES) {
+            // Jittered backoff: 30ms * attempt + random [0..40ms]
+            await new Promise((r) => setTimeout(r, 30 * attempt + Math.floor(Math.random() * 40)));
+            continue;
+          }
+
+          break;
+        }
       }
+
+      // Never return false success! Explicitly throw failure!
+      reject(
+        new Error(
+          `CRITICAL AUDIT PERSISTENCE FAILURE: Failed to persist audit record for [${record.action}] after ${MAX_RETRIES} attempts. Reason: ${lastError?.message || lastError}`
+        )
+      );
     });
   });
 }
@@ -254,7 +327,7 @@ export async function getPersistedAuditLogs(): Promise<AuditRecord[]> {
 
   if (isDbConfigured) {
     try {
-      const { prisma } = await import("@/lib/db/prisma");
+      const prisma = await getPrisma();
       const dbLogs = await prisma.auditLog.findMany({
         orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
       });
@@ -279,8 +352,8 @@ export async function getPersistedAuditLogs(): Promise<AuditRecord[]> {
           metadata: log.metadata as Record<string, any> | undefined,
         }));
       }
-    } catch {
-      // Fall through to memory
+    } catch (err: any) {
+      console.warn("[getPersistedAuditLogs Warning]:", err?.message);
     }
   }
 

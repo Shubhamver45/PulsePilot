@@ -232,14 +232,13 @@ model AuditLog {
   details           String?       @db.Text
   signature         String?       @unique
   previousSignature String?
-  sequenceNumber    Int?
+  sequenceNumber    Int?          @unique
   previousState     Json?
   newState          Json?
   metadata          Json?
   createdAt         DateTime      @default(now())
 
   @@index([organizationId, createdAt])
-  @@index([sequenceNumber])
   @@map("audit_logs")
 }
 

@@ -17,6 +17,7 @@ const TelemetryEventSchema = z.object({
   variantKey: z.string().optional(),
   metricKey: z.string().optional(),
   properties: z.record(z.any()).optional(),
+  idempotencyKey: z.string().optional(),
   requirePersistence: z.boolean().optional(),
 });
 
@@ -66,25 +67,55 @@ export async function POST(request: Request) {
           include: { variants: true },
         });
 
-        if (experiment) {
+        if (!experiment) {
+          if (event.requirePersistence) {
+            return NextResponse.json(
+              {
+                success: false,
+                error: "EXPERIMENT_NOT_FOUND",
+                message: `Experiment for feature flag '${event.experimentFlag}' not found in database.`,
+              },
+              { status: 404 }
+            );
+          }
+        } else {
           const matchedVariant =
             experiment.variants.find((v) => v.key === event.variantKey) ||
             experiment.variants.find((v) => v.isControl) ||
             experiment.variants[0];
 
           if (matchedVariant) {
-            // Deduplication key construction:
+            // Deterministic deduplication key:
             // Exposures: 1 per user per experiment
-            // Conversions: 1 per user per transaction/order
-            const dedupKey =
-              normalizedEventType === "EXPOSURE"
-                ? `${experiment.id}:${event.distinctUserId}:EXPOSURE`
-                : `${experiment.id}:${event.distinctUserId}:CONVERSION:${
-                    event.properties?.orderId ||
-                    event.properties?.transactionId ||
-                    event.properties?.eventId ||
-                    `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-                  }`;
+            // Conversions: 1 per user per transaction/order/event (no randomness)
+            const conversionId =
+              event.properties?.orderId ||
+              event.properties?.transactionId ||
+              event.properties?.eventId ||
+              event.idempotencyKey;
+
+            let dedupKey: string;
+            if (normalizedEventType === "EXPOSURE") {
+              dedupKey = `${experiment.id}:${event.distinctUserId}:EXPOSURE`;
+            } else {
+              if (conversionId) {
+                dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${conversionId}`;
+              } else {
+                if (event.requirePersistence) {
+                  return NextResponse.json(
+                    {
+                      success: false,
+                      error: "MISSING_CONVERSION_IDENTIFIER",
+                      message:
+                        "Conversion telemetry events require an orderId, transactionId, eventId, or idempotencyKey for deterministic duplicate prevention.",
+                    },
+                    { status: 422 }
+                  );
+                }
+                // Fallback to deterministic single user conversion per metric key (never Date.now() or randomness)
+                dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${record.metricKey}`;
+              }
+            }
 
             try {
               const savedEvent = await prisma.telemetryEvent.create({

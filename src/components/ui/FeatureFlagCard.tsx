@@ -33,7 +33,7 @@ export function FeatureFlagCard({
   return (
     <div
       className={cn(
-        "p-5 rounded-lg bg-surface border border-border shadow-xs hover:border-primary/40 transition-all overflow-hidden",
+        "p-4 sm:p-5 rounded-lg bg-surface border border-border shadow-xs hover:border-primary/40 transition-all",
         !enabled && "opacity-80 bg-surface-subtle",
         className
       )}
