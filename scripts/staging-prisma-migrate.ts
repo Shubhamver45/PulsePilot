@@ -16,10 +16,10 @@
  */
 
 import { spawnSync } from "child_process";
-import { PrismaClient } from "@prisma/client";
 import {
   loadAndValidateStagingEnv,
   verifyServerSession,
+  createStagingPrismaClient,
   type ServerIdentityRecord,
 } from "./staging-safety.ts";
 
@@ -53,13 +53,8 @@ async function main() {
   // 2. Pre-Migration Live Server Session & Prerequisite Role Verification
   console.log("🔍 Connecting to staging direct endpoint to verify server session and prerequisites...");
 
-  // Use the exact validated direct URL for preflight
-  const preflightPrisma = new PrismaClient({
-    datasources: {
-      db: { url: config.stagingDirectUrl },
-    },
-    log: ["error"],
-  });
+  // Use the exact validated direct URL for preflight via dedicated factory
+  const preflightPrisma = createStagingPrismaClient(config.directEndpoint);
 
   try {
     const rows = await preflightPrisma.$queryRawUnsafe<

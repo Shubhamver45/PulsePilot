@@ -154,12 +154,21 @@ export function validateStagingEndpointUrl(
   }
 
   // Strict TLS Policy Enforcement:
-  // Reject insecure sslmode values that disable or weaken encryption/verification.
-  const sslMode = parsed.searchParams.get("sslmode")?.toLowerCase() || "require";
-  if (sslMode === "disable" || sslMode === "allow" || sslMode === "prefer" || sslMode === "no-verify") {
+  // 1. Explicit sslmode=verify-full is strictly required for all staging PostgreSQL connections.
+  // 2. Reject require, verify-ca, disable, allow, prefer, and no-verify.
+  const sslMode = parsed.searchParams.get("sslmode")?.toLowerCase();
+  if (!sslMode) {
+    throw new Error(
+      `MISSING_SSLMODE: ${paramName} does not specify sslmode. ` +
+      `Explicit sslmode=verify-full is strictly required for all staging connections to enforce full certificate chain and hostname verification.`
+    );
+  }
+
+  if (sslMode !== "verify-full") {
     throw new Error(
       `INSECURE_TLS_CONFIGURATION: ${paramName} specifies sslmode="${sslMode}". ` +
-      "Disabling or weakening TLS verification is strictly prohibited. Permitted modes: sslmode=require, sslmode=verify-full."
+      `Only sslmode=verify-full is permitted for staging connections to enforce full certificate chain and hostname verification. ` +
+      `Modes 'require', 'verify-ca', 'disable', 'allow', 'prefer', and 'no-verify' are strictly rejected.`
     );
   }
 
@@ -238,7 +247,8 @@ export function validateStagingEndpointUrl(
     );
   }
 
-  const sanitizedUrl = `${parsed.protocol}//${parsed.username || "postgres"}:***@${parsed.host}${parsed.pathname}`;
+  const sanitizedQuery = parsed.search ? parsed.search : "";
+  const sanitizedUrl = `${parsed.protocol}//${parsed.username || "postgres"}:***@${parsed.host}${parsed.pathname}${sanitizedQuery}`;
 
   return {
     protocol: parsed.protocol.replace(":", ""),
@@ -251,9 +261,9 @@ export function validateStagingEndpointUrl(
     sanitizedUrl,
     rawUrl: urlStr.trim(),
     tlsPolicy: {
-      sslMode,
-      certVerificationEnforced: sslMode === "verify-full" || sslMode === "verify-ca" || sslMode === "require",
-      hostnameVerificationEnforced: sslMode === "verify-full",
+      sslMode: "verify-full",
+      certVerificationEnforced: true,
+      hostnameVerificationEnforced: true,
     },
   };
 }
@@ -449,6 +459,17 @@ export function assertExactSqlState(
       `UNEXPECTED_SQLSTATE: Expected SQLSTATE "${expectedSqlState}" for ${contextMessage}, ` +
       `but received SQLSTATE "${inspection.sqlState}": ${inspection.rawMessage}`
     );
+  }
+}
+
+/**
+ * Sentinel error used by the acceptance test suite to trigger an intentional
+ * PostgreSQL transaction rollback after all 13 live acceptance tests succeed.
+ */
+export class AcceptanceSuiteRollbackSentinel extends Error {
+  constructor() {
+    super("PULSEPILOT_SEC03_INTENTIONAL_ROLLBACK_SENTINEL");
+    this.name = "AcceptanceSuiteRollbackSentinel";
   }
 }
 

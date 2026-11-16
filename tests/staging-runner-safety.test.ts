@@ -11,10 +11,10 @@
  * Verifies:
  * 1.  Mandatory STAGING_PROJECT_REF validation and production collision rejection.
  * 2.  Endpoint parsing, hostname agreement, and supported host validation.
- * 3.  Insecure TLS configuration rejection (sslmode=disable, sslmode=no-verify, rejectUnauthorized=false).
+ * 3.  Strict TLS configuration: requires sslmode=verify-full; rejects require, verify-ca, disable, allow, prefer, no-verify.
  * 4.  Isolated TLS Test Fixture: Proves certificate validation & hostname verification fail closed.
  * 5.  Prohibited DATABASE_URL / DIRECT_URL fallback rejection.
- * 6.  Target endpoint consistency: exact validated direct URL passed to PrismaClient.
+ * 6.  Target endpoint consistency: exact validated direct URL passed to PrismaClient without mutation.
  * 7.  Server session inspection & identity separation (no manufactured server ref).
  * 8.  current_database() = 'postgres' NOT treated as staging proof.
  * 9.  Structured database error inspection: exact SQLSTATE 42501 validation.
@@ -23,6 +23,11 @@
  * 12. Transaction-aborted 25P02 explicitly rejected and not mistaken for 42501.
  * 13. Preflight runner success explicitly distinguished from acceptance tests.
  * 14. CLI process safety: all runners exit nonzero on missing configuration or production collision.
+ * 15. Acceptance test statements execute within one explicit transaction/session.
+ * 16. Successful acceptance suite rolls back all test data (zero lingering records).
+ * 17. Failure injection during test 8 still rolls back all prior test data.
+ * 18. Failure injection during test 11 rolls back temporary hostile functions (public.now()).
+ * 19. Connection teardown occurs after rollback.
  */
 
 import tls from "tls";
@@ -40,8 +45,13 @@ import {
   inspectDatabaseError,
   assertExactSqlState,
   createStagingPrismaClient,
+  AcceptanceSuiteRollbackSentinel,
   type ServerIdentityRecord,
 } from "../scripts/staging-safety.ts";
+import {
+  executeNegativeAssertion,
+  executeAcceptanceSuite,
+} from "../scripts/run-staging-dba-tests.ts";
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -55,6 +65,21 @@ function expectThrows(fn: () => any, expectedErrorFragment: string, msg: string)
   try {
     fn();
     console.error(`❌ [FAIL] Expected exception containing "${expectedErrorFragment}", but function succeeded: ${msg}`);
+    process.exit(1);
+  } catch (err: any) {
+    if (err.message.includes(expectedErrorFragment)) {
+      console.log(`  ✅ [PASS] Threw expected error containing "${expectedErrorFragment}": ${msg}`);
+    } else {
+      console.error(`❌ [FAIL] Threw unexpected error: "${err.message}". Expected fragment: "${expectedErrorFragment}": ${msg}`);
+      process.exit(1);
+    }
+  }
+}
+
+async function expectAsyncThrows(fn: () => Promise<any>, expectedErrorFragment: string, msg: string) {
+  try {
+    await fn();
+    console.error(`❌ [FAIL] Expected async exception containing "${expectedErrorFragment}", but function succeeded: ${msg}`);
     process.exit(1);
   } catch (err: any) {
     if (err.message.includes(expectedErrorFragment)) {
@@ -93,16 +118,33 @@ async function runStagingSafetyTests() {
   console.log("  ✅ Test Suite 1 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // SUITE 2: Endpoint Parsing, Hostname & TLS Policy Validation
+  // SUITE 2: Endpoint Parsing, Hostname & Strict TLS Policy Validation
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 2: Endpoint Parsing, Hostname & TLS Policy Validation");
+  console.log("TEST SUITE 2: Endpoint Parsing, Hostname & Strict TLS Policy Validation");
 
   expectThrows(() => validateStagingEndpointUrl(undefined, VALID_STAGING_REF, "STAGING_DATABASE_URL"), "MISSING_STAGING_DATABASE_URL", "Missing STAGING_DATABASE_URL must throw");
   expectThrows(() => validateStagingEndpointUrl("not_a_url", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "MALFORMED_URL", "Malformed URL must throw");
-  expectThrows(() => validateStagingEndpointUrl("http://db.stageproj123456789.supabase.co/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "INVALID_PROTOCOL", "HTTP protocol must be rejected");
-  expectThrows(() => validateStagingEndpointUrl("postgresql://postgres:pass@staging.internal.net:5432/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "UNSUPPORTED_HOST", "Non-Supabase hostname must be rejected");
+  expectThrows(() => validateStagingEndpointUrl("http://db.stageproj123456789.supabase.co/postgres?sslmode=verify-full", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "INVALID_PROTOCOL", "HTTP protocol must be rejected");
+  expectThrows(() => validateStagingEndpointUrl("postgresql://postgres:pass@staging.internal.net:5432/postgres?sslmode=verify-full", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "UNSUPPORTED_HOST", "Non-Supabase hostname must be rejected");
 
-  // Insecure TLS configurations
+  // Missing sslmode
+  expectThrows(
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    "MISSING_SSLMODE",
+    "Missing sslmode must be rejected (sslmode=verify-full is strictly required)"
+  );
+
+  // Weak/insecure sslmode values must ALL be rejected
+  expectThrows(
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=require`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    "INSECURE_TLS_CONFIGURATION",
+    "sslmode=require must be rejected"
+  );
+  expectThrows(
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=verify-ca`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    "INSECURE_TLS_CONFIGURATION",
+    "sslmode=verify-ca must be rejected"
+  );
   expectThrows(
     () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=disable`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "INSECURE_TLS_CONFIGURATION",
@@ -124,29 +166,32 @@ async function runStagingSafetyTests() {
     "sslmode=no-verify must be rejected"
   );
   expectThrows(
-    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?rejectUnauthorized=false`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=verify-full&rejectUnauthorized=false`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "INSECURE_TLS_CONFIGURATION",
     "rejectUnauthorized=false must be rejected"
   );
 
   // Production collision in URL
   expectThrows(
-    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres?sslmode=verify-full`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "PRODUCTION_COLLISION",
     "Production project reference in URL must be rejected"
   );
 
   // Project ref mismatch
   expectThrows(
-    () => validateStagingEndpointUrl("postgresql://postgres:pass@db.differentsupabaseref999.supabase.co:5432/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    () => validateStagingEndpointUrl("postgresql://postgres:pass@db.differentsupabaseref999.supabase.co:5432/postgres?sslmode=verify-full", VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "PROJECT_REF_MISMATCH",
     "Mismatch between URL hostname and expected STAGING_PROJECT_REF must be rejected"
   );
 
   const validEndpoint = validateStagingEndpointUrl(VALID_STAGING_DB_URL, VALID_STAGING_REF, "STAGING_DATABASE_URL");
   assert(validEndpoint.projectRef === VALID_STAGING_REF, "Extracted projectRef matches expected staging ref");
+  assert(validEndpoint.tlsPolicy.sslMode === "verify-full", "sslMode is verify-full");
   assert(validEndpoint.tlsPolicy.certVerificationEnforced === true, "Certificate verification enforced in TLS policy");
+  assert(validEndpoint.tlsPolicy.hostnameVerificationEnforced === true, "Hostname verification enforced in TLS policy");
   assert(!validEndpoint.sanitizedUrl.includes("secretpassword"), "Sanitized URL masks password completely");
+  assert(validEndpoint.sanitizedUrl.includes("sslmode=verify-full"), "Sanitized URL preserves sslmode parameter");
   console.log("  ✅ Test Suite 2 Passed.\n");
 
   // -------------------------------------------------------------------------
@@ -197,6 +242,15 @@ async function runStagingSafetyTests() {
     fs.unlinkSync(caCertPath);
   } catch {}
 
+  console.log(`
+  ℹ️  [PRISMA CONNECTOR TLS LIMITATION DISCLOSURE]:
+     Prisma 6.4.1 utilizes an embedded Rust query engine (quaint) which implements PostgreSQL wire-protocol TLS.
+     Testing Prisma's compiled engine directly against mock servers requires a full PostgreSQL-wire-protocol mock
+     and system root CA certificate store registration.
+     The local TLS verification tests above prove that Node's X.509 verification and TLS identity checks fail closed.
+     Prisma's connector enforces sslmode=verify-full as configured in the direct connection string.
+  `);
+
   console.log("  ✅ Test Suite 3 Passed.\n");
 
   // -------------------------------------------------------------------------
@@ -208,7 +262,7 @@ async function runStagingSafetyTests() {
     () => loadAndValidateStagingEnv({
       STAGING_PROJECT_REF: VALID_STAGING_REF,
       STAGING_DATABASE_URL: undefined,
-      DATABASE_URL: "postgresql://postgres:pass@db.czqhiuidekvozuoqdmyd.supabase.co:5432/postgres",
+      DATABASE_URL: "postgresql://postgres:pass@db.czqhiuidekvozuoqdmyd.supabase.co:5432/postgres?sslmode=verify-full",
     }),
     "MISSING_STAGING_DATABASE_URL",
     "Runner must fail closed when STAGING_DATABASE_URL is missing, never falling back to DATABASE_URL"
@@ -219,7 +273,7 @@ async function runStagingSafetyTests() {
       STAGING_PROJECT_REF: VALID_STAGING_REF,
       STAGING_DATABASE_URL: VALID_STAGING_DB_URL,
       STAGING_DIRECT_URL: undefined,
-      DIRECT_URL: "postgresql://postgres:pass@db.czqhiuidekvozuoqdmyd.supabase.co:5432/postgres",
+      DIRECT_URL: "postgresql://postgres:pass@db.czqhiuidekvozuoqdmyd.supabase.co:5432/postgres?sslmode=verify-full",
     }),
     "MISSING_STAGING_DIRECT_URL",
     "Runner must fail closed when STAGING_DIRECT_URL is missing, never falling back to DIRECT_URL"
@@ -235,13 +289,14 @@ async function runStagingSafetyTests() {
   const testPrismaClient = createStagingPrismaClient(validConfig.directEndpoint);
   assert(testPrismaClient !== null, "createStagingPrismaClient instantiated PrismaClient");
   assert(validConfig.directEndpoint.rawUrl === VALID_STAGING_DIRECT_URL, "Exact validated raw URL preserved without mutation");
+  assert(validConfig.directEndpoint.rawUrl.includes("sslmode=verify-full"), "Raw URL retains sslmode=verify-full parameter");
 
   console.log("  ✅ Test Suite 4 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // SUITE 5: Structured Database Error & SQLSTATE 42501 Inspection
+  // SUITE 5: Structured Database Error & Savepoint Recovery Verification
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 5: Structured Database Error & SQLSTATE 42501 Inspection");
+  console.log("TEST SUITE 5: Structured Database Error & Savepoint Recovery Verification");
 
   // 5a: Exact SQLSTATE 42501 via meta.code (PrismaClientKnownRequestError format)
   const prisma42501Err = {
@@ -286,6 +341,49 @@ async function runStagingSafetyTests() {
     () => assertExactSqlState(abortedTxErr, "42501", "test 5d"),
     "TRANSACTION_ABORTED",
     "Transaction aborted 25P02 must throw TRANSACTION_ABORTED and never pass as permission denied"
+  );
+
+  // 5e: executeNegativeAssertion with successful subtransaction recovery
+  const mockSavepointClient = {
+    $executeRawUnsafe: async (sql: string) => {
+      // Simulates PL/pgSQL block trapping 42501 and recovering
+      return 1;
+    },
+    $queryRawUnsafe: async () => [],
+  };
+  const negResult = await executeNegativeAssertion(
+    mockSavepointClient,
+    "Mock Savepoint Test",
+    "pulsepilot_app",
+    "UPDATE public.revoked_tokens SET reason = 'X'",
+    "42501"
+  );
+  assert(negResult.success === true && negResult.returnedSqlState === "42501", "executeNegativeAssertion recovered cleanly");
+
+  // 5f: executeNegativeAssertion when statement unexpectedly succeeds without error
+  const mockSucceedingClient = {
+    $executeRawUnsafe: async () => {
+      throw new Error("TEST_FAILED: Operation unexpectedly succeeded without error!");
+    },
+    $queryRawUnsafe: async () => [],
+  };
+  await expectAsyncThrows(
+    () => executeNegativeAssertion(mockSucceedingClient, "Mock Unexpected Success", "pulsepilot_app", "DELETE FROM public.revoked_tokens"),
+    "TEST FAILED",
+    "executeNegativeAssertion fails when statement unexpectedly succeeds"
+  );
+
+  // 5g: executeNegativeAssertion when transaction was already aborted (25P02)
+  const mockAbortedClient = {
+    $executeRawUnsafe: async () => {
+      throw new Error("TRANSACTION_ABORTED: Previous command left transaction aborted (25P02)");
+    },
+    $queryRawUnsafe: async () => [],
+  };
+  await expectAsyncThrows(
+    () => executeNegativeAssertion(mockAbortedClient, "Mock Aborted Session", "pulsepilot_app", "DELETE FROM public.revoked_tokens"),
+    "TRANSACTION ABORTED",
+    "executeNegativeAssertion fails when transaction was already aborted (25P02)"
   );
 
   console.log("  ✅ Test Suite 5 Passed.\n");
@@ -355,8 +453,8 @@ async function runStagingSafetyTests() {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       STAGING_PROJECT_REF: KNOWN_PRODUCTION_PROJECT_REF,
-      STAGING_DATABASE_URL: `postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres`,
-      STAGING_DIRECT_URL: `postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres`,
+      STAGING_DATABASE_URL: `postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres?sslmode=verify-full`,
+      STAGING_DIRECT_URL: `postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres?sslmode=verify-full`,
     },
     encoding: "utf8",
   });
@@ -368,8 +466,154 @@ async function runStagingSafetyTests() {
 
   console.log("  ✅ Test Suite 7 Passed.\n");
 
+  // -------------------------------------------------------------------------
+  // SUITE 8: Transaction Isolation, Rollback Guarantees & Teardown
+  // -------------------------------------------------------------------------
+  console.log("TEST SUITE 8: Transaction Isolation, Rollback Guarantees & Teardown");
+
+  // Create a mock transaction harness modeling PostgreSQL transactional state
+  class MockTransactionHarness {
+    public activeSessionId: string | null = null;
+    public executedQueries: Array<{ session: string; query: string }> = [];
+    public insertedRows: Map<string, any> = new Map();
+    public hostileFunctions: Set<string> = new Set();
+    public isRolledBack = false;
+    public isDisconnected = false;
+    public failAtStep: string | null = null;
+
+    async $queryRawUnsafe<T = any>(query: string): Promise<T> {
+      this.executedQueries.push({ session: "root", query });
+      if (query.includes("current_database()")) {
+        return [{
+          current_database: "postgres",
+          current_user: "postgres",
+          session_user: "postgres",
+          inet_server_addr: "10.0.0.1",
+          inet_server_port: 5432,
+          version: "PostgreSQL 15.6 on x86_64-pc-linux-gnu",
+        }] as unknown as T;
+      }
+      if (query.includes("information_schema.tables")) {
+        return [{ exists: true }] as unknown as T;
+      }
+      if (query.includes("COUNT(*) AS count FROM public.revoked_tokens")) {
+        return [{ count: BigInt(this.insertedRows.size) }] as unknown as T;
+      }
+      if (query.includes("proname = 'now'")) {
+        return [{ exists: this.hostileFunctions.has("public.now") }] as unknown as T;
+      }
+      return [] as unknown as T;
+    }
+
+    async $executeRawUnsafe(query: string): Promise<any> {
+      this.executedQueries.push({ session: "root", query });
+      if (query.includes("DROP FUNCTION IF EXISTS public.now")) {
+        this.hostileFunctions.delete("public.now");
+      }
+      return 1;
+    }
+
+    async $transaction<R>(
+      fn: (tx: any) => Promise<R>,
+      _options?: { maxWait?: number; timeout?: number }
+    ): Promise<R> {
+      const txSession = `tx_session_${Date.now()}`;
+      this.activeSessionId = txSession;
+
+      const txClient = {
+        $executeRawUnsafe: async (sql: string, ...vals: any[]) => {
+          this.executedQueries.push({ session: txSession, query: sql });
+
+          // Failure injection check
+          if (this.failAtStep && sql.includes(this.failAtStep)) {
+            throw new Error(`INJECTED_FAILURE_AT_${this.failAtStep}`);
+          }
+
+          if (sql.includes("INSERT INTO public.revoked_tokens")) {
+            const jti = vals[0] || `jti_${Date.now()}_${Math.random()}`;
+            this.insertedRows.set(jti, { sql, vals });
+          }
+          if (sql.includes("CREATE OR REPLACE FUNCTION public.now")) {
+            this.hostileFunctions.add("public.now");
+          }
+          if (sql.includes("DROP FUNCTION IF EXISTS public.now") || sql.includes("DROP FUNCTION public.now")) {
+            this.hostileFunctions.delete("public.now");
+          }
+          return 1;
+        },
+        $queryRawUnsafe: async (sql: string) => {
+          this.executedQueries.push({ session: txSession, query: sql });
+          if (this.failAtStep && sql.includes(this.failAtStep)) {
+            throw new Error(`INJECTED_FAILURE_AT_${this.failAtStep}`);
+          }
+          return [{ count: BigInt(1) }];
+        },
+      };
+
+      try {
+        const result = await fn(txClient);
+        return result;
+      } catch (err) {
+        // Outer PostgreSQL transaction rollback clears all state created in this transaction
+        this.isRolledBack = true;
+        this.insertedRows.clear();
+        this.hostileFunctions.delete("public.now");
+        throw err;
+      }
+    }
+
+    async $disconnect(): Promise<void> {
+      this.isDisconnected = true;
+    }
+  }
+
+  // Test 8a: Successful suite execution runs in 1 transaction and cleanly rolls back
+  const successHarness = new MockTransactionHarness();
+  process.env.STAGING_PROJECT_REF = VALID_STAGING_REF;
+  process.env.STAGING_DATABASE_URL = VALID_STAGING_DB_URL;
+  process.env.STAGING_DIRECT_URL = VALID_STAGING_DIRECT_URL;
+
+  const suiteResult = await executeAcceptanceSuite(successHarness as any);
+  assert(suiteResult.passed === true, "executeAcceptanceSuite returns passed=true on complete run");
+  assert(suiteResult.testsRun === 13, "All 13 acceptance tests were executed");
+  assert(successHarness.isRolledBack === true, "Outer transaction was explicitly rolled back via AcceptanceSuiteRollbackSentinel");
+  assert(successHarness.insertedRows.size === 0, "Zero test records persist after transaction rollback");
+  assert(successHarness.isDisconnected === true, "prisma.$disconnect() called in finally block after rollback verification");
+
+  // Verify all 13 tests ran on the SAME single transaction session
+  const txQueries = successHarness.executedQueries.filter((q) => q.session.startsWith("tx_session_"));
+  assert(txQueries.length >= 13, "At least 13 queries executed on the dedicated transaction session");
+  const uniqueTxSessions = new Set(txQueries.map((q) => q.session));
+  assert(uniqueTxSessions.size === 1, "All 13 acceptance tests used the exact same single transaction session");
+
+  // Test 8b: Failure injection at Test 8 still rolls back all prior test records
+  const failTest8Harness = new MockTransactionHarness();
+  failTest8Harness.failAtStep = "cleanup_expired_revoked_tokens"; // Test 8 statement
+  await expectAsyncThrows(
+    () => executeAcceptanceSuite(failTest8Harness as any),
+    "INJECTED_FAILURE_AT_cleanup_expired_revoked_tokens",
+    "Acceptance suite halts and throws on failure at Test 8"
+  );
+  assert(failTest8Harness.isRolledBack === true, "Failure at Test 8 triggered complete transaction rollback");
+  assert(failTest8Harness.insertedRows.size === 0, "All prior test records (Tests 1 & 2) rolled back on Test 8 failure");
+  assert(failTest8Harness.isDisconnected === true, "Client disconnected cleanly after failure at Test 8");
+
+  // Test 8c: Failure injection at Test 11 rolls back hostile public.now() function
+  const failTest11Harness = new MockTransactionHarness();
+  failTest11Harness.failAtStep = "TEST 11 CRITICAL FAILURE"; // Injected inside Test 11
+  await expectAsyncThrows(
+    () => executeAcceptanceSuite(failTest11Harness as any),
+    "INJECTED_FAILURE",
+    "Acceptance suite halts on Test 11 failure"
+  );
+  assert(failTest11Harness.isRolledBack === true, "Failure at Test 11 triggered transaction rollback");
+  assert(!failTest11Harness.hostileFunctions.has("public.now"), "Hostile public.now() rolled back and does not persist");
+  assert(failTest11Harness.isDisconnected === true, "Client disconnected cleanly after failure at Test 11");
+
+  console.log("  ✅ Test Suite 8 Passed.\n");
+
   console.log("=====================================================================");
-  console.log("   🎉 ALL 28 FORMAL ACCEPTANCE RUNNER TESTS PASSED (7/7 suites)       ");
+  console.log("   🎉 ALL FORMAL ACCEPTANCE RUNNER TESTS PASSED (8/8 suites)         ");
   console.log("=====================================================================");
 }
 

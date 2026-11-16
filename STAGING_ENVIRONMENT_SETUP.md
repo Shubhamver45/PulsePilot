@@ -20,7 +20,7 @@ To satisfy the requirements of **SEC-03.1 and SEC-03.2** without risking product
 
 ### 1.2 Staging Architecture & Identity Assurance Model
 1. **Endpoint Hostname Validation:** Parses and validates that the connection URL strictly targets the expected Supabase host (`db.<staging-ref>.supabase.co`).
-2. **TLS Certificate Verification:** Enforces strict TLS encryption and certificate validation during connection establishment, preventing DNS spoofing or MITM attacks. Insecure settings (`sslmode=disable`, `sslmode=no-verify`) are blocked.
+2. **Mandatory Full TLS Certificate & Hostname Verification:** Enforces strict TLS encryption, certificate chain validation, and hostname matching (`sslmode=verify-full`) during connection establishment, preventing DNS spoofing or MITM attacks. All other modes (`require`, `verify-ca`, `disable`, `allow`, `prefer`, `no-verify`) and `rejectUnauthorized=false` are strictly rejected.
 3. **Read-Only Session Inspection:** Queries connected PostgreSQL session attributes (`current_database()`, `current_user`, `session_user`, `inet_server_addr()`, `version()`).
 4. **Architectural Limitation Notice:** Supabase exposes no native PostgreSQL catalog variable for cloud project references. Therefore, `current_database() = 'postgres'` is standard on all Supabase databases and does NOT alone prove staging identity. Assurance is derived from the combination of endpoint hostname validation, TLS certificate verification, and PostgreSQL session checks.
 
@@ -70,9 +70,9 @@ Create a local environment file `.env.staging` (or set shell environment variabl
 # 1. Mandatory Staging Project Reference
 export STAGING_PROJECT_REF="<YOUR_STAGING_PROJECT_REF>"
 
-# 2. Dedicated Staging PostgreSQL Connections (Direct & Pooled)
-export STAGING_DATABASE_URL="postgresql://postgres:<YOUR_STAGING_PASSWORD>@db.<YOUR_STAGING_PROJECT_REF>.supabase.co:5432/postgres"
-export STAGING_DIRECT_URL="postgresql://postgres:<YOUR_STAGING_PASSWORD>@db.<YOUR_STAGING_PROJECT_REF>.supabase.co:5432/postgres"
+# 2. Dedicated Staging PostgreSQL Connections (Direct & Pooled - Mandatory sslmode=verify-full)
+export STAGING_DATABASE_URL="postgresql://postgres:<YOUR_STAGING_PASSWORD>@db.<YOUR_STAGING_PROJECT_REF>.supabase.co:5432/postgres?sslmode=verify-full"
+export STAGING_DIRECT_URL="postgresql://postgres:<YOUR_STAGING_PASSWORD>@db.<YOUR_STAGING_PROJECT_REF>.supabase.co:5432/postgres?sslmode=verify-full"
 
 # 3. Supabase API Credentials
 export NEXT_PUBLIC_SUPABASE_URL="https://<YOUR_STAGING_PROJECT_REF>.supabase.co"
