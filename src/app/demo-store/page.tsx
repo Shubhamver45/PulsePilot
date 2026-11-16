@@ -649,7 +649,7 @@ export default function DemoStorePage() {
               }`}
             >
               <span className={`w-1.5 h-1.5 rounded-full ${evaluationSource === "flagsmith_remote_api" ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
-              {evaluationSource === "flagsmith_remote_api" ? "LIVE FLAGSMITH EDGE" : "SANDBOX MOCK"}
+              {evaluationSource === "flagsmith_remote_api" ? "LIVE FLAGSMITH EDGE" : "SANDBOX MOCK MODE"}
             </span>
 
             <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
