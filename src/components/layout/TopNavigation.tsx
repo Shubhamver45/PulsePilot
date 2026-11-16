@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -59,19 +59,86 @@ export function TopNavigation({
 
   const router = useRouter();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
-  const [currentUser, setCurrentUser] = useState({
-    name: "Sarah Lin",
-    email: "sarah@pulsepilot.ai",
-    role: "Product Lead (Admin)",
-    initials: "SL",
+  const [authData, setAuthData] = useState<{
+    authenticated: boolean;
+    isDemoMode: boolean;
+    user: any | null;
+  }>({
+    authenticated: false,
+    isDemoMode: true,
+    user: null,
   });
+
+  const [currentUser, setCurrentUser] = useState({
+    name: "Demo Guest",
+    email: "Unauthenticated",
+    role: "Demo Mode",
+    initials: "DG",
+  });
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.authenticated && data.user) {
+          setAuthData({
+            authenticated: true,
+            isDemoMode: false,
+            user: data.user,
+          });
+          const names = (data.user.fullName || data.user.email || "User").split(" ");
+          const initials = names
+            .map((n: string) => n[0])
+            .join("")
+            .slice(0, 2)
+            .toUpperCase();
+          setCurrentUser({
+            name: data.user.fullName || data.user.email,
+            email: data.user.email,
+            role:
+              data.user.role === "ADMIN"
+                ? "Admin"
+                : data.user.role === "EDITOR"
+                ? "Editor"
+                : "Viewer",
+            initials,
+          });
+        } else {
+          setAuthData({
+            authenticated: false,
+            isDemoMode: true,
+            user: null,
+          });
+          setCurrentUser({
+            name: "Demo Guest",
+            email: "Unauthenticated",
+            role: "Demo Mode",
+            initials: "DG",
+          });
+        }
+      })
+      .catch(() => {
+        setAuthData({
+          authenticated: false,
+          isDemoMode: true,
+          user: null,
+        });
+      });
+  }, []);
 
   const handleLogout = async () => {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
-    } catch (e) {
+    } catch {
       // ignore
     }
+    setAuthData({ authenticated: false, isDemoMode: true, user: null });
+    setCurrentUser({
+      name: "Demo Guest",
+      email: "Unauthenticated",
+      role: "Demo Mode",
+      initials: "DG",
+    });
     router.push("/login");
   };
   const pathSegments = pathname.split("/").filter(Boolean);
@@ -154,13 +221,35 @@ export function TopNavigation({
 
           <div className="h-5 w-px bg-border mx-1 hidden sm:block" />
 
+          {/* Explicit Demo Mode Indicator or Sign In CTA */}
+          {authData.isDemoMode && (
+            <div className="hidden sm:flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-medium">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                Demo Mode
+              </span>
+              <Link
+                href="/login"
+                className="px-2.5 py-1 text-xs font-semibold rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors shadow-xs"
+              >
+                Sign In
+              </Link>
+            </div>
+          )}
+
           {/* User Profile with Dropdown */}
           <div className="relative">
             <button
               onClick={() => setUserDropdownOpen(!userDropdownOpen)}
               className="flex items-center gap-2.5 pl-1 p-1 rounded-md hover:bg-surface-subtle transition-colors"
             >
-              <div className="w-7 h-7 rounded-full bg-primary-light text-primary font-semibold text-xs flex items-center justify-center border border-primary/20">
+              <div
+                className={`w-7 h-7 rounded-full font-semibold text-xs flex items-center justify-center border ${
+                  authData.authenticated
+                    ? "bg-violet-100 text-violet-700 border-violet-200"
+                    : "bg-slate-100 text-slate-700 border-slate-200"
+                }`}
+              >
                 {currentUser.initials}
               </div>
               <div className="hidden lg:block text-left">
@@ -181,29 +270,52 @@ export function TopNavigation({
                   <span className="text-[11px] text-text-muted block">{currentUser.email}</span>
                 </div>
                 <div className="py-1">
-                  <Link
-                    href="/settings"
-                    onClick={() => setUserDropdownOpen(false)}
-                    className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-text transition-colors"
-                  >
-                    <User className="w-3.5 h-3.5 text-text-secondary" /> Account Settings
-                  </Link>
-                  <Link
-                    href="/login"
-                    onClick={() => setUserDropdownOpen(false)}
-                    className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-text transition-colors"
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 text-text-secondary" /> Switch Account
-                  </Link>
+                  {authData.authenticated ? (
+                    <>
+                      <Link
+                        href="/settings"
+                        onClick={() => setUserDropdownOpen(false)}
+                        className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-text transition-colors"
+                      >
+                        <User className="w-3.5 h-3.5 text-text-secondary" /> Account Settings
+                      </Link>
+                      <Link
+                        href="/login"
+                        onClick={() => setUserDropdownOpen(false)}
+                        className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-text transition-colors"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-text-secondary" /> Switch Account
+                      </Link>
+                    </>
+                  ) : (
+                    <>
+                      <Link
+                        href="/login"
+                        onClick={() => setUserDropdownOpen(false)}
+                        className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-primary font-semibold transition-colors"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-primary" /> Sign In to Workspace
+                      </Link>
+                      <Link
+                        href="/register"
+                        onClick={() => setUserDropdownOpen(false)}
+                        className="w-full text-left p-2 rounded hover:bg-surface-subtle flex items-center gap-2 text-text transition-colors"
+                      >
+                        <User className="w-3.5 h-3.5 text-text-secondary" /> Create Account
+                      </Link>
+                    </>
+                  )}
                 </div>
-                <div className="pt-1 border-t border-border">
-                  <button
-                    onClick={handleLogout}
-                    className="w-full text-left p-2 rounded hover:bg-red-50 text-danger flex items-center gap-2 font-semibold transition-colors"
-                  >
-                    <LogOut className="w-3.5 h-3.5" /> Sign Out
-                  </button>
-                </div>
+                {authData.authenticated && (
+                  <div className="pt-1 border-t border-border">
+                    <button
+                      onClick={handleLogout}
+                      className="w-full text-left p-2 rounded hover:bg-red-50 text-danger flex items-center gap-2 font-semibold transition-colors"
+                    >
+                      <LogOut className="w-3.5 h-3.5" /> Sign Out
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

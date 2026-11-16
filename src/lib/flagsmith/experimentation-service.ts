@@ -520,12 +520,8 @@ export async function getFlagsmithExperimentResults(
     }
   }
 
-  // Check in-memory store (e.g. created during current runtime session)
-  let exp = activeFlagsmithExperiments.get(featureFlagName);
-  if (!exp && featureFlagName === "checkout_experience") {
-    seedDemoExperimentFixture();
-    exp = activeFlagsmithExperiments.get("checkout_experience");
-  }
+  // Check in-memory active experiments (only populated via explicit creation or testing)
+  const exp = activeFlagsmithExperiments.get(featureFlagName);
   if (!exp) return null;
 
   return {

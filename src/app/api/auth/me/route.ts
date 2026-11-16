@@ -13,27 +13,37 @@ export async function GET(request: Request) {
   const token = authHeader || cookieToken;
 
   if (!token) {
-    // Default to guest/demo product lead if no session is set
+    // Explicit demo mode: Unauthenticated guest MUST NOT be represented as an authenticated ADMIN
     return NextResponse.json({
       authenticated: false,
-      user: {
+      isDemoMode: true,
+      user: null,
+      guestInfo: {
         id: "usr_guest",
-        fullName: "Sarah Lin (Demo)",
-        email: "sarah@pulsepilot.ai",
-        role: "ADMIN",
-        organizationName: "Acme Growth Inc.",
-        activeWorkspaceName: "Acme Growth (Production)",
+        displayName: "Demo Guest",
+        role: "GUEST",
+        notice: "Unauthenticated demo mode. Production feature flag mutations require signing in.",
       },
     });
   }
 
   const user = await getUserFromToken(token);
   if (!user) {
-    return NextResponse.json({ authenticated: false, user: null }, { status: 401 });
+    return NextResponse.json(
+      {
+        authenticated: false,
+        isDemoMode: true,
+        user: null,
+        error: "INVALID_SESSION",
+        message: "Session is invalid, expired, or has been revoked.",
+      },
+      { status: 401 }
+    );
   }
 
   return NextResponse.json({
     authenticated: true,
+    isDemoMode: false,
     user,
   });
 }

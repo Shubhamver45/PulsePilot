@@ -24,6 +24,13 @@ import {
 } from "../src/lib/flagsmith/experimentation-service.ts";
 import { POST as createExperimentRoute } from "../src/app/api/experiments/create/route.ts";
 import { GET as healthRoute } from "../src/app/api/flagsmith/health/route.ts";
+import {
+  computeConfigurationHash,
+  generateInstrumentationPlan,
+  createExperimentProposal,
+  approveAndExecuteProposal,
+  rejectProposal,
+} from "../src/lib/flagsmith/proposal-service.ts";
 
 let totalAsserts = 0;
 let passedAsserts = 0;
@@ -450,6 +457,288 @@ async function runJudgeRemediationTests() {
       healthData.activeExperimentFlag === null || typeof healthData.activeExperimentFlag === "object",
       "Health endpoint does not emit fake hardcoded experiment IDs (291896 / 1826064)"
     );
+
+    // -------------------------------------------------------------------------
+    // SECTION 6: CRYPTOGRAPHIC PROPOSAL ENGINE & ANTI-TAMPER HITL GOVERNANCE
+    // -------------------------------------------------------------------------
+    console.log("\nSECTION 6: CRYPTOGRAPHIC PROPOSAL ENGINE & ANTI-TAMPER HITL GOVERNANCE");
+
+    // Use mock database URL for proposal engine unit tests to avoid remote database reliance
+    process.env.DATABASE_URL = "mock";
+
+    const baseStrategy: any = {
+      experiment_name: "Checkout Conversion Uplift Test",
+      hypothesis: "A single-page checkout form will increase checkout conversions by 15%.",
+      flagsmith_feature_name: "exp_checkout_single_page_v1",
+      target_audience: { segmentName: "All Users", percentage: 100 },
+      control_variant: {
+        key: "control",
+        name: "Multi-Step Checkout",
+        trafficAllocation: 50,
+        featureValue: { layout: "multi_step" },
+        whyWorthTesting: "Current baseline",
+      },
+      treatment_variants: [
+        {
+          key: "treatment_single_page",
+          name: "Single-Page Checkout",
+          trafficAllocation: 50,
+          featureValue: { layout: "single_page" },
+          whyWorthTesting: "Reduces friction",
+        },
+      ],
+      primary_metric: {
+        key: "checkout_completed",
+        name: "Checkout Completed",
+        type: "CONVERSION_RATE",
+      },
+      secondary_metrics: [
+        {
+          key: "revenue_usd",
+          name: "Revenue",
+          type: "REVENUE",
+          direction: "INCREASE",
+        },
+      ],
+      guardrail_metrics: [
+        {
+          key: "payment_failure",
+          name: "Payment Failure",
+          type: "CONVERSION_RATE",
+          direction: "DECREASE",
+        },
+      ],
+    };
+
+    // 1. SHA-256 configuration hash computation
+    const hash1 = computeConfigurationHash(baseStrategy);
+    const hash2 = computeConfigurationHash(baseStrategy);
+    assert(
+      typeof hash1 === "string" && hash1.length === 64,
+      `computeConfigurationHash returns a 64-character SHA-256 hex string (${hash1.slice(0, 16)}...)`
+    );
+    assert(
+      hash1 === hash2,
+      "computeConfigurationHash is strictly deterministic for identical experiment strategies"
+    );
+
+    // 2. Anti-tampering sensitivity: modifying allocation alters the hash
+    const tamperedAllocationStrategy = {
+      ...baseStrategy,
+      control_variant: { ...baseStrategy.control_variant, trafficAllocation: 60 },
+      treatment_variants: [{ ...baseStrategy.treatment_variants[0], trafficAllocation: 40 }],
+    };
+    const hashTamperedAlloc = computeConfigurationHash(tamperedAllocationStrategy);
+    assert(
+      hashTamperedAlloc !== hash1,
+      "computeConfigurationHash changes when traffic allocations are modified"
+    );
+
+    // 3. Modifying feature value alters the hash
+    const tamperedValueStrategy = {
+      ...baseStrategy,
+      treatment_variants: [{ ...baseStrategy.treatment_variants[0], featureValue: { layout: "accordion_step" } }],
+    };
+    const hashTamperedValue = computeConfigurationHash(tamperedValueStrategy);
+    assert(
+      hashTamperedValue !== hash1,
+      "computeConfigurationHash changes when variant payload values are modified"
+    );
+
+    // 4. Instrumentation plan generation
+    const plan = generateInstrumentationPlan(baseStrategy);
+    assert(
+      plan.requiredSdk.includes("flagsmith"),
+      "generateInstrumentationPlan requires official Flagsmith SDK"
+    );
+    assert(
+      plan.flagEvaluationCode.includes("exp_checkout_single_page_v1"),
+      "generateInstrumentationPlan contains evaluation snippet for the exact flag key"
+    );
+    assert(
+      plan.proposedDiff.includes("--- a/src/components/CheckoutContainer.tsx"),
+      "generateInstrumentationPlan produces a concrete unified application diff"
+    );
+
+    // 5. Proposal generation with valid 100% traffic allocation
+    const mockAdminUser: any = {
+      id: "usr_sarah_lin",
+      email: "sarah@pulsepilot.ai",
+      fullName: "Sarah Lin",
+      role: "ADMIN",
+      organizationId: "org_acme_growth",
+      organizationName: "Acme Growth Inc.",
+      activeWorkspaceId: "ws_acme_prod",
+      activeWorkspaceName: "Production",
+      createdAt: new Date().toISOString(),
+    };
+
+    const proposal = await createExperimentProposal(baseStrategy, mockAdminUser, "development");
+    assert(
+      proposal.proposalId.startsWith("prop_"),
+      `createExperimentProposal generates unique proposal ID with 'prop_' prefix (${proposal.proposalId})`
+    );
+    assert(
+      proposal.status === "PENDING_APPROVAL",
+      "createExperimentProposal starts in PENDING_APPROVAL status awaiting human sign-off"
+    );
+    assert(
+      proposal.configurationHash === hash1,
+      "createExperimentProposal attaches matching SHA-256 configuration hash"
+    );
+    assert(
+      proposal.validation.isValid === true && proposal.validation.totalTrafficAllocation === 100,
+      "createExperimentProposal validates exact 100% traffic allocation"
+    );
+    assert(
+      new Date(proposal.expiresAt).getTime() > Date.now(),
+      "createExperimentProposal sets future 15-minute TTL expiration timestamp"
+    );
+
+    // 6. Proposal generation rejects invalid traffic sum (< 100% or > 100%)
+    const invalidTrafficStrategy = {
+      ...baseStrategy,
+      control_variant: { ...baseStrategy.control_variant, trafficAllocation: 40 },
+      treatment_variants: [{ ...baseStrategy.treatment_variants[0], trafficAllocation: 40 }], // Sum: 80%
+    };
+    let invalidTrafficCaught = false;
+    try {
+      await createExperimentProposal(invalidTrafficStrategy, mockAdminUser, "development");
+    } catch (err: any) {
+      invalidTrafficCaught = true;
+      assert(
+        err.message.includes("Total traffic allocation must equal exactly 100%"),
+        "createExperimentProposal rejects strategy when total allocation does not equal 100%"
+      );
+    }
+    assert(invalidTrafficCaught, "createExperimentProposal threw validation error on non-100% allocation");
+
+    // 7. Anti-tamper enforcement: Altered hash in approval handshake is rejected
+    let tamperDetected = false;
+    try {
+      await approveAndExecuteProposal(
+        proposal.proposalId,
+        "0000000000000000000000000000000000000000000000000000000000000000", // Tampered hash
+        mockAdminUser
+      );
+    } catch (err: any) {
+      tamperDetected = true;
+      assert(
+        err.message.includes("SECURITY VIOLATION: PROPOSAL_TAMPERED"),
+        "approveAndExecuteProposal rejects mismatched configuration hash with SECURITY VIOLATION: PROPOSAL_TAMPERED"
+      );
+    }
+    assert(tamperDetected, "approveAndExecuteProposal blocked tampered proposal execution");
+
+    // 8. Role enforcement: VIEWER role cannot approve or execute proposals
+    const mockViewerUser: any = { ...mockAdminUser, id: "usr_viewer", role: "VIEWER" };
+    let viewerBlocked = false;
+    try {
+      await approveAndExecuteProposal(proposal.proposalId, proposal.configurationHash, mockViewerUser);
+    } catch (err: any) {
+      viewerBlocked = true;
+      assert(
+        err.message.includes("Only users with ADMIN or EDITOR roles can approve"),
+        "approveAndExecuteProposal blocks non-privileged VIEWER role with HTTP 403 authorization error"
+      );
+    }
+    assert(viewerBlocked, "approveAndExecuteProposal enforced strict RBAC role check");
+
+    // 9. Rejection workflow: Rejecting a proposal marks it REJECTED
+    const rejectResult = await rejectProposal(proposal.proposalId, mockAdminUser, "Risk too high for Black Friday");
+    assert(
+      rejectResult.success === true,
+      "rejectProposal successfully archives proposal with human rationale"
+    );
+
+    let rejectedExecutionBlocked = false;
+    try {
+      await approveAndExecuteProposal(proposal.proposalId, proposal.configurationHash, mockAdminUser);
+    } catch (err: any) {
+      rejectedExecutionBlocked = true;
+      assert(
+        err.message.includes("has been rejected"),
+        "approveAndExecuteProposal refuses to execute a rejected proposal"
+      );
+    }
+    assert(rejectedExecutionBlocked, "approveAndExecuteProposal blocks rejected proposal execution");
+
+    // 10. Replay prevention test: create new proposal and execute once
+    const proposalForReplay = await createExperimentProposal(
+      { ...baseStrategy, flagsmith_feature_name: "exp_replay_test_v1" },
+      mockAdminUser,
+      "development"
+    );
+
+    // Mock fetch for Flagsmith v2 remote execution
+    let createdFeatureState: any = null;
+    globalThis.fetch = async (url: any, init?: any): Promise<Response> => {
+      const urlStr = String(url);
+      if (urlStr.includes("/flags/")) {
+        return new Response(
+          JSON.stringify(createdFeatureState ? [createdFeatureState] : []),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (urlStr.includes("/features/")) {
+        createdFeatureState = {
+          id: 501,
+          environment: 115953,
+          feature: { id: 9999, name: "exp_replay_test_v1", type: "MULTIVARIATE" },
+          enabled: true,
+          feature_state_value: JSON.stringify({ layout: "multi_step" }),
+          multivariate_feature_state_values: [
+            {
+              id: 1,
+              multivariate_feature_option: { id: 10, type: "unicode", string_value: "control" },
+              percentage_allocation: 50,
+            },
+            {
+              id: 2,
+              multivariate_feature_option: { id: 20, type: "unicode", string_value: "treatment_single_page" },
+              percentage_allocation: 50,
+            },
+          ],
+        };
+        return new Response(
+          JSON.stringify({
+            id: 9999,
+            name: "exp_replay_test_v1",
+            default_enabled: true,
+            multivariate_options: [],
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    };
+
+    const execResult = await approveAndExecuteProposal(
+      proposalForReplay.proposalId,
+      proposalForReplay.configurationHash,
+      mockAdminUser
+    );
+    assert(
+      execResult.success === true && (execResult.status === "ACTIVE" || execResult.status === "EXECUTED"),
+      "approveAndExecuteProposal successfully executes proposal under authenticated admin identity"
+    );
+
+    // Second execution must fail (Replay prevention)
+    let replayBlocked = false;
+    try {
+      await approveAndExecuteProposal(
+        proposalForReplay.proposalId,
+        proposalForReplay.configurationHash,
+        mockAdminUser
+      );
+    } catch (err: any) {
+      replayBlocked = true;
+      assert(
+        err.message.includes("PROPOSAL_ALREADY_EXECUTED"),
+        "approveAndExecuteProposal prevents replay attacks with PROPOSAL_ALREADY_EXECUTED"
+      );
+    }
+    assert(replayBlocked, "approveAndExecuteProposal blocked replay attempt");
 
     // -------------------------------------------------------------------------
     // SUMMARY

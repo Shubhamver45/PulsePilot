@@ -15,6 +15,9 @@ export interface AuditRecord {
   action:
     | "EXPERIMENT_CREATED"
     | "EXPERIMENT_APPROVED"
+    | "EXPERIMENT_PROPOSAL_CREATED"
+    | "EXPERIMENT_PROPOSAL_REJECTED"
+    | "EXPERIMENT_ARCHIVED"
     | "FLAG_ACTIVATED"
     | "TRAFFIC_SPLIT_UPDATED"
     | "GRADUAL_STAGE_UPDATED"
@@ -41,6 +44,7 @@ export interface AuditRecord {
   };
   entityType:
     | "EXPERIMENT"
+    | "EXPERIMENT_PROPOSAL"
     | "FLAGSMITH_FLAG"
     | "TELEMETRY"
     | "FLAGSMITH_SEGMENT"

@@ -1,4 +1,4 @@
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -18,6 +18,23 @@ export async function resolve(specifier, context, nextResolve) {
       resolved = path.join(basePath, 'index.ts');
     }
     return nextResolve(pathToFileURL(resolved).href, context);
+  }
+  if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL) {
+    try {
+      const parentDir = path.dirname(fileURLToPath(context.parentURL));
+      const targetPath = path.resolve(parentDir, specifier);
+      if (!fs.existsSync(targetPath)) {
+        if (fs.existsSync(targetPath + '.ts')) {
+          return nextResolve(pathToFileURL(targetPath + '.ts').href, context);
+        } else if (fs.existsSync(targetPath + '.tsx')) {
+          return nextResolve(pathToFileURL(targetPath + '.tsx').href, context);
+        } else if (fs.existsSync(path.join(targetPath, 'index.ts'))) {
+          return nextResolve(pathToFileURL(path.join(targetPath, 'index.ts')).href, context);
+        }
+      }
+    } catch {
+      // Fall through to default resolution
+    }
   }
   return nextResolve(specifier, context);
 }
