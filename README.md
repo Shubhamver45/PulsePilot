@@ -40,18 +40,21 @@ PulsePilot AI turns natural language product intent into verified, live A/B and 
 
 ## ⏱️ Developer Impact & Time Savings Benchmark
 
-> **Data Provenance:** Baselines represent typical manual engineering workflows across PRD drafting, console configuration, and SDK instrumentation. Agent times reflect measured end-to-end execution on Flagsmith Environment `115953` (Development) with deliberate human review.
+### Benchmark Methodology & Provenance
+- **Estimated Manual Baselines:** Represent typical industry developer workflow estimates for an experienced full-stack engineer manually authoring PRDs, navigating the Flagsmith console, configuring multivariate splits, implementing client SDK evaluation and exposure telemetry, and cross-verifying flag propagation.
+- **Observed Agent Measurements:** Reflect single-run observational timings measured during live end-to-end execution on Flagsmith Environment `115953` (Development) combined with deliberate operator review.
+- **Scope Notice:** This comparison illustrates developer workflow acceleration and typo elimination in a controlled test; it is an observational benchmark rather than a statistically randomized multi-team trial.
 
-| Workflow Step | Estimated Manual Baseline | Measured PulsePilot Agent | Measured Time Saved |
+| Workflow Step | Estimated Manual Baseline | Observed PulsePilot Agent | Step Reduction (Observed vs Estimated) |
 | :--- | :--- | :--- | :--- |
 | **1. Hypothesis & Spec Formulation** | Write PRD, define metric targets, specify variants: **15 mins (900s)** | Enter 1-sentence prompt; Gemini synthesizes full strategy: **10.4s** | **98.84%** |
 | **2. Feature Flag Provisioning** | Navigate Flagsmith console, create flag, type keys: **10 mins (600s)** | Automated Flagsmith Management API provisioning: **1.8s** | **99.70%** |
 | **3. Multivariate Split Configuration** | Add options, calculate split %s, ensure 100% sum: **10 mins (600s)** | Strict 100% split validation & JSON payload generation: **0.05s** | **99.99%** |
 | **4. Application Instrumentation Reference** | Write SDK init, flag evaluation, and telemetry tracking: **15 mins (900s)** | Reference integration template & verified diff generation: **0.15s** | **99.98%** |
 | **5. Human Governance & Verification** | Manual review, copy-pasting IDs, checking edge propagation: **10 mins (600s)** | Cryptographic SHA-256 seal & read-after-write edge verification: **14.1s** *(12.5s review + 1.6s check)* | **97.65%** |
-| **TOTAL TIME PER EXPERIMENT** | **60 MINUTES (3,600s)** | **38 SECONDS (Execution + Human Review)** | **98.94% REDUCTION** |
+| **TOTAL ELAPSED TIME** | **~60 MINUTES (3,600s estimated)** | **~38 SECONDS (25.25s automation + 12.85s human review)** | **~98.9% observed setup acceleration** |
 
-*Measured observation: Reduces engineer workflow time from an estimated 60 minutes to 38 seconds (a 98.94% reduction) while eliminating manual allocation errors, syntax mistakes, and phantom flag key typos.*
+*Key takeaway: Accelerates developer configuration from approximately 1 hour of manual setup down to 38 seconds of guided execution and review, eliminating manual traffic sum errors and syntax mismatches.*
 
 ---
 

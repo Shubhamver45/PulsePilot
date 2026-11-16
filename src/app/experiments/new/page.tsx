@@ -255,22 +255,39 @@ export default function AIExperimentStudioPage() {
       setIsDeploying(true);
       setDeploymentError(null);
 
-      const res = await fetch("/api/experiments/approve", {
+      // Step A: Human Approval Handshake (POST /api/experiments/approve)
+      const approveRes = await fetch("/api/experiments/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           proposalId: proposal?.proposalId,
           configurationHash: proposal?.configurationHash,
+        }),
+      });
+
+      const approveData = await approveRes.json();
+      if (!approveData.success) {
+        throw new Error(approveData.details || approveData.error || "Human approval handshake failed");
+      }
+
+      // Step B: Idempotent Execution & Flagsmith Mutation (POST /api/experiments/execute)
+      const executeRes = await fetch("/api/experiments/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proposalId: proposal?.proposalId,
+          configurationHash: proposal?.configurationHash,
+          idempotencyKey: `exec_${proposal?.proposalId}_${Date.now()}`,
           targetEnvironment,
         }),
       });
 
-      const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.message || data.error || "Flagsmith remote provisioning failed");
+      const executeData = await executeRes.json();
+      if (!executeData.success) {
+        throw new Error(executeData.details || executeData.error || "Flagsmith remote execution failed");
       }
 
-      setDeploymentResult(data);
+      setDeploymentResult(executeData);
       setCurrentStep(7); // Show Flags Mapping Confirmation, then Step 8
     } catch (err: any) {
       setDeploymentError(err.message || "Failed to provision feature in Flagsmith");
@@ -1260,6 +1277,10 @@ export default function AIExperimentStudioPage() {
                   <>
                     <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     Executing Flagsmith Provisioning...
+                  </>
+                ) : !(currentUser?.role === "ADMIN" || currentUser?.role === "EDITOR") ? (
+                  <>
+                    <Lock className="w-4 h-4" /> Sign In as Admin to Approve & Execute
                   </>
                 ) : (
                   <>

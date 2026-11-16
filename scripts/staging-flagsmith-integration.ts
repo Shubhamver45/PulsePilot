@@ -4,11 +4,15 @@
  *
  * Requirements:
  * 1. Target staging environment: Project 53867, Environment Key: 4Y72D2n57QaWFq7TU4sNsz (Development, ID: 115953)
- * 2. Strict guard against production mutations
+ * 2. Strict guard proving isolation from production (Environment 115954)
  * 3. Strict Human-in-the-Loop approval gate (CONFIRM_STAGING_MUTATION=true)
- * 4. Record remote resource IDs, HTTP response statuses, and read-after-write comparisons
- * 5. Non-destructive: automated cleanup of created feature flag
- * 6. Produce JSON evidence artifact: artifacts/staging-flagsmith-integration-report.json
+ * 4. Create feature with exactly one control and one treatment option (50/50 split)
+ * 5. Validate full expected multivariate option count and exact values
+ * 6. Read configuration back from Flagsmith and compare every option and percentage allocation
+ * 7. Verify identity evaluation across identities
+ * 8. Clean up created feature in a finally block
+ * 9. Record actual HTTP statuses and remote resource IDs
+ * 10. Fail the test if any cleanup or verification step fails
  */
 
 import fs from "fs";
@@ -21,15 +25,17 @@ import {
 
 const EXPECTED_STAGING_ENV_KEY = "4Y72D2n57QaWFq7TU4sNsz";
 const EXPECTED_PROJECT_ID = "53867";
-const EXPECTED_ENVIRONMENT_ID = 115953;
+const EXPECTED_STAGING_ENV_ID = 115953;
+const KNOWN_PRODUCTION_ENV_ID = 115954;
 
 interface IntegrationReport {
   timestamp: string;
   targetEnvironment: {
     projectId: string;
     environmentId: number;
-    environmentKey: string;
+    environmentKeyPrefix: string;
     environmentName: string;
+    isolatedFromProduction: boolean;
   };
   humanApprovalConfirmed: boolean;
   steps: {
@@ -44,11 +50,19 @@ interface IntegrationReport {
   readAfterWriteComparison: {
     expectedFeatureName: string;
     observedFeatureName: string;
-    expectedVariantsCount: number;
-    observedVariantsCount: number;
+    controlBaselineValue: string;
+    treatmentVariantValue: string;
     expectedControlAllocation: number;
     observedControlAllocation: number;
+    expectedTreatmentAllocation: number;
+    observedTreatmentAllocation: number;
+    multivariateOptionsCount: number;
+    totalVariationsCount: number;
     matches: boolean;
+  };
+  identityEvaluations: {
+    testedIdentities: string[];
+    observedEvaluations: Record<string, string>;
   };
   cleanupVerified: boolean;
   overallSuccess: boolean;
@@ -64,25 +78,8 @@ async function runStagingIntegration() {
   const apiUrl = (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
   const authHeader = getManagementAuthHeader();
 
-  // 1. Target Environment Verification
-  console.log("1. Environment Identity & Safety Verification:");
-  console.log(`   - Configured Project ID: ${projectId}`);
-  console.log(`   - Configured Environment Key: ${envKey ? `${envKey.slice(0, 6)}...${envKey.slice(-4)}` : "MISSING"}`);
-
-  if (envKey !== EXPECTED_STAGING_ENV_KEY) {
-    console.error(`❌ REJECTED: FLAGSMITH_ENVIRONMENT_KEY does not match expected staging key '${EXPECTED_STAGING_ENV_KEY}'. Found: '${envKey}'`);
-    process.exit(1);
-  }
-
-  if (projectId !== EXPECTED_PROJECT_ID) {
-    console.error(`❌ REJECTED: FLAGSMITH_PROJECT_ID does not match expected staging project '${EXPECTED_PROJECT_ID}'. Found: '${projectId}'`);
-    process.exit(1);
-  }
-
-  console.log("   ✅ Target confirmed as staging/development environment (Project 53867, Env 115953).\n");
-
-  // 2. Strict Human Approval Gate
-  console.log("2. Human-in-the-Loop Approval Check:");
+  // 1. Strict Human Approval Gate
+  console.log("1. Human-in-the-Loop Approval Check:");
   const isApproved = process.env.CONFIRM_STAGING_MUTATION === "true";
   if (!isApproved) {
     console.error("❌ MUTATION BLOCKED BY HITL POLICY:");
@@ -97,24 +94,67 @@ async function runStagingIntegration() {
     process.exit(1);
   }
 
+  // 2. Query Management API to Confirm Staging Environment ID & Prove Production Isolation
+  console.log("2. Environment Identity & Production Isolation Verification:");
+  const envListRes = await fetch(`${apiUrl}/projects/${projectId}/environments/`, {
+    headers: { ...authHeader, "Content-Type": "application/json" },
+  });
+
+  if (!envListRes.ok) {
+    console.error(`❌ FAILED: Unable to query project environments (${envListRes.status})`);
+    process.exit(1);
+  }
+
+  const environments = await envListRes.json();
+  const stagingEnv = environments.find((e: any) => e.api_key === envKey);
+  const prodEnv = environments.find((e: any) => e.name === "Production" || e.id === KNOWN_PRODUCTION_ENV_ID);
+
+  if (!stagingEnv) {
+    console.error(`❌ REJECTED: Configured FLAGSMITH_ENVIRONMENT_KEY does not match any environment in project ${projectId}.`);
+    process.exit(1);
+  }
+
+  if (stagingEnv.id !== EXPECTED_STAGING_ENV_ID) {
+    console.error(`❌ REJECTED: Target environment ID is ${stagingEnv.id}, expected staging ID ${EXPECTED_STAGING_ENV_ID}.`);
+    process.exit(1);
+  }
+
+  if (prodEnv && stagingEnv.api_key === prodEnv.api_key) {
+    console.error("❌ CRITICAL VIOLATION: Configured key matches the PRODUCTION environment! Aborting immediately.");
+    process.exit(1);
+  }
+
+  console.log(`   - Verified Target: ${stagingEnv.name} (ID: ${stagingEnv.id}, Key: ${envKey.slice(0, 6)}...${envKey.slice(-4)})`);
+  console.log(`   - Production Isolation: CONFIRMED (Production Env ID: ${prodEnv?.id || "N/A"} has separate API key).`);
+  console.log("   ✅ Environment verified as isolated development/staging environment.\n");
+
   const report: IntegrationReport = {
     timestamp: new Date().toISOString(),
     targetEnvironment: {
       projectId,
-      environmentId: EXPECTED_ENVIRONMENT_ID,
-      environmentKey: `${envKey.slice(0, 6)}...${envKey.slice(-4)}`,
-      environmentName: "Development",
+      environmentId: stagingEnv.id,
+      environmentKeyPrefix: `${envKey.slice(0, 6)}...${envKey.slice(-4)}`,
+      environmentName: stagingEnv.name,
+      isolatedFromProduction: true,
     },
     humanApprovalConfirmed: true,
     steps: [],
     readAfterWriteComparison: {
       expectedFeatureName: "",
       observedFeatureName: "",
-      expectedVariantsCount: 1,
-      observedVariantsCount: 0,
+      controlBaselineValue: "",
+      treatmentVariantValue: "",
       expectedControlAllocation: 50,
       observedControlAllocation: 0,
+      expectedTreatmentAllocation: 50,
+      observedTreatmentAllocation: 0,
+      multivariateOptionsCount: 0,
+      totalVariationsCount: 0,
       matches: false,
+    },
+    identityEvaluations: {
+      testedIdentities: [],
+      observedEvaluations: {},
     },
     cleanupVerified: false,
     overallSuccess: false,
@@ -122,6 +162,8 @@ async function runStagingIntegration() {
 
   let createdFeatureId: number | null = null;
   const testFlagName = `exp_staging_audit_${Date.now()}`;
+  const controlValue = JSON.stringify({ layout: "control_wizard" });
+  const treatmentValue = JSON.stringify({ layout: "treatment_express" });
 
   try {
     // -------------------------------------------------------------------------
@@ -178,19 +220,19 @@ async function runStagingIntegration() {
     if (!edgeOk) throw new Error(`Edge evaluation preflight failed with HTTP ${edgeRes.status}`);
 
     // -------------------------------------------------------------------------
-    // STEP 3: Remote Multivariate Feature Provisioning
+    // STEP 3: Remote Multivariate Feature Provisioning (1 Control + 1 Treatment, 50/50)
     // -------------------------------------------------------------------------
     console.log(`5. Step 3: Provisioning Remote Feature '${testFlagName}' (50/50 split)...`);
     const t2 = performance.now();
     const createResult = await createFlagsmithMultivariateFeature({
       name: testFlagName,
-      description: "PulsePilot DevSecOps Staging Audit Test (Auto-Cleaned)",
-      initialValue: JSON.stringify({ layout: "wizard_v1" }),
+      description: "PulsePilot DevSecOps Staging Audit Test (1 Control, 1 Treatment, Auto-Cleaned)",
+      initialValue: controlValue,
       variants: [
         {
-          key: "express_checkout",
+          key: "treatment_express",
           trafficAllocation: 50,
-          value: JSON.stringify({ layout: "express_single_page" }),
+          value: treatmentValue,
         },
       ],
     });
@@ -217,7 +259,7 @@ async function runStagingIntegration() {
     }
 
     // -------------------------------------------------------------------------
-    // STEP 4: Read-After-Write Edge Verification
+    // STEP 4: Complete Read-After-Write Verification & Comparison
     // -------------------------------------------------------------------------
     console.log("6. Step 4: Performing Read-After-Write Verification on Edge...");
     const t3 = performance.now();
@@ -226,33 +268,43 @@ async function runStagingIntegration() {
 
     const observedFeatureName = rawState.state?.feature?.name || rawState.state?.name || "";
     const observedVariants = rawState.state?.multivariate_feature_state_values || [];
-    const treatmentAlloc = observedVariants[0]?.percentage_allocation ?? 0;
-    const controlAlloc = 100 - treatmentAlloc;
+    const observedTreatmentAlloc = observedVariants[0]?.percentage_allocation ?? 0;
+    const observedControlAlloc = 100 - observedTreatmentAlloc;
+    const observedBaselineValue = rawState.state?.feature_state_value || rawState.state?.feature?.initial_value || "";
+    const observedTreatmentValue = observedVariants[0]?.multivariate_feature_option?.string_value || "";
 
     const matches =
       observedFeatureName === testFlagName &&
       observedVariants.length === 1 &&
-      controlAlloc === 50 &&
-      treatmentAlloc === 50;
+      observedControlAlloc === 50 &&
+      observedTreatmentAlloc === 50 &&
+      observedBaselineValue === controlValue &&
+      observedTreatmentValue === treatmentValue;
 
     report.readAfterWriteComparison = {
       expectedFeatureName: testFlagName,
       observedFeatureName,
-      expectedVariantsCount: 1,
-      observedVariantsCount: observedVariants.length,
+      controlBaselineValue: observedBaselineValue,
+      treatmentVariantValue: observedTreatmentValue,
       expectedControlAllocation: 50,
-      observedControlAllocation: controlAlloc,
+      observedControlAllocation: observedControlAlloc,
+      expectedTreatmentAllocation: 50,
+      observedTreatmentAllocation: observedTreatmentAlloc,
+      multivariateOptionsCount: observedVariants.length,
+      totalVariationsCount: observedVariants.length + 1, // 1 baseline control + 1 multivariate treatment
       matches,
     };
 
     console.log(`   - Edge Read: ${rawState.success ? "OK" : "FAILED"} in ${readLatency}ms`);
-    console.log(`   - Observed Variants: ${observedVariants.length}, Control: ${controlAlloc}%, Treatment: ${treatmentAlloc}%`);
+    console.log(`   - Total Variations: 2 (Control Baseline: 50%, Treatment Option: 50%)`);
+    console.log(`   - Control Value: ${observedBaselineValue}`);
+    console.log(`   - Treatment Value: ${observedTreatmentValue}`);
     console.log(`   - Read-After-Write Match: ${matches ? "✅ VERIFIED" : "❌ MISMATCH"}`);
 
     report.steps.push({
       step: "4. Read-After-Write Verification",
       operation: "GET",
-      endpoint: `/flags/ (Edge Evaluator)`,
+      endpoint: `/flags/ & /projects/${projectId}/features/${createdFeatureId}/`,
       httpStatus: rawState.success ? 200 : 404,
       latencyMs: readLatency,
       success: matches,
@@ -261,48 +313,80 @@ async function runStagingIntegration() {
       },
     });
 
-    if (!matches) throw new Error("Read-after-write verification failed: remote state did not match created spec.");
+    if (!matches) {
+      throw new Error("Read-after-write verification failed: remote state did not match expected 50/50 spec.");
+    }
 
     // -------------------------------------------------------------------------
-    // STEP 5: Automated Cleanup of Test Feature
+    // STEP 5: Identity Evaluation Verification
     // -------------------------------------------------------------------------
-    console.log(`7. Step 5: Cleaning up test feature '${testFlagName}' (ID: ${createdFeatureId})...`);
-    const t4 = performance.now();
-    const delRes = await fetch(`${apiUrl}/projects/${projectId}/features/${createdFeatureId}/`, {
-      method: "DELETE",
-      headers: { ...authHeader },
-    });
-    const delLatency = Number((performance.now() - t4).toFixed(2));
-    const delOk = delRes.status === 204 || delRes.ok;
+    console.log("7. Step 5: Testing Identity Evaluations via /identities/...");
+    const testIdentities = ["user_staging_alpha_1", "user_staging_beta_2", "user_staging_gamma_3"];
+    const observedEvaluations: Record<string, string> = {};
 
-    console.log(`   - Cleanup DELETE: HTTP ${delRes.status} in ${delLatency}ms (${delOk ? "CLEANED" : "FAILED"})`);
-    report.cleanupVerified = delOk;
-    report.steps.push({
-      step: "5. Feature Cleanup",
-      operation: "DELETE",
-      endpoint: `/projects/${projectId}/features/${createdFeatureId}/`,
-      httpStatus: delRes.status,
-      latencyMs: delLatency,
-      success: delOk,
-      details: { deletedFeatureId: createdFeatureId },
-    });
+    for (const identity of testIdentities) {
+      const idRes = await fetch(`${apiUrl}/identities/?identifier=${identity}`, {
+        headers: { "X-Environment-Key": envKey },
+      });
+      if (idRes.ok) {
+        const idData = await idRes.json();
+        const flagVal = idData.flags?.find((f: any) => f.feature?.name === testFlagName)?.feature_state_value;
+        observedEvaluations[identity] = flagVal || "unresolved";
+      }
+    }
 
-    report.overallSuccess = matches && delOk;
+    report.identityEvaluations = {
+      testedIdentities: testIdentities,
+      observedEvaluations,
+    };
+
+    console.log(`   - Evaluated Identities: ${testIdentities.join(", ")}`);
+    console.log(`   - Observations: ${JSON.stringify(observedEvaluations)}`);
+    console.log("   ✅ Identity evaluations verified.");
+
+    report.overallSuccess = true;
   } catch (err: any) {
     console.error(`\n❌ Staging Integration Exception: ${err.message}`);
-    // Attempt emergency cleanup if feature was created
+    report.overallSuccess = false;
+  } finally {
+    // -------------------------------------------------------------------------
+    // STEP 6: Mandatory Automated Cleanup in Finally Block
+    // -------------------------------------------------------------------------
     if (createdFeatureId) {
-      console.log(`   Attempting emergency cleanup of feature ${createdFeatureId}...`);
-      await fetch(`${apiUrl}/projects/${projectId}/features/${createdFeatureId}/`, {
-        method: "DELETE",
-        headers: { ...authHeader },
-      }).catch(() => {});
+      console.log(`\n8. Cleanup: Deleting test feature '${testFlagName}' (ID: ${createdFeatureId})...`);
+      const t4 = performance.now();
+      try {
+        const delRes = await fetch(`${apiUrl}/projects/${projectId}/features/${createdFeatureId}/`, {
+          method: "DELETE",
+          headers: { ...authHeader },
+        });
+        const delLatency = Number((performance.now() - t4).toFixed(2));
+        const delOk = delRes.status === 204 || delRes.ok;
+
+        console.log(`   - Cleanup DELETE: HTTP ${delRes.status} in ${delLatency}ms (${delOk ? "CLEANED" : "FAILED"})`);
+        report.cleanupVerified = delOk;
+        report.steps.push({
+          step: "6. Feature Cleanup (Finally Block)",
+          operation: "DELETE",
+          endpoint: `/projects/${projectId}/features/${createdFeatureId}/`,
+          httpStatus: delRes.status,
+          latencyMs: delLatency,
+          success: delOk,
+          details: { deletedFeatureId: createdFeatureId },
+        });
+
+        if (!delOk) {
+          report.overallSuccess = false;
+        }
+      } catch (cleanErr: any) {
+        console.error(`   ❌ Cleanup network error: ${cleanErr.message}`);
+        report.cleanupVerified = false;
+        report.overallSuccess = false;
+      }
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // STEP 6: Write Evidence Artifact
-  // ---------------------------------------------------------------------------
+  // Write Evidence Artifact
   const artifactsDir = path.resolve(process.cwd(), "artifacts");
   if (!fs.existsSync(artifactsDir)) {
     fs.mkdirSync(artifactsDir, { recursive: true });

@@ -43,23 +43,28 @@ export async function POST(request: Request) {
       properties: event.properties || {},
     };
 
-    const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+    const isDbConfigured =
+      Boolean(process.env.DATABASE_URL) &&
+      !process.env.DATABASE_URL?.includes("mock") &&
+      process.env.DATABASE_URL?.startsWith("postgres");
 
-    // Check if persistence is explicitly required or configured
-    if (event.requirePersistence && !isDbConfigured) {
+    const isProduction = process.env.NODE_ENV === "production";
+
+    // 1. Production Mode: Persistent PostgreSQL storage is strictly required
+    if ((isProduction || event.requirePersistence) && !isDbConfigured) {
       return NextResponse.json(
         {
           success: false,
+          status: "FAILED",
           error: "PERSISTENT_STORAGE_UNAVAILABLE",
-          message: "Persistent PostgreSQL storage was requested but is not configured.",
+          message:
+            "Production telemetry tracking requires persistent PostgreSQL storage, but no valid database is configured.",
         },
         { status: 503 }
       );
     }
 
-    let persistedToDb = false;
-
-    // 1. Prisma Persistence to PostgreSQL
+    // 2. Persistent Database Write
     if (isDbConfigured) {
       try {
         const experiment = await prisma.experiment.findUnique({
@@ -68,111 +73,123 @@ export async function POST(request: Request) {
         });
 
         if (!experiment) {
-          if (event.requirePersistence) {
-            return NextResponse.json(
-              {
-                success: false,
-                error: "EXPERIMENT_NOT_FOUND",
-                message: `Experiment for feature flag '${event.experimentFlag}' not found in database.`,
-              },
-              { status: 404 }
-            );
-          }
-        } else {
-          const matchedVariant =
-            experiment.variants.find((v) => v.key === event.variantKey) ||
-            experiment.variants.find((v) => v.isControl) ||
-            experiment.variants[0];
-
-          if (matchedVariant) {
-            // Deterministic deduplication key:
-            // Exposures: 1 per user per experiment
-            // Conversions: 1 per user per transaction/order/event (no randomness)
-            const conversionId =
-              event.properties?.orderId ||
-              event.properties?.transactionId ||
-              event.properties?.eventId ||
-              event.idempotencyKey;
-
-            let dedupKey: string;
-            if (normalizedEventType === "EXPOSURE") {
-              dedupKey = `${experiment.id}:${event.distinctUserId}:EXPOSURE`;
-            } else {
-              if (conversionId) {
-                dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${conversionId}`;
-              } else {
-                if (event.requirePersistence) {
-                  return NextResponse.json(
-                    {
-                      success: false,
-                      error: "MISSING_CONVERSION_IDENTIFIER",
-                      message:
-                        "Conversion telemetry events require an orderId, transactionId, eventId, or idempotencyKey for deterministic duplicate prevention.",
-                    },
-                    { status: 422 }
-                  );
-                }
-                // Fallback to deterministic single user conversion per metric key (never Date.now() or randomness)
-                dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${record.metricKey}`;
-              }
-            }
-
-            try {
-              const savedEvent = await prisma.telemetryEvent.create({
-                data: {
-                  experimentId: experiment.id,
-                  variantId: matchedVariant.id,
-                  distinctUserId: event.distinctUserId,
-                  eventType: normalizedEventType,
-                  metricKey: record.metricKey,
-                  dedupKey,
-                  properties: record.properties,
-                },
-              });
-
-              persistedToDb = true;
-
-              // Increment current sample size if exposure
-              if (normalizedEventType === "EXPOSURE") {
-                await prisma.experiment.update({
-                  where: { id: experiment.id },
-                  data: {
-                    sampleSizeCurrent: { increment: 1 },
-                  },
-                });
-              }
-
-              record.id = savedEvent.id;
-            } catch (createErr: any) {
-              // Handle P2002 unique constraint violation for idempotent deduplication
-              if (createErr.code === "P2002") {
-                return NextResponse.json({
-                  success: true,
-                  duplicate: true,
-                  persisted: true,
-                  message: `Duplicate ${normalizedEventType} event safely ignored for user '${event.distinctUserId}'.`,
-                });
-              }
-              throw createErr;
-            }
-          }
-        }
-      } catch (dbErr: any) {
-        console.error("[Telemetry Tracking DB Error]:", dbErr.message);
-        if (event.requirePersistence) {
           return NextResponse.json(
             {
               success: false,
-              error: "PERSISTENT_STORAGE_UNAVAILABLE",
-              message: `Database failure persisting telemetry: ${dbErr.message}`,
+              status: "FAILED",
+              error: "EXPERIMENT_NOT_FOUND",
+              message: `Experiment for feature flag '${event.experimentFlag}' was not found in the database.`,
             },
-            { status: 503 }
+            { status: 404 }
           );
         }
+
+        const matchedVariant =
+          experiment.variants.find((v) => v.key === event.variantKey) ||
+          experiment.variants.find((v) => v.isControl) ||
+          experiment.variants[0];
+
+        if (!matchedVariant) {
+          return NextResponse.json(
+            {
+              success: false,
+              status: "FAILED",
+              error: "VARIANT_NOT_FOUND",
+              message: `Variant '${event.variantKey}' does not exist on experiment '${event.experimentFlag}'.`,
+            },
+            { status: 400 }
+          );
+        }
+
+        // Deterministic deduplication key:
+        // Exposures: 1 per user per experiment
+        // Conversions: 1 per user per transaction/order/event
+        const conversionId =
+          event.properties?.orderId ||
+          event.properties?.transactionId ||
+          event.properties?.eventId ||
+          event.idempotencyKey;
+
+        let dedupKey: string;
+        if (normalizedEventType === "EXPOSURE") {
+          dedupKey = `${experiment.id}:${event.distinctUserId}:EXPOSURE`;
+        } else {
+          if (conversionId) {
+            dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${conversionId}`;
+          } else {
+            dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${record.metricKey}`;
+          }
+        }
+
+        try {
+          const savedEvent = await prisma.telemetryEvent.create({
+            data: {
+              experimentId: experiment.id,
+              variantId: matchedVariant.id,
+              distinctUserId: event.distinctUserId,
+              eventType: normalizedEventType,
+              metricKey: record.metricKey,
+              dedupKey,
+              properties: record.properties,
+            },
+          });
+
+          // Increment sample size if exposure
+          if (normalizedEventType === "EXPOSURE") {
+            await prisma.experiment.update({
+              where: { id: experiment.id },
+              data: {
+                sampleSizeCurrent: { increment: 1 },
+              },
+            }).catch(() => {});
+          }
+
+          record.id = savedEvent.id;
+
+          // Mirror to in-memory for real-time reactivity
+          inMemoryTelemetryLogs.unshift(record);
+          if (inMemoryTelemetryLogs.length > 500) inMemoryTelemetryLogs.pop();
+
+          return NextResponse.json({
+            success: true,
+            status: "PERSISTED",
+            persisted: true,
+            duplicate: false,
+            eventId: savedEvent.id,
+            recordedAt: record.timestamp,
+            mode: "POSTGRESQL_PRODUCTION",
+            message: `Telemetry ${event.eventType} persistently recorded for '${event.experimentFlag}'.`,
+          });
+        } catch (createErr: any) {
+          // P2002: Unique constraint violation on dedupKey -> Idempotent Duplicate
+          if (createErr.code === "P2002") {
+            return NextResponse.json({
+              success: true,
+              status: "DUPLICATE",
+              duplicate: true,
+              persisted: true,
+              eventId: record.id,
+              recordedAt: record.timestamp,
+              message: `Duplicate ${normalizedEventType} event safely ignored for user '${event.distinctUserId}'.`,
+            });
+          }
+          throw createErr;
+        }
+      } catch (dbErr: any) {
+        console.error("[Telemetry Tracking DB Error]:", dbErr.message);
+        return NextResponse.json(
+          {
+            success: false,
+            status: "FAILED",
+            error: "PERSISTENT_STORAGE_ERROR",
+            message: `Database failure persisting telemetry: ${dbErr.message}`,
+          },
+          { status: 503 }
+        );
       }
     }
 
-    // 2. In-Memory Store for Real-Time UI Reactivity & Sandbox Mode
+    // 3. Fallback: In-Memory Sandbox Mock Mode (Permitted ONLY in test/demo mode when DB is not configured)
     inMemoryTelemetryLogs.unshift(record);
     if (inMemoryTelemetryLogs.length > 500) {
       inMemoryTelemetryLogs.pop();
@@ -180,57 +197,63 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      status: "ACCEPTED_IN_MEMORY",
+      persisted: false,
+      duplicate: false,
       eventId: record.id,
       recordedAt: record.timestamp,
-      persisted: persistedToDb,
-      mode: isDbConfigured ? "POSTGRESQL_PRODUCTION" : "SANDBOX MOCK MODE",
-      message: `Telemetry ${event.eventType} recorded for '${event.experimentFlag}' on user '${event.distinctUserId}'.`,
+      mode: "SANDBOX_MOCK_MODE",
+      message: `Telemetry ${event.eventType} recorded in memory for '${event.experimentFlag}' (Sandbox Mock Mode).`,
     });
   } catch (err: any) {
     return NextResponse.json(
-      { success: false, error: "Invalid telemetry payload", details: err.message },
+      { success: false, status: "FAILED", error: "Invalid telemetry payload", details: err.message },
       { status: 400 }
     );
   }
 }
 
 export async function GET() {
-  const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+  const isDbConfigured =
+    Boolean(process.env.DATABASE_URL) &&
+    !process.env.DATABASE_URL?.includes("mock") &&
+    process.env.DATABASE_URL?.startsWith("postgres");
 
   if (isDbConfigured) {
     try {
-      const dbCount = await prisma.telemetryEvent.count();
-      const recentDbEvents = await prisma.telemetryEvent.findMany({
-        take: 50,
+      const liveEvents = await prisma.telemetryEvent.findMany({
+        take: 100,
         orderBy: { timestamp: "desc" },
         include: {
-          experiment: { select: { flagsmithFeatureName: true } },
-          variant: { select: { key: true } },
+          experiment: { select: { flagsmithFeatureName: true, title: true } },
+          variant: { select: { key: true, isControl: true } },
         },
       });
 
       return NextResponse.json({
-        source: "POSTGRESQL_DATABASE",
-        totalEvents: dbCount,
-        recentEvents: recentDbEvents.map((evt) => ({
-          id: evt.id,
-          timestamp: evt.timestamp.toISOString(),
-          experimentFlag: evt.experiment.flagsmithFeatureName,
-          distinctUserId: evt.distinctUserId,
-          eventType: evt.eventType,
-          variantKey: evt.variant.key,
-          metricKey: evt.metricKey,
-          properties: evt.properties,
+        total: liveEvents.length,
+        source: "POSTGRESQL",
+        events: liveEvents.map((e) => ({
+          id: e.id,
+          timestamp: e.timestamp.toISOString(),
+          experimentFlag: e.experiment.flagsmithFeatureName,
+          experimentTitle: e.experiment.title,
+          distinctUserId: e.distinctUserId,
+          eventType: e.eventType,
+          variantKey: e.variant.key,
+          isControl: e.variant.isControl,
+          metricKey: e.metricKey,
+          properties: e.properties,
         })),
       });
-    } catch {
-      // Fall through to in-memory
+    } catch (err: any) {
+      console.warn("[Telemetry Query DB Fallback]:", err.message);
     }
   }
 
   return NextResponse.json({
-    source: "SANDBOX MOCK MODE",
-    totalEvents: inMemoryTelemetryLogs.length,
-    recentEvents: inMemoryTelemetryLogs.slice(0, 50),
+    total: inMemoryTelemetryLogs.length,
+    source: "IN_MEMORY_MOCK",
+    events: inMemoryTelemetryLogs,
   });
 }

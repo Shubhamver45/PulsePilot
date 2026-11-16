@@ -1,10 +1,11 @@
 {
-  "timestamp": "2026-11-16T19:07:00.647Z",
+  "timestamp": "2026-11-16T19:23:40.872Z",
   "targetEnvironment": {
     "projectId": "53867",
     "environmentId": 115953,
-    "environmentKey": "4Y72D2...sNsz",
-    "environmentName": "Development"
+    "environmentKeyPrefix": "4Y72D2...sNsz",
+    "environmentName": "Development",
+    "isolatedFromProduction": true
   },
   "humanApprovalConfirmed": true,
   "steps": [
@@ -13,7 +14,7 @@
       "operation": "GET",
       "endpoint": "/projects/53867/features/",
       "httpStatus": 200,
-      "latencyMs": 2728.85,
+      "latencyMs": 588.42,
       "success": true,
       "details": {
         "existingFeaturesCount": 2
@@ -24,7 +25,7 @@
       "operation": "GET",
       "endpoint": "/flags/",
       "httpStatus": 200,
-      "latencyMs": 391.36,
+      "latencyMs": 604.82,
       "success": true,
       "details": {
         "edgeFlagsCount": 2
@@ -35,46 +36,46 @@
       "operation": "POST",
       "endpoint": "/projects/53867/features/",
       "httpStatus": 201,
-      "latencyMs": 2560.78,
+      "latencyMs": 2454.76,
       "success": true,
       "details": {
-        "featureId": 294335,
-        "featureName": "exp_staging_audit_1794856020648"
+        "featureId": 294338,
+        "featureName": "exp_staging_audit_1794857020873"
       }
     },
     {
       "step": "4. Read-After-Write Verification",
       "operation": "GET",
-      "endpoint": "/flags/ (Edge Evaluator)",
+      "endpoint": "/flags/ & /projects/53867/features/294338/",
       "httpStatus": 200,
-      "latencyMs": 1636.45,
+      "latencyMs": 1592.9,
       "success": true,
       "details": {
         "observedState": {
-          "id": 1836971,
+          "id": 1836996,
           "feature": {
-            "id": 294335,
-            "name": "exp_staging_audit_1794856020648",
-            "created_date": "2026-11-16T19:07:04.883379Z",
-            "description": "PulsePilot DevSecOps Staging Audit Test (Auto-Cleaned)",
-            "initial_value": "{\"layout\":\"wizard_v1\"}",
+            "id": 294338,
+            "name": "exp_staging_audit_1794857020873",
+            "created_date": "2026-11-16T19:23:43.243266Z",
+            "description": "PulsePilot DevSecOps Staging Audit Test (1 Control, 1 Treatment, Auto-Cleaned)",
+            "initial_value": "{\"layout\":\"control_wizard\"}",
             "default_enabled": true,
             "type": "MULTIVARIATE"
           },
-          "feature_state_value": "{\"layout\":\"wizard_v1\"}",
+          "feature_state_value": "{\"layout\":\"control_wizard\"}",
           "environment": 115953,
           "identity": null,
           "feature_segment": null,
           "enabled": true,
           "multivariate_feature_state_values": [
             {
-              "id": 35383,
+              "id": 35384,
               "multivariate_feature_option": {
-                "id": 35383,
-                "uuid": "4152be5b-1297-4b54-a679-1ff2de196896",
+                "id": 35384,
+                "uuid": "7124ab43-ccc6-4b5c-a678-91014d37f6d9",
                 "type": "unicode",
                 "integer_value": null,
-                "string_value": "{\"layout\":\"express_single_page\"}",
+                "string_value": "{\"layout\":\"treatment_express\"}",
                 "boolean_value": null,
                 "default_percentage_allocation": 50,
                 "key": null
@@ -86,25 +87,41 @@
       }
     },
     {
-      "step": "5. Feature Cleanup",
+      "step": "6. Feature Cleanup (Finally Block)",
       "operation": "DELETE",
-      "endpoint": "/projects/53867/features/294335/",
+      "endpoint": "/projects/53867/features/294338/",
       "httpStatus": 204,
-      "latencyMs": 1227.67,
+      "latencyMs": 1342.89,
       "success": true,
       "details": {
-        "deletedFeatureId": 294335
+        "deletedFeatureId": 294338
       }
     }
   ],
   "readAfterWriteComparison": {
-    "expectedFeatureName": "exp_staging_audit_1794856020648",
-    "observedFeatureName": "exp_staging_audit_1794856020648",
-    "expectedVariantsCount": 1,
-    "observedVariantsCount": 1,
+    "expectedFeatureName": "exp_staging_audit_1794857020873",
+    "observedFeatureName": "exp_staging_audit_1794857020873",
+    "controlBaselineValue": "{\"layout\":\"control_wizard\"}",
+    "treatmentVariantValue": "{\"layout\":\"treatment_express\"}",
     "expectedControlAllocation": 50,
     "observedControlAllocation": 50,
+    "expectedTreatmentAllocation": 50,
+    "observedTreatmentAllocation": 50,
+    "multivariateOptionsCount": 1,
+    "totalVariationsCount": 2,
     "matches": true
+  },
+  "identityEvaluations": {
+    "testedIdentities": [
+      "user_staging_alpha_1",
+      "user_staging_beta_2",
+      "user_staging_gamma_3"
+    ],
+    "observedEvaluations": {
+      "user_staging_alpha_1": "{\"layout\":\"treatment_express\"}",
+      "user_staging_beta_2": "{\"layout\":\"treatment_express\"}",
+      "user_staging_gamma_3": "{\"layout\":\"treatment_express\"}"
+    }
   },
   "cleanupVerified": true,
   "overallSuccess": true

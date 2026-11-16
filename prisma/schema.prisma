@@ -281,10 +281,15 @@ model ExperimentProposal {
   executedBy           String?        @map("executed_by")
   executedAt           DateTime?      @map("executed_at")
   executionResult      Json?          @map("execution_result")
+  idempotencyKey       String?        @map("idempotency_key")
+  leaseExpiresAt       DateTime?      @map("lease_expires_at")
+  remoteFeatureId      Int?           @map("remote_feature_id")
+  executionStep        String?        @map("execution_step")
   createdAt            DateTime       @default(now()) @map("created_at")
   updatedAt            DateTime       @updatedAt @map("updated_at")
 
   @@index([status, expiresAt])
+  @@index([idempotencyKey])
   @@index([flagsmithFeatureName])
   @@map("experiment_proposals")
 }

@@ -24,13 +24,18 @@ import {
 } from "../src/lib/flagsmith/experimentation-service.ts";
 import { POST as createExperimentRoute } from "../src/app/api/experiments/create/route.ts";
 import { POST as approveExperimentRoute } from "../src/app/api/experiments/approve/route.ts";
+import { POST as executeExperimentRoute } from "../src/app/api/experiments/execute/route.ts";
+import { POST as trackTelemetryRoute } from "../src/app/api/telemetry/track/route.ts";
 import { GET as healthRoute } from "../src/app/api/flagsmith/health/route.ts";
 import {
   computeConfigurationHash,
   generateInstrumentationPlan,
   createExperimentProposal,
+  approveProposal,
+  executeApprovedProposal,
   approveAndExecuteProposal,
   rejectProposal,
+  getProposal,
 } from "../src/lib/flagsmith/proposal-service.ts";
 
 let totalAsserts = 0;
@@ -719,10 +724,17 @@ async function runJudgeRemediationTests() {
         );
       }
       if (urlStr.includes("/features/")) {
+        let requestedName = "exp_replay_test_v1";
+        if (init?.body) {
+          try {
+            const parsed = typeof init.body === "string" ? JSON.parse(init.body) : init.body;
+            if (parsed.name) requestedName = parsed.name;
+          } catch {}
+        }
         createdFeatureState = {
           id: 501,
           environment: 115953,
-          feature: { id: 9999, name: "exp_replay_test_v1", type: "MULTIVARIATE" },
+          feature: { id: 9999, name: requestedName, type: "MULTIVARIATE" },
           enabled: true,
           feature_state_value: JSON.stringify({ layout: "multi_step" }),
           multivariate_feature_state_values: [
@@ -741,7 +753,7 @@ async function runJudgeRemediationTests() {
         return new Response(
           JSON.stringify({
             id: 9999,
-            name: "exp_replay_test_v1",
+            name: requestedName,
             default_enabled: true,
             multivariate_options: [],
           }),
@@ -777,6 +789,305 @@ async function runJudgeRemediationTests() {
       );
     }
     assert(replayBlocked, "approveAndExecuteProposal blocked replay attempt");
+
+    // -------------------------------------------------------------------------
+    // SECTION 7: SEPARATE APPROVAL FROM EXECUTION & EXECUTION LEASES
+    // -------------------------------------------------------------------------
+    console.log("\nSECTION 7: SEPARATE APPROVAL FROM EXECUTION & EXECUTION LEASES");
+
+    const twoStepStrategy: any = {
+      ...baseStrategy,
+      flagsmith_feature_name: "exp_two_step_handshake_v1",
+    };
+
+    const twoStepProposal = await createExperimentProposal(
+      twoStepStrategy,
+      mockAdminUser,
+      "development"
+    );
+
+    assert(
+      twoStepProposal.status === "PENDING_APPROVAL",
+      "Two-step proposal starts in PENDING_APPROVAL"
+    );
+
+    // 1. Attempting execution before approval must be strictly rejected
+    let unapprovedExecutionBlocked = false;
+    try {
+      await executeApprovedProposal(
+        twoStepProposal.proposalId,
+        twoStepProposal.configurationHash,
+        mockAdminUser
+      );
+    } catch (err: any) {
+      unapprovedExecutionBlocked = true;
+      assert(
+        err.message.includes("has not been approved"),
+        "executeApprovedProposal rejects unapproved proposal (PROPOSAL_NOT_APPROVED)"
+      );
+    }
+    assert(unapprovedExecutionBlocked, "executeApprovedProposal blocked unapproved proposal");
+
+    // 2. Viewer role cannot approve proposal
+    let viewerApproveBlocked = false;
+    try {
+      await approveProposal(
+        twoStepProposal.proposalId,
+        twoStepProposal.configurationHash,
+        mockViewerUser
+      );
+    } catch (err: any) {
+      viewerApproveBlocked = true;
+      assert(
+        err.message.includes("is not authorized to approve"),
+        "approveProposal rejects VIEWER role with HTTP 403"
+      );
+    }
+    assert(viewerApproveBlocked, "approveProposal enforced strict RBAC role check");
+
+    // 3. Admin successfully approves proposal (STEP A: Human Approval Handshake)
+    const approveResult = await approveProposal(
+      twoStepProposal.proposalId,
+      twoStepProposal.configurationHash,
+      mockAdminUser
+    );
+
+    assert(
+      approveResult.success === true && approveResult.status === "APPROVED",
+      "approveProposal atomically transitions status to APPROVED"
+    );
+    assert(
+      approveResult.approvedBy === "Sarah Lin",
+      "approveProposal records real authenticated approver identity"
+    );
+
+    const checkedAfterApprove = await getProposal(twoStepProposal.proposalId);
+    assert(
+      checkedAfterApprove?.status === "APPROVED",
+      "getProposal confirms persisted status is APPROVED (Flagsmith not yet called)"
+    );
+
+    // 4. STEP B: Execute approved proposal against Flagsmith
+    const testIdempotencyKey = `idemp_${Date.now()}`;
+    const executionResult = await executeApprovedProposal(
+      twoStepProposal.proposalId,
+      twoStepProposal.configurationHash,
+      mockAdminUser,
+      { idempotencyKey: testIdempotencyKey }
+    );
+
+    assert(
+      executionResult.success === true && executionResult.status === "EXECUTED",
+      "executeApprovedProposal provisions Flagsmith and transitions status to EXECUTED"
+    );
+    assert(
+      executionResult.executionStep === "VERIFIED_COMPLETED",
+      "executeApprovedProposal verifies read-after-write and marks executionStep: VERIFIED_COMPLETED"
+    );
+
+    // 5. Idempotent re-execution with same idempotency key returns cached result
+    const idempotentResult = await executeApprovedProposal(
+      twoStepProposal.proposalId,
+      twoStepProposal.configurationHash,
+      mockAdminUser,
+      { idempotencyKey: testIdempotencyKey }
+    );
+
+    assert(
+      idempotentResult.success === true && idempotentResult.flagsmithFeatureId === executionResult.flagsmithFeatureId,
+      "executeApprovedProposal returns idempotent cached result on retry"
+    );
+
+    // 6. Fail-closed persistence in production mode
+    const priorNodeEnv = process.env.NODE_ENV;
+    const priorDbUrl = process.env.DATABASE_URL;
+    process.env.NODE_ENV = "production";
+    delete process.env.DATABASE_URL;
+
+    let prodDbFailureCaught = false;
+    try {
+      await createExperimentProposal(baseStrategy, mockAdminUser, "production");
+    } catch (err: any) {
+      prodDbFailureCaught = true;
+      assert(
+        err.message.includes("DATABASE_NOT_CONFIGURED") || err.message.includes("DATABASE_PERSISTENCE_FAILED"),
+        "createExperimentProposal fails closed in production without durable database (no in-memory fallback)"
+      );
+    }
+    assert(prodDbFailureCaught, "Production proposal creation failed closed without database");
+
+    process.env.NODE_ENV = priorNodeEnv;
+    process.env.DATABASE_URL = priorDbUrl;
+
+    // -------------------------------------------------------------------------
+    // SECTION 8: TELEMETRY PARTITIONING BY EXPERIMENT ID & IDENTITY ID
+    // -------------------------------------------------------------------------
+    console.log("\nSECTION 8: TELEMETRY PARTITIONING BY EXPERIMENT ID & IDENTITY ID");
+
+    // Test dual-experiment identity exposure and attribution
+    const dualUser = "user_shared_elena";
+    const t0 = new Date("2026-11-16T10:00:00Z");
+    const t1 = new Date("2026-11-16T10:05:00Z");
+    const tBefore = new Date("2026-11-16T09:55:00Z");
+
+    const sampleTelemetryEvents = [
+      // Experiment 1 (exp_checkout): Elena is exposed to CONTROL at t0
+      {
+        experimentId: "exp_checkout",
+        distinctUserId: dualUser,
+        eventType: "EXPOSURE",
+        variant: { id: "var_ctrl_1", key: "control", isControl: true },
+        timestamp: t0,
+      },
+      // Experiment 2 (exp_pricing): Elena is exposed to TREATMENT at t0
+      {
+        experimentId: "exp_pricing",
+        distinctUserId: dualUser,
+        eventType: "EXPOSURE",
+        variant: { id: "var_treat_2", key: "treatment_discount", isControl: false },
+        timestamp: t0,
+      },
+      // Experiment 1: Elena CONVERTS at t1
+      {
+        experimentId: "exp_checkout",
+        distinctUserId: dualUser,
+        eventType: "CONVERSION",
+        variant: { id: "var_ctrl_1", key: "control", isControl: true },
+        timestamp: t1,
+      },
+      // Experiment 2: Elena CONVERTS at t1
+      {
+        experimentId: "exp_pricing",
+        distinctUserId: dualUser,
+        eventType: "CONVERSION",
+        variant: { id: "var_treat_2", key: "treatment_discount", isControl: false },
+        timestamp: t1,
+      },
+      // Unexposed user conversion: should be discarded
+      {
+        experimentId: "exp_checkout",
+        distinctUserId: "user_unexposed_phantom",
+        eventType: "CONVERSION",
+        variant: { id: "var_ctrl_1", key: "control", isControl: true },
+        timestamp: t1,
+      },
+      // Backwards user conversion: conversion before exposure, should be discarded
+      {
+        experimentId: "exp_checkout",
+        distinctUserId: "user_backwards",
+        eventType: "CONVERSION",
+        variant: { id: "var_ctrl_1", key: "control", isControl: true },
+        timestamp: tBefore,
+      },
+      {
+        experimentId: "exp_checkout",
+        distinctUserId: "user_backwards",
+        eventType: "EXPOSURE",
+        variant: { id: "var_ctrl_1", key: "control", isControl: true },
+        timestamp: t0,
+      },
+    ];
+
+    // Build exposure attribution mapping partitioned by (experimentId, distinctUserId)
+    const exposureMap = new Map<string, { isControl: boolean; variantKey: string; firstExposedAt: Date }>();
+    for (const ev of sampleTelemetryEvents) {
+      if (ev.eventType === "EXPOSURE") {
+        const key = `${ev.experimentId}::${ev.distinctUserId}`;
+        if (!exposureMap.has(key)) {
+          exposureMap.set(key, {
+            isControl: ev.variant.isControl,
+            variantKey: ev.variant.key,
+            firstExposedAt: ev.timestamp,
+          });
+        }
+      }
+    }
+
+    // Verify dual exposure partitioning
+    const exp1Exposure = exposureMap.get(`exp_checkout::${dualUser}`);
+    const exp2Exposure = exposureMap.get(`exp_pricing::${dualUser}`);
+
+    assert(
+      exp1Exposure?.isControl === true,
+      `exp_checkout exposure for '${dualUser}' attributes to CONTROL`
+    );
+    assert(
+      exp2Exposure?.isControl === false,
+      `exp_pricing exposure for '${dualUser}' attributes to TREATMENT without cross-experiment pollution`
+    );
+
+    // Process conversions with attribution & exposure-window rules
+    let exp1ControlConversions = 0;
+    let exp1TreatmentConversions = 0;
+    let exp2ControlConversions = 0;
+    let exp2TreatmentConversions = 0;
+    let discardedUnexposedCount = 0;
+    let discardedBackwardsCount = 0;
+
+    for (const ev of sampleTelemetryEvents) {
+      if (ev.eventType === "CONVERSION") {
+        const key = `${ev.experimentId}::${ev.distinctUserId}`;
+        const exposure = exposureMap.get(key);
+
+        if (!exposure) {
+          discardedUnexposedCount++;
+          continue;
+        }
+
+        if (ev.timestamp < exposure.firstExposedAt) {
+          discardedBackwardsCount++;
+          continue;
+        }
+
+        if (ev.experimentId === "exp_checkout") {
+          if (exposure.isControl) exp1ControlConversions++;
+          else exp1TreatmentConversions++;
+        } else if (ev.experimentId === "exp_pricing") {
+          if (exposure.isControl) exp2ControlConversions++;
+          else exp2TreatmentConversions++;
+        }
+      }
+    }
+
+    assert(
+      exp1ControlConversions === 1 && exp1TreatmentConversions === 0,
+      "Experiment 1 conversion correctly attributes 100% to Control"
+    );
+    assert(
+      exp2TreatmentConversions === 1 && exp2ControlConversions === 0,
+      "Experiment 2 conversion correctly attributes 100% to Treatment for the SAME identity"
+    );
+    assert(
+      discardedUnexposedCount === 1,
+      "Conversion without prior exposure is strictly discarded from attribution"
+    );
+    assert(
+      discardedBackwardsCount === 1,
+      "Conversion timestamp prior to exposure timestamp is strictly discarded"
+    );
+
+    // Test explicit telemetry persistence enforcement in production mode
+    process.env.NODE_ENV = "production";
+    delete process.env.DATABASE_URL;
+
+    const unpersistedTelemetryReq = new Request("http://localhost:3000/api/telemetry/track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        experimentFlag: "exp_checkout_layout_v2",
+        distinctUserId: "user_test_prod",
+        eventType: "EXPOSURE",
+      }),
+    });
+
+    const unpersistedTelemetryRes = await trackTelemetryRoute(unpersistedTelemetryReq);
+    assert(
+      unpersistedTelemetryRes.status === 503,
+      "POST /api/telemetry/track in production rejects unpersisted events with HTTP 503 PERSISTENT_STORAGE_UNAVAILABLE"
+    );
+
+    process.env.NODE_ENV = priorNodeEnv;
+    process.env.DATABASE_URL = priorDbUrl;
 
     // -------------------------------------------------------------------------
     // SUMMARY

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getUserFromToken } from "@/lib/auth/auth-service";
-import { approveAndExecuteProposal } from "@/lib/flagsmith/proposal-service";
+import { approveProposal } from "@/lib/flagsmith/proposal-service";
 
 export async function POST(request: Request) {
   try {
@@ -21,7 +21,7 @@ export async function POST(request: Request) {
           success: false,
           error: "UNAUTHORIZED",
           message:
-            "Authentication required to approve and execute experiments. Please provide a valid session cookie or Bearer token.",
+            "Authentication required to approve experiment proposals. Please provide a valid session cookie or Bearer token.",
         },
         { status: 401 }
       );
@@ -85,7 +85,7 @@ export async function POST(request: Request) {
             success: false,
             error: "AUTH_PERSISTENCE_ERROR",
             message:
-              "Proposal execution blocked: session revocation status cannot be verified against persistent storage.",
+              "Proposal approval blocked: session revocation status cannot be verified against persistent storage.",
           },
           { status: 500 }
         );
@@ -104,20 +104,20 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. Enforce Strict RBAC (Only ADMIN and EDITOR roles can approve mutations)
+    // 4. Enforce Strict RBAC (Only ADMIN and EDITOR roles can approve)
     if (user.role !== "ADMIN" && user.role !== "EDITOR") {
       return NextResponse.json(
         {
           success: false,
           error: "FORBIDDEN",
-          message: `Role '${user.role}' is not authorized to approve experiment proposals. Only ADMIN and EDITOR roles have write access.`,
+          message: `Role '${user.role}' is not authorized to approve experiment proposals. Only ADMIN and EDITOR roles have sign-off authority.`,
         },
         { status: 403 }
       );
     }
 
     const body = await request.json();
-    const { proposalId, configurationHash, confirmedProductionTarget } = body;
+    const { proposalId, configurationHash } = body;
 
     if (!proposalId || !configurationHash) {
       return NextResponse.json(
@@ -125,39 +125,30 @@ export async function POST(request: Request) {
           success: false,
           error: "INVALID_PROPOSAL_PAYLOAD",
           message:
-            "A valid proposalId and configurationHash are required to approve and execute an experiment proposal.",
+            "A valid proposalId and configurationHash are required to approve an experiment proposal.",
         },
         { status: 400 }
       );
     }
 
-    // 5. Execute Human-Approved Proposal against Flagsmith with Atomic Status Transition & Read-After-Write Verification
-    const executionResult = await approveAndExecuteProposal(
-      proposalId,
-      configurationHash,
-      user,
-      {
-        confirmedProductionTarget,
-      }
-    );
+    // 5. STEP 1: Atomically Persist PENDING_APPROVAL -> APPROVED (Does NOT call Flagsmith)
+    const approvalResult = await approveProposal(proposalId, configurationHash, user);
 
     return NextResponse.json({
-      ...executionResult,
+      ...approvalResult,
       success: true,
     });
   } catch (error: any) {
-    console.error("[Proposal Approval] Execution failed:", error);
-    const isAuthOrForbidden =
-      error.message?.includes("not authorized") || error.message?.includes("expired");
-    const isTamper = error.message?.includes("SECURITY VIOLATION");
+    console.error("[Proposal Approval Error]:", error);
+    const status = error.statusCode || (error.message?.includes("SECURITY VIOLATION") ? 409 : 400);
 
     return NextResponse.json(
       {
         success: false,
-        error: "Failed to execute experiment proposal",
+        error: "Failed to approve experiment proposal",
         details: error.message,
       },
-      { status: isTamper ? 409 : isAuthOrForbidden ? 403 : 400 }
+      { status }
     );
   }
 }

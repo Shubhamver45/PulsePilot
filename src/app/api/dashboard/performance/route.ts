@@ -60,19 +60,30 @@ export async function GET(request: Request) {
       });
 
       // Filter out synthetic test simulator events from live metrics
-      const organicEvents = events.filter((e) => (e.properties as any)?.isSynthetic !== true);
+      // Exclude events missing experimentId, distinctUserId, or variant
+      const organicEvents = events.filter(
+        (e) =>
+          (e.properties as any)?.isSynthetic !== true &&
+          Boolean(e.experimentId && e.distinctUserId && e.variant)
+      );
 
       if (organicEvents.length > 0) {
         // 1. Build First-Touch Identity Exposure Attribution Mapping
-        // Map: distinctUserId -> { isControl: boolean; variantKey: string }
-        const userExposureMap = new Map<string, { isControl: boolean; variantKey: string }>();
+        // Partitioned strictly by EXPERIMENT ID and IDENTITY ID:
+        // Key: `${experimentId}::${distinctUserId}` -> { isControl, variantKey, firstExposedAt }
+        const exposureMap = new Map<
+          string,
+          { isControl: boolean; variantKey: string; firstExposedAt: Date }
+        >();
 
         for (const ev of organicEvents) {
-          if (ev.eventType === "EXPOSURE" && ev.variant) {
-            if (!userExposureMap.has(ev.distinctUserId)) {
-              userExposureMap.set(ev.distinctUserId, {
-                isControl: Boolean(ev.variant.isControl),
-                variantKey: ev.variant.key,
+          if (ev.eventType === "EXPOSURE") {
+            const expUserKey = `${ev.experimentId}::${ev.distinctUserId}`;
+            if (!exposureMap.has(expUserKey)) {
+              exposureMap.set(expUserKey, {
+                isControl: Boolean(ev.variant?.isControl),
+                variantKey: ev.variant?.key || "unknown",
+                firstExposedAt: ev.timestamp,
               });
             }
           }
@@ -80,10 +91,10 @@ export async function GET(request: Request) {
 
         // 2. Group events by date with deduplicated identity exposure & conversion tracking
         interface DayBucket {
-          controlExposures: Set<string>;
-          treatmentExposures: Set<string>;
-          controlConversions: Set<string>;
-          treatmentConversions: Set<string>;
+          controlExposures: Set<string>;   // Set of `${experimentId}::${distinctUserId}`
+          treatmentExposures: Set<string>; // Set of `${experimentId}::${distinctUserId}`
+          controlConversions: Set<string>; // Set of `${experimentId}::${distinctUserId}`
+          treatmentConversions: Set<string>; // Set of `${experimentId}::${distinctUserId}`
         }
 
         const dateMap = new Map<string, DayBucket>();
@@ -101,22 +112,31 @@ export async function GET(request: Request) {
             dateMap.set(dateStr, bucket);
           }
 
-          // Resolve variant attribution from event or user's first exposure
-          const exposure = userExposureMap.get(ev.distinctUserId);
-          const isControl = ev.variant?.isControl ?? exposure?.isControl ?? false;
+          const expUserKey = `${ev.experimentId}::${ev.distinctUserId}`;
+          const exposure = exposureMap.get(expUserKey);
 
           if (ev.eventType === "EXPOSURE") {
+            const isControl = ev.variant?.isControl ?? exposure?.isControl ?? false;
             if (isControl) {
-              bucket.controlExposures.add(ev.distinctUserId);
+              bucket.controlExposures.add(expUserKey);
             } else {
-              bucket.treatmentExposures.add(ev.distinctUserId);
+              bucket.treatmentExposures.add(expUserKey);
             }
           } else if (ev.eventType === "CONVERSION") {
-            // Deduplicated conversion attributed to initial assigned variant
-            if (isControl) {
-              bucket.controlConversions.add(ev.distinctUserId);
+            // Attribution requirements:
+            // 1. Require a valid exposure event in this specific experiment prior to conversion
+            if (!exposure) {
+              continue;
+            }
+            // 2. Enforce exposure/conversion window: conversion timestamp must be >= first exposure
+            if (ev.timestamp < exposure.firstExposedAt) {
+              continue;
+            }
+            // 3. Attribute conversion to the variant resolved at first exposure for that experiment
+            if (exposure.isControl) {
+              bucket.controlConversions.add(expUserKey);
             } else {
-              bucket.treatmentConversions.add(ev.distinctUserId);
+              bucket.treatmentConversions.add(expUserKey);
             }
           }
         }
@@ -149,30 +169,32 @@ export async function GET(request: Request) {
         const averageConversionRate =
           totalExposures > 0 ? (totalConversions / totalExposures) * 100 : 0;
 
-        return NextResponse.json({
-          range,
-          status: "LIVE_DATA",
-          provenance: "POSTGRESQL_TELEMETRY",
-          isDemoData: false,
-          data: liveDataPoints,
-          totalExposures,
-          totalConversions,
-          averageConversionRate: Number(averageConversionRate.toFixed(2)),
-        });
+        if (totalExposures > 0) {
+          return NextResponse.json({
+            range,
+            status: "LIVE_DATA",
+            provenance: "POSTGRESQL_TELEMETRY",
+            isDemoData: false,
+            data: liveDataPoints,
+            totalExposures,
+            totalConversions,
+            averageConversionRate: Number(averageConversionRate.toFixed(2)),
+          });
+        }
       }
     } catch (err: any) {
       console.warn("[Dashboard Performance Query Error]:", err.message);
     }
   }
 
-  // 3. Fail honestly when real events are unavailable: Never invent or fabricate results
+  // 3. Fail honestly when real events are unavailable or insufficient
   return NextResponse.json({
     range,
     status: "NOT_ENOUGH_DATA",
     provenance: "EMPTY",
     isDemoData: false,
     message:
-      "No live telemetry events have been recorded yet for this workspace. Stream exposure and conversion events to view live performance analytics.",
+      "Insufficient live telemetry events recorded for this workspace. Stream exposure and conversion events to view live performance analytics.",
     data: [],
     totalExposures: 0,
     totalConversions: 0,
