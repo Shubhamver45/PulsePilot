@@ -5,7 +5,7 @@
  * Performs read-only inspection of the staging endpoint prior to migration or acceptance testing:
  * 1. Validates STAGING_PROJECT_REF format and ensures zero production collision.
  * 2. Parses and validates STAGING_DATABASE_URL and STAGING_DIRECT_URL.
- * 3. Enforces that TLS certificate validation is enabled (sslmode != disable).
+ * 3. Enforces that TLS certificate verification is enabled (sslmode=verify-full or sslmode=require).
  * 4. Queries connected PostgreSQL server session (database, user, address, port, version).
  * 5. Inspects roles (pulsepilot_app, pulsepilot_revocation_maint).
  * 6. Inspects schema objects if already applied.
@@ -15,12 +15,10 @@
  * Acceptance tests must be executed independently via: npm run staging:acceptance
  */
 
-import fs from "fs";
-import path from "path";
-import { PrismaClient } from "@prisma/client";
 import {
   loadAndValidateStagingEnv,
   verifyServerSession,
+  createStagingPrismaClient,
   type ServerIdentityRecord,
 } from "./staging-safety.ts";
 
@@ -43,16 +41,13 @@ async function main() {
   console.log(`  • Direct Target:     ${config.directEndpoint.hostname}:${config.directEndpoint.port}`);
   console.log(`  • Database Name:     ${config.directEndpoint.database}`);
   console.log(`  • Target User:       ${config.directEndpoint.username}`);
-  console.log(`  • Direct Endpoint:   ${config.directEndpoint.sanitizedUrl}\n`);
+  console.log(`  • Direct Endpoint:   ${config.directEndpoint.sanitizedUrl}`);
+  console.log(`  • TLS Policy:        sslMode=${config.directEndpoint.tlsPolicy.sslMode}, certVerification=${config.directEndpoint.tlsPolicy.certVerificationEnforced}\n`);
 
   console.log("🔍 Connecting to staging direct endpoint for read-only session inspection...");
 
-  const prisma = new PrismaClient({
-    datasources: {
-      db: { url: config.stagingDirectUrl },
-    },
-    log: ["error"],
-  });
+  // Instantiate client using the exact validated direct endpoint
+  const prisma = createStagingPrismaClient(config.directEndpoint);
 
   try {
     const identityRows = await prisma.$queryRawUnsafe<

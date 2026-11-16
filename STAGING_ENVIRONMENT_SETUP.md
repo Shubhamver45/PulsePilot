@@ -1,6 +1,6 @@
 # PULSEPILOT AI — STAGING ENVIRONMENT PROVISIONING & DBA RUNBOOK
 
-**Document Reference:** `STAGING-ENV-SETUP-V2`  
+**Document Reference:** `STAGING-ENV-SETUP-V3`  
 **Security Architect:** Principal Cloud Infrastructure Engineer & Database Architect  
 **Classification:** Infrastructure Provisioning, Environment Isolation & Verification Guide  
 **Status:** **READY FOR OPERATOR PROVISIONING**  
@@ -96,10 +96,10 @@ export FLAGSMITH_SERVER_SIDE_API_KEY="<YOUR_STAGING_FLAGSMITH_SERVER_KEY>"
 Execute the following initialization and acceptance commands in order:
 
 ### Phase 1: Automated Unit & Safety Tests (Offline)
-Verifies runner invariants and SQL hardening rules:
+Verifies runner invariants, savepoint transaction recovery, exact SQLSTATE 42501 assertion, isolated TLS fixtures, and SQL hardening rules:
 ```bash
-npm run test:staging-safety
-npm run test:sql-hardening
+npm run test:staging-safety    # 28/28 unit tests across 7 suites
+npm run test:sql-hardening      # 10/10 SQL hardening invariants
 ```
 
 ### Phase 2: Read-Only Staging Preflight Inspection

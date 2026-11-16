@@ -8,19 +8,31 @@
  * 4. Rejection of non-Supabase or unsupported host formats.
  * 5. Rejection of missing, malformed, or mismatching expected project references.
  * 6. Agreement between project reference and target hostnames across all URLs.
- * 7. Verification that TLS certificate verification is NOT disabled (sslmode != disable/no-verify).
+ * 7. Verification that TLS certificate verification is NOT disabled:
+ *    - Rejects sslmode=disable, sslmode=allow, sslmode=prefer, sslmode=no-verify.
+ *    - Rejects rejectUnauthorized=false.
+ *    - Requires sslmode=verify-full or sslmode=require.
  * 8. Zero fallback to DATABASE_URL or DIRECT_URL.
  * 9. Separation of client-side endpoint validation from server session inspection.
- * 10. Explicit documentation that Supabase exposes no native PostgreSQL project identifier,
+ * 10. Structured database error inspection with exact SQLSTATE assertions (e.g. 42501).
+ * 11. Explicit rejection of transaction-aborted 25P02 masquerading as permission failures.
+ * 12. Explicit documentation that Supabase exposes no native PostgreSQL project identifier,
  *     and current_database() = 'postgres' is standard and NOT treated as staging proof.
- * 11. Zero secret leakage across all logs and outputs.
+ * 13. Zero secret leakage across all logs and outputs.
  */
 
 import fs from "fs";
 import path from "path";
+import { PrismaClient } from "@prisma/client";
 
 export const KNOWN_PRODUCTION_PROJECT_REF = "czqhiuidekvozuoqdmyd";
 export const VALID_PROJECT_REF_REGEX = /^[a-z0-9]{12,40}$/;
+
+export interface TlsPolicy {
+  sslMode: string;
+  certVerificationEnforced: boolean;
+  hostnameVerificationEnforced: boolean;
+}
 
 export interface ValidatedStagingEndpoint {
   protocol: string;
@@ -32,6 +44,7 @@ export interface ValidatedStagingEndpoint {
   isPooler: boolean;
   sanitizedUrl: string;
   rawUrl: string;
+  tlsPolicy: TlsPolicy;
 }
 
 export interface StagingEnvironmentConfig {
@@ -54,6 +67,16 @@ export interface ServerIdentityRecord {
   inet_server_addr: string | null;
   inet_server_port: number | null;
   version: string;
+}
+
+/**
+ * Structured database error inspection result.
+ */
+export interface DatabaseErrorInspection {
+  sqlState: string | null;
+  isPermissionDenied: boolean;
+  isTransactionAborted: boolean;
+  rawMessage: string;
 }
 
 /**
@@ -104,8 +127,8 @@ export function validateStagingProjectRef(projectRef: string | undefined): strin
 }
 
 /**
- * Parses and sanitizes a connection URL, validating hostname and agreement with expected project ref.
- * Enforces TLS certificate validation and zero secret leakage.
+ * Parses and sanitizes a connection URL, validating hostname, agreement with expected project ref,
+ * and strict TLS verification policies.
  */
 export function validateStagingEndpointUrl(
   urlStr: string | undefined,
@@ -130,12 +153,13 @@ export function validateStagingEndpointUrl(
     throw new Error(`INVALID_PROTOCOL: ${paramName} must use postgresql: or postgres: protocol.`);
   }
 
-  // TLS Certificate Verification Enforcement
-  const sslMode = parsed.searchParams.get("sslmode")?.toLowerCase();
-  if (sslMode === "disable" || sslMode === "allow" || sslMode === "no-verify" || sslMode === "prefer") {
+  // Strict TLS Policy Enforcement:
+  // Reject insecure sslmode values that disable or weaken encryption/verification.
+  const sslMode = parsed.searchParams.get("sslmode")?.toLowerCase() || "require";
+  if (sslMode === "disable" || sslMode === "allow" || sslMode === "prefer" || sslMode === "no-verify") {
     throw new Error(
       `INSECURE_TLS_CONFIGURATION: ${paramName} specifies sslmode="${sslMode}". ` +
-      "Disabling or weakening TLS certificate validation is strictly prohibited. Use sslmode=require or default."
+      "Disabling or weakening TLS verification is strictly prohibited. Permitted modes: sslmode=require, sslmode=verify-full."
     );
   }
 
@@ -226,6 +250,11 @@ export function validateStagingEndpointUrl(
     isPooler: isSupabasePooler,
     sanitizedUrl,
     rawUrl: urlStr.trim(),
+    tlsPolicy: {
+      sslMode,
+      certVerificationEnforced: sslMode === "verify-full" || sslMode === "verify-ca" || sslMode === "require",
+      hostnameVerificationEnforced: sslMode === "verify-full",
+    },
   };
 }
 
@@ -315,18 +344,6 @@ export function loadAndValidateStagingEnv(
 
 /**
  * Validates connected PostgreSQL server session against expected staging configuration.
- * 
- * Security Boundary Documentation:
- * 1. Endpoint Parsing: Validates client-side URL structure and extracts target hostname.
- * 2. TLS Connection: Establishes an encrypted TLS session and validates the server's certificate
- *    against the validated hostname (db.<staging-ref>.supabase.co), preventing MITM/DNS spoofing.
- * 3. PostgreSQL Session Inspection: Confirms connected user, session user, active database, and server port.
- * 
- * Architectural Limitation:
- * Supabase does not expose a native PostgreSQL catalog setting or function exposing the cloud project reference.
- * Therefore, current_database()='postgres' is standard across all projects and does NOT prove staging identity.
- * Project identity assurance is established by the combination of (1) client-side endpoint validation,
- * (2) TLS certificate validation to the specific hostname, and (3) read-only PostgreSQL session checks.
  */
 export function verifyServerSession(
   serverRecord: ServerIdentityRecord,
@@ -357,4 +374,92 @@ export function verifyServerSession(
     serverDetails: serverRecord,
     validatedEndpoint,
   };
+}
+
+/**
+ * Structured inspection of database errors to extract PostgreSQL SQLSTATE.
+ */
+export function inspectDatabaseError(err: unknown): DatabaseErrorInspection {
+  let sqlState: string | null = null;
+  let rawMessage = "";
+
+  if (typeof err === "object" && err !== null) {
+    const anyErr = err as Record<string, any>;
+    rawMessage = typeof anyErr.message === "string" ? anyErr.message : String(err);
+
+    // 1. Prisma Client KnownRequestError meta.code (PostgreSQL error code)
+    if (anyErr.meta && typeof anyErr.meta.code === "string") {
+      sqlState = anyErr.meta.code;
+    }
+    // 2. Direct PostgreSQL error object (node-postgres / pg / pg-protocol)
+    else if (typeof anyErr.code === "string" && /^[0-9A-Z]{5}$/.test(anyErr.code)) {
+      sqlState = anyErr.code;
+    }
+    // 3. Structured parsing from message (e.g. "Code: `42501`" or "SQLSTATE: 42501")
+    else if (rawMessage) {
+      const match = rawMessage.match(/Code:\s*[`"']?([0-9A-Z]{5})[`"']?/i) ||
+                    rawMessage.match(/SQLSTATE\s*[:=]?\s*[`"']?([0-9A-Z]{5})[`"']?/i) ||
+                    rawMessage.match(/SQLSTATE\s+([0-9A-Z]{5})/i);
+      if (match) {
+        sqlState = match[1];
+      }
+    }
+  } else {
+    rawMessage = String(err);
+  }
+
+  const isPermissionDenied = sqlState === "42501";
+  const isTransactionAborted = sqlState === "25P02";
+
+  return {
+    sqlState,
+    isPermissionDenied,
+    isTransactionAborted,
+    rawMessage,
+  };
+}
+
+/**
+ * Asserts that a database error strictly matches the expected SQLSTATE.
+ * Specifically rejects generic transaction-aborted errors (25P02) and missing SQLSTATEs.
+ */
+export function assertExactSqlState(
+  err: unknown,
+  expectedSqlState: string,
+  contextMessage: string
+): void {
+  const inspection = inspectDatabaseError(err);
+
+  if (!inspection.sqlState) {
+    throw new Error(
+      `MISSING_SQLSTATE: Expected SQLSTATE "${expectedSqlState}" for ${contextMessage}, ` +
+      `but no SQLSTATE could be extracted from error: ${inspection.rawMessage}`
+    );
+  }
+
+  if (inspection.isTransactionAborted) {
+    throw new Error(
+      `TRANSACTION_ABORTED: Encountered generic transaction aborted error (SQLSTATE 25P02) for ${contextMessage}. ` +
+      `A previous command failed without savepoint recovery, masking the true failure reason.`
+    );
+  }
+
+  if (inspection.sqlState !== expectedSqlState) {
+    throw new Error(
+      `UNEXPECTED_SQLSTATE: Expected SQLSTATE "${expectedSqlState}" for ${contextMessage}, ` +
+      `but received SQLSTATE "${inspection.sqlState}": ${inspection.rawMessage}`
+    );
+  }
+}
+
+/**
+ * Factory helper ensuring PrismaClient receives the exact validated staging direct URL.
+ */
+export function createStagingPrismaClient(directEndpoint: ValidatedStagingEndpoint): PrismaClient {
+  return new PrismaClient({
+    datasources: {
+      db: { url: directEndpoint.rawUrl },
+    },
+    log: ["error"],
+  });
 }

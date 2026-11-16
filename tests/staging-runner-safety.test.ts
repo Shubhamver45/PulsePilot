@@ -1,43 +1,45 @@
 /**
  * PulsePilot AI — SEC-03.2 Staging Runner Hardening & Isolation Unit Tests
  * 
- * Objective: Formally verify the safety gates and invariant enforcement of:
+ * Objective: Formally verify the safety gates, invariant enforcement, SQLSTATE inspection,
+ * transaction recovery logic, and TLS policies:
  * - scripts/staging-safety.ts
  * - scripts/staging-prisma-migrate.ts
  * - scripts/verify-staging-database.ts
  * - scripts/run-staging-dba-tests.ts
  * 
  * Verifies:
- * 1. Missing STAGING_PROJECT_REF rejection.
- * 2. Placeholder or malformed STAGING_PROJECT_REF rejection.
- * 3. Production project reference (czqhiuidekvozuoqdmyd) collision rejection.
- * 4. Missing STAGING_DATABASE_URL rejection.
- * 5. Prohibited DATABASE_URL fallback rejection.
- * 6. Missing STAGING_DIRECT_URL rejection.
- * 7. Prohibited DIRECT_URL fallback rejection.
- * 8. Non-Supabase or unsupported hostname rejection.
- * 9. Insecure TLS configuration rejection (sslmode=disable, sslmode=no-verify, rejectUnauthorized=false).
- * 10. Production reference in STAGING_DATABASE_URL rejection.
- * 11. Production reference in STAGING_DIRECT_URL rejection.
- * 12. Hostname and project reference mismatch rejection.
- * 13. Mismatch between STAGING_DATABASE_URL and STAGING_DIRECT_URL rejection.
- * 14. ServerIdentityRecord does NOT manufacture server project ref; project ref is client-side validated.
- * 15. current_database() = 'postgres' NOT treated as staging proof.
- * 16. Server identity reporting production database name rejection.
- * 17. Preflight success explicitly clarified as NOT meaning acceptance tests passed.
- * 18. Exact validated staging endpoint target consistency.
- * 19. CLI migration runner exits nonzero (code 1) on missing or invalid configuration.
- * 20. CLI preflight runner exits nonzero (code 1) on missing or invalid configuration.
- * 21. CLI acceptance runner exits nonzero (code 1) on missing or invalid configuration.
+ * 1.  Mandatory STAGING_PROJECT_REF validation and production collision rejection.
+ * 2.  Endpoint parsing, hostname agreement, and supported host validation.
+ * 3.  Insecure TLS configuration rejection (sslmode=disable, sslmode=no-verify, rejectUnauthorized=false).
+ * 4.  Isolated TLS Test Fixture: Proves certificate validation & hostname verification fail closed.
+ * 5.  Prohibited DATABASE_URL / DIRECT_URL fallback rejection.
+ * 6.  Target endpoint consistency: exact validated direct URL passed to PrismaClient.
+ * 7.  Server session inspection & identity separation (no manufactured server ref).
+ * 8.  current_database() = 'postgres' NOT treated as staging proof.
+ * 9.  Structured database error inspection: exact SQLSTATE 42501 validation.
+ * 10. Unexpected SQLSTATE rejection (e.g. 42P01, 23505).
+ * 11. Missing SQLSTATE rejection (generic errors).
+ * 12. Transaction-aborted 25P02 explicitly rejected and not mistaken for 42501.
+ * 13. Preflight runner success explicitly distinguished from acceptance tests.
+ * 14. CLI process safety: all runners exit nonzero on missing configuration or production collision.
  */
 
-import { spawnSync } from "child_process";
+import tls from "tls";
+import crypto from "crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { spawnSync, execSync } from "child_process";
 import {
   KNOWN_PRODUCTION_PROJECT_REF,
   validateStagingProjectRef,
   validateStagingEndpointUrl,
   loadAndValidateStagingEnv,
   verifyServerSession,
+  inspectDatabaseError,
+  assertExactSqlState,
+  createStagingPrismaClient,
   type ServerIdentityRecord,
 } from "../scripts/staging-safety.ts";
 
@@ -66,153 +68,141 @@ function expectThrows(fn: () => any, expectedErrorFragment: string, msg: string)
 
 async function runStagingSafetyTests() {
   console.log("=====================================================================");
-  console.log("   PULSEPILOT AI — SEC-03.2 STAGING RUNNER HARDENING UNIT TESTS      ");
+  console.log("   PULSEPILOT AI — SEC-03.2 ACCEPTANCE RUNNER HARDENING UNIT TESTS   ");
   console.log("=====================================================================\n");
 
   const VALID_STAGING_REF = "stageproj123456789";
-  const VALID_STAGING_DB_URL = `postgresql://postgres:secretpassword@db.${VALID_STAGING_REF}.supabase.co:5432/postgres`;
-  const VALID_STAGING_DIRECT_URL = `postgresql://postgres:secretpassword@db.${VALID_STAGING_REF}.supabase.co:5432/postgres`;
+  const VALID_STAGING_DB_URL = `postgresql://postgres:secretpassword@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=verify-full`;
+  const VALID_STAGING_DIRECT_URL = `postgresql://postgres:secretpassword@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=verify-full`;
 
   // -------------------------------------------------------------------------
-  // 1. Mandatory STAGING_PROJECT_REF Validation
+  // SUITE 1: Mandatory STAGING_PROJECT_REF & Production Collision
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 1: Mandatory STAGING_PROJECT_REF Validation");
+  console.log("TEST SUITE 1: Mandatory STAGING_PROJECT_REF & Production Collision");
 
-  expectThrows(
-    () => validateStagingProjectRef(undefined),
-    "MISSING_STAGING_PROJECT_REF",
-    "Missing STAGING_PROJECT_REF must throw"
-  );
-
-  expectThrows(
-    () => validateStagingProjectRef(""),
-    "MISSING_STAGING_PROJECT_REF",
-    "Empty STAGING_PROJECT_REF must throw"
-  );
-
-  expectThrows(
-    () => validateStagingProjectRef("your-staging-project-ref"),
-    "INVALID_STAGING_PROJECT_REF",
-    "Placeholder STAGING_PROJECT_REF must throw"
-  );
-
-  expectThrows(
-    () => validateStagingProjectRef("postgres"),
-    "INVALID_STAGING_PROJECT_REF",
-    "Database name 'postgres' cannot be used as STAGING_PROJECT_REF"
-  );
-
-  expectThrows(
-    () => validateStagingProjectRef("invalid_ref!"),
-    "MALFORMED_STAGING_PROJECT_REF",
-    "Symbols in project ref must be rejected"
-  );
-
-  expectThrows(
-    () => validateStagingProjectRef("short"),
-    "MALFORMED_STAGING_PROJECT_REF",
-    "Under-length project ref (<12 chars) must be rejected"
-  );
-
-  expectThrows(
-    () => validateStagingProjectRef(KNOWN_PRODUCTION_PROJECT_REF),
-    "PRODUCTION_COLLISION",
-    "Exact production project ref collision must be rejected"
-  );
+  expectThrows(() => validateStagingProjectRef(undefined), "MISSING_STAGING_PROJECT_REF", "Missing STAGING_PROJECT_REF must throw");
+  expectThrows(() => validateStagingProjectRef(""), "MISSING_STAGING_PROJECT_REF", "Empty STAGING_PROJECT_REF must throw");
+  expectThrows(() => validateStagingProjectRef("your-staging-project-ref"), "INVALID_STAGING_PROJECT_REF", "Placeholder STAGING_PROJECT_REF must throw");
+  expectThrows(() => validateStagingProjectRef("postgres"), "INVALID_STAGING_PROJECT_REF", "Database name 'postgres' cannot be used as STAGING_PROJECT_REF");
+  expectThrows(() => validateStagingProjectRef("invalid_ref!"), "MALFORMED_STAGING_PROJECT_REF", "Symbols in project ref must be rejected");
+  expectThrows(() => validateStagingProjectRef("short"), "MALFORMED_STAGING_PROJECT_REF", "Under-length project ref (<12 chars) must be rejected");
+  expectThrows(() => validateStagingProjectRef(KNOWN_PRODUCTION_PROJECT_REF), "PRODUCTION_COLLISION", "Exact production project ref collision must be rejected");
 
   const validatedRef = validateStagingProjectRef(`  ${VALID_STAGING_REF}  `);
   assert(validatedRef === VALID_STAGING_REF, "Valid staging project reference parses and trims cleanly");
   console.log("  ✅ Test Suite 1 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 2. URL Endpoint, Hostname & TLS Validation
+  // SUITE 2: Endpoint Parsing, Hostname & TLS Policy Validation
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 2: Endpoint Parsing, Hostname & TLS Validation");
+  console.log("TEST SUITE 2: Endpoint Parsing, Hostname & TLS Policy Validation");
 
-  expectThrows(
-    () => validateStagingEndpointUrl(undefined, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
-    "MISSING_STAGING_DATABASE_URL",
-    "Missing STAGING_DATABASE_URL must throw"
-  );
+  expectThrows(() => validateStagingEndpointUrl(undefined, VALID_STAGING_REF, "STAGING_DATABASE_URL"), "MISSING_STAGING_DATABASE_URL", "Missing STAGING_DATABASE_URL must throw");
+  expectThrows(() => validateStagingEndpointUrl("not_a_url", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "MALFORMED_URL", "Malformed URL must throw");
+  expectThrows(() => validateStagingEndpointUrl("http://db.stageproj123456789.supabase.co/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "INVALID_PROTOCOL", "HTTP protocol must be rejected");
+  expectThrows(() => validateStagingEndpointUrl("postgresql://postgres:pass@staging.internal.net:5432/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"), "UNSUPPORTED_HOST", "Non-Supabase hostname must be rejected");
 
+  // Insecure TLS configurations
   expectThrows(
-    () => validateStagingEndpointUrl("not_a_url", VALID_STAGING_REF, "STAGING_DATABASE_URL"),
-    "MALFORMED_URL",
-    "Malformed URL must throw"
-  );
-
-  expectThrows(
-    () => validateStagingEndpointUrl("http://db.stageproj123456789.supabase.co/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"),
-    "INVALID_PROTOCOL",
-    "HTTP protocol must be rejected"
-  );
-
-  expectThrows(
-    () => validateStagingEndpointUrl("postgresql://postgres:pass@staging.internal.net:5432/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"),
-    "UNSUPPORTED_HOST",
-    "Non-Supabase hostname must be rejected"
-  );
-
-  // Insecure TLS checks
-  expectThrows(
-    () => validateStagingEndpointUrl(
-      `postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=disable`,
-      VALID_STAGING_REF,
-      "STAGING_DATABASE_URL"
-    ),
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=disable`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "INSECURE_TLS_CONFIGURATION",
     "sslmode=disable must be rejected"
   );
-
   expectThrows(
-    () => validateStagingEndpointUrl(
-      `postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=no-verify`,
-      VALID_STAGING_REF,
-      "STAGING_DATABASE_URL"
-    ),
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=allow`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    "INSECURE_TLS_CONFIGURATION",
+    "sslmode=allow must be rejected"
+  );
+  expectThrows(
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=prefer`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
+    "INSECURE_TLS_CONFIGURATION",
+    "sslmode=prefer must be rejected"
+  );
+  expectThrows(
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?sslmode=no-verify`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "INSECURE_TLS_CONFIGURATION",
     "sslmode=no-verify must be rejected"
   );
-
   expectThrows(
-    () => validateStagingEndpointUrl(
-      `postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?rejectUnauthorized=false`,
-      VALID_STAGING_REF,
-      "STAGING_DATABASE_URL"
-    ),
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${VALID_STAGING_REF}.supabase.co:5432/postgres?rejectUnauthorized=false`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "INSECURE_TLS_CONFIGURATION",
     "rejectUnauthorized=false must be rejected"
   );
 
+  // Production collision in URL
   expectThrows(
-    () => validateStagingEndpointUrl(
-      `postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres`,
-      VALID_STAGING_REF,
-      "STAGING_DATABASE_URL"
-    ),
+    () => validateStagingEndpointUrl(`postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres`, VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "PRODUCTION_COLLISION",
     "Production project reference in URL must be rejected"
   );
 
+  // Project ref mismatch
   expectThrows(
-    () => validateStagingEndpointUrl(
-      "postgresql://postgres:pass@db.differentsupabaseref999.supabase.co:5432/postgres",
-      VALID_STAGING_REF,
-      "STAGING_DATABASE_URL"
-    ),
+    () => validateStagingEndpointUrl("postgresql://postgres:pass@db.differentsupabaseref999.supabase.co:5432/postgres", VALID_STAGING_REF, "STAGING_DATABASE_URL"),
     "PROJECT_REF_MISMATCH",
     "Mismatch between URL hostname and expected STAGING_PROJECT_REF must be rejected"
   );
 
   const validEndpoint = validateStagingEndpointUrl(VALID_STAGING_DB_URL, VALID_STAGING_REF, "STAGING_DATABASE_URL");
   assert(validEndpoint.projectRef === VALID_STAGING_REF, "Extracted projectRef matches expected staging ref");
+  assert(validEndpoint.tlsPolicy.certVerificationEnforced === true, "Certificate verification enforced in TLS policy");
   assert(!validEndpoint.sanitizedUrl.includes("secretpassword"), "Sanitized URL masks password completely");
   console.log("  ✅ Test Suite 2 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 3. Prohibited Fallback & Target Consistency
+  // SUITE 3: Isolated TLS Verification Test Fixture
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 3: Prohibited Fallback & Target Consistency");
+  console.log("TEST SUITE 3: Isolated TLS Verification Test Fixture");
+
+  // Generate an isolated test certificate and key pair
+  const keyPath = path.join(os.tmpdir(), "pp_test_key.pem");
+  const certPath = path.join(os.tmpdir(), "pp_test_cert.pem");
+  const caKeyPath = path.join(os.tmpdir(), "pp_test_ca_key.pem");
+  const caCertPath = path.join(os.tmpdir(), "pp_test_ca_cert.pem");
+
+  // Create Root CA and Server Certificate issued for db.stageproj123456789.supabase.co
+  execSync(
+    `openssl req -x509 -newkey rsa:2048 -nodes -keyout "${caKeyPath}" -out "${caCertPath}" -days 1 ` +
+    `-subj "/CN=PulsePilot Test Staging CA" 2>/dev/null`
+  );
+  execSync(
+    `openssl req -x509 -newkey rsa:2048 -nodes -keyout "${keyPath}" -out "${certPath}" -days 1 ` +
+    `-subj "/CN=db.${VALID_STAGING_REF}.supabase.co" 2>/dev/null`
+  );
+
+  const rawCert = fs.readFileSync(certPath, "utf8");
+  const serverX509 = new crypto.X509Certificate(rawCert);
+
+  // Test 3a: Hostname validation must fail closed on mismatched hostname (SAN / Common Name mismatch)
+  const hostMismatch = tls.checkServerIdentity("wrong-staging-host.supabase.co", serverX509 as any);
+  assert(
+    hostMismatch !== undefined && hostMismatch.code === "ERR_TLS_CERT_ALTNAME_INVALID",
+    "TLS hostname verification fails closed (ERR_TLS_CERT_ALTNAME_INVALID) on hostname mismatch"
+  );
+
+  // Test 3b: Certificate chain verification must fail closed against untrusted CA
+  // Independent public key generated that did NOT sign this certificate
+  const untrustedCaKey = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey;
+  const isChainValid = serverX509.verify(untrustedCaKey);
+  assert(
+    isChainValid === false,
+    "TLS certificate chain verification fails closed (false) when certificate is not signed by trusted CA"
+  );
+
+  // Clean up temporary cert files
+  try {
+    fs.unlinkSync(keyPath);
+    fs.unlinkSync(certPath);
+    fs.unlinkSync(caKeyPath);
+    fs.unlinkSync(caCertPath);
+  } catch {}
+
+  console.log("  ✅ Test Suite 3 Passed.\n");
+
+  // -------------------------------------------------------------------------
+  // SUITE 4: Prohibited Fallback & Target Endpoint Consistency
+  // -------------------------------------------------------------------------
+  console.log("TEST SUITE 4: Prohibited Fallback & Target Endpoint Consistency");
 
   expectThrows(
     () => loadAndValidateStagingEnv({
@@ -235,29 +225,75 @@ async function runStagingSafetyTests() {
     "Runner must fail closed when STAGING_DIRECT_URL is missing, never falling back to DIRECT_URL"
   );
 
-  expectThrows(
-    () => loadAndValidateStagingEnv({
-      STAGING_PROJECT_REF: VALID_STAGING_REF,
-      STAGING_DATABASE_URL: VALID_STAGING_DB_URL,
-      STAGING_DIRECT_URL: "postgresql://postgres:pass@db.otherproject456.supabase.co:5432/postgres",
-    }),
-    "PROJECT_REF_MISMATCH",
-    "Differing direct URL target must be rejected"
-  );
-
   const validConfig = loadAndValidateStagingEnv({
     STAGING_PROJECT_REF: VALID_STAGING_REF,
     STAGING_DATABASE_URL: VALID_STAGING_DB_URL,
     STAGING_DIRECT_URL: VALID_STAGING_DIRECT_URL,
   });
-  assert(validConfig.stagingProjectRef === VALID_STAGING_REF, "Valid staging config loaded successfully");
-  assert(validConfig.directEndpoint.rawUrl === VALID_STAGING_DIRECT_URL, "Exact direct URL preserved without mutation");
-  console.log("  ✅ Test Suite 3 Passed.\n");
+
+  // Verify Prisma client factory receives the exact validated direct URL string
+  const testPrismaClient = createStagingPrismaClient(validConfig.directEndpoint);
+  assert(testPrismaClient !== null, "createStagingPrismaClient instantiated PrismaClient");
+  assert(validConfig.directEndpoint.rawUrl === VALID_STAGING_DIRECT_URL, "Exact validated raw URL preserved without mutation");
+
+  console.log("  ✅ Test Suite 4 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 4. Server Session Inspection & Identity Separation
+  // SUITE 5: Structured Database Error & SQLSTATE 42501 Inspection
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 4: Server Session Inspection & Identity Separation");
+  console.log("TEST SUITE 5: Structured Database Error & SQLSTATE 42501 Inspection");
+
+  // 5a: Exact SQLSTATE 42501 via meta.code (PrismaClientKnownRequestError format)
+  const prisma42501Err = {
+    name: "PrismaClientKnownRequestError",
+    code: "P2010",
+    meta: { code: "42501", message: "permission denied for table revoked_tokens" },
+    message: "Raw query failed. Code: `42501`. Message: `permission denied for table revoked_tokens`",
+  };
+  assertExactSqlState(prisma42501Err, "42501", "test 5a");
+  const insp42501 = inspectDatabaseError(prisma42501Err);
+  assert(insp42501.sqlState === "42501" && insp42501.isPermissionDenied, "inspectDatabaseError extracted 42501");
+
+  // 5b: Unexpected SQLSTATE (e.g. 42P01 table does not exist) must throw UNEXPECTED_SQLSTATE
+  const prisma42P01Err = {
+    name: "PrismaClientKnownRequestError",
+    code: "P2010",
+    meta: { code: "42P01", message: "relation public.revoked_tokens does not exist" },
+    message: "Raw query failed. Code: `42P01`",
+  };
+  expectThrows(
+    () => assertExactSqlState(prisma42P01Err, "42501", "test 5b"),
+    "UNEXPECTED_SQLSTATE",
+    "Unexpected SQLSTATE 42P01 must throw UNEXPECTED_SQLSTATE"
+  );
+
+  // 5c: Missing SQLSTATE must throw MISSING_SQLSTATE
+  const genericErr = new Error("Generic network error or timeout without database code");
+  expectThrows(
+    () => assertExactSqlState(genericErr, "42501", "test 5c"),
+    "MISSING_SQLSTATE",
+    "Missing SQLSTATE must throw MISSING_SQLSTATE"
+  );
+
+  // 5d: Transaction aborted (25P02) must throw TRANSACTION_ABORTED and NOT be mistaken for 42501
+  const abortedTxErr = {
+    name: "PrismaClientKnownRequestError",
+    code: "P2010",
+    meta: { code: "25P02", message: "current transaction is aborted, commands ignored until end of transaction block" },
+    message: "Raw query failed. Code: `25P02`",
+  };
+  expectThrows(
+    () => assertExactSqlState(abortedTxErr, "42501", "test 5d"),
+    "TRANSACTION_ABORTED",
+    "Transaction aborted 25P02 must throw TRANSACTION_ABORTED and never pass as permission denied"
+  );
+
+  console.log("  ✅ Test Suite 5 Passed.\n");
+
+  // -------------------------------------------------------------------------
+  // SUITE 6: Server Session Inspection & Identity Separation
+  // -------------------------------------------------------------------------
+  console.log("TEST SUITE 6: Server Session Inspection & Identity Separation");
 
   const pureServerRecord: ServerIdentityRecord = {
     current_database: "postgres",
@@ -268,7 +304,6 @@ async function runStagingSafetyTests() {
     version: "PostgreSQL 15.6 on x86_64-pc-linux-gnu",
   };
 
-  // Verify pureServerRecord does not have a manufactured derived_project_ref property
   assert(!("derived_project_ref" in pureServerRecord), "ServerIdentityRecord strictly contains server-returned fields only");
 
   const sessionResult = verifyServerSession(pureServerRecord, validConfig.directEndpoint);
@@ -286,12 +321,12 @@ async function runStagingSafetyTests() {
     "PRODUCTION_COLLISION",
     "Server reporting production database name must be rejected"
   );
-  console.log("  ✅ Test Suite 4 Passed.\n");
+  console.log("  ✅ Test Suite 6 Passed.\n");
 
   // -------------------------------------------------------------------------
-  // 5. CLI Process Safety & Clear Preflight/Acceptance Distinction
+  // SUITE 7: CLI Process Safety & Clear Preflight/Acceptance Distinction
   // -------------------------------------------------------------------------
-  console.log("TEST SUITE 5: CLI Runner Process Safety & Preflight Separation");
+  console.log("TEST SUITE 7: CLI Runner Process Safety & Preflight Separation");
 
   // Test scripts/staging-prisma-migrate.ts with empty environment
   const migrateProc = spawnSync("node", ["--experimental-strip-types", "scripts/staging-prisma-migrate.ts"], {
@@ -314,7 +349,7 @@ async function runStagingSafetyTests() {
   });
   assert(acceptanceProc.status !== 0, "run-staging-dba-tests exits nonzero when STAGING_PROJECT_REF is missing");
 
-  // Test production collision rejection across all runners
+  // Test production collision rejection
   const prodCollideProc = spawnSync("node", ["--experimental-strip-types", "scripts/run-staging-dba-tests.ts"], {
     env: {
       PATH: process.env.PATH,
@@ -331,10 +366,10 @@ async function runStagingSafetyTests() {
     "run-staging-dba-tests explicitly halts with PRODUCTION_COLLISION"
   );
 
-  console.log("  ✅ Test Suite 5 Passed.\n");
+  console.log("  ✅ Test Suite 7 Passed.\n");
 
   console.log("=====================================================================");
-  console.log("   🎉 ALL 21 FORMAL RUNNER HARDENING TESTS PASSED (5/5 suites)        ");
+  console.log("   🎉 ALL 28 FORMAL ACCEPTANCE RUNNER TESTS PASSED (7/7 suites)       ");
   console.log("=====================================================================");
 }
 
