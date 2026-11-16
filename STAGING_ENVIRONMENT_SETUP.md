@@ -1,6 +1,6 @@
 # PULSEPILOT AI — STAGING ENVIRONMENT PROVISIONING & DBA RUNBOOK
 
-**Document Reference:** `STAGING-ENV-SETUP-V3`  
+**Document Reference:** `STAGING-ENV-SETUP-V4`  
 **Security Architect:** Principal Cloud Infrastructure Engineer & Database Architect  
 **Classification:** Infrastructure Provisioning, Environment Isolation & Verification Guide  
 **Status:** **READY FOR OPERATOR PROVISIONING**  
@@ -22,7 +22,7 @@ To satisfy the requirements of **SEC-03.1 and SEC-03.2** without risking product
 1. **Endpoint Hostname Validation:** Parses and validates that the connection URL strictly targets the expected Supabase host (`db.<staging-ref>.supabase.co`).
 2. **Mandatory Full TLS Certificate & Hostname Verification:** Enforces strict TLS encryption, certificate chain validation, and hostname matching (`sslmode=verify-full`) during connection establishment, preventing DNS spoofing or MITM attacks. All other modes (`require`, `verify-ca`, `disable`, `allow`, `prefer`, `no-verify`) and `rejectUnauthorized=false` are strictly rejected.
 3. **Read-Only Session Inspection:** Queries connected PostgreSQL session attributes (`current_database()`, `current_user`, `session_user`, `inet_server_addr()`, `version()`).
-4. **Architectural Limitation Notice:** Supabase exposes no native PostgreSQL catalog variable for cloud project references. Therefore, `current_database() = 'postgres'` is standard on all Supabase databases and does NOT alone prove staging identity. Assurance is derived from the combination of endpoint hostname validation, TLS certificate verification, and PostgreSQL session checks.
+4. **Architectural & TLS Limitation Notice:** Supabase exposes no native PostgreSQL catalog variable for cloud project references. Therefore, `current_database() = 'postgres'` is standard on all Supabase databases and does NOT alone prove staging identity. Assurance is derived from the combination of endpoint hostname validation, strict `sslmode=verify-full` TLS enforcement, and PostgreSQL session checks. Local X.509 tests verify Node's TLS stack but do not directly test Prisma's compiled Rust TLS handshake; live Prisma TLS behavior remains subject to successful dedicated staging connection verification, and live PostgreSQL acceptance tests remain pending.
 
 ---
 

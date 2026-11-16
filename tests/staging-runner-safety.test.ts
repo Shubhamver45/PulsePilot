@@ -52,6 +52,9 @@ import {
   executeNegativeAssertion,
   executeAcceptanceSuite,
 } from "../scripts/run-staging-dba-tests.ts";
+import {
+  runStagingMigration,
+} from "../scripts/staging-prisma-migrate.ts";
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -612,8 +615,128 @@ async function runStagingSafetyTests() {
 
   console.log("  ✅ Test Suite 8 Passed.\n");
 
+  // -------------------------------------------------------------------------
+  // SUITE 9: Migration Runner TLS Consistency, Shared Factory & Child-Process Safety
+  // -------------------------------------------------------------------------
+  console.log("TEST SUITE 9: Migration Runner TLS Consistency, Shared Factory & Child Safety");
+
+  // Mock preflight Prisma client for migration runner testing
+  class MockMigrationPreflightPrisma {
+    public isDisconnected = false;
+    public failRoleCheck = false;
+
+    async $queryRawUnsafe<T = any>(query: string): Promise<T> {
+      if (query.includes("current_database()")) {
+        return [{
+          current_database: "postgres",
+          current_user: "postgres",
+          session_user: "postgres",
+          inet_server_addr: "10.0.0.1",
+          inet_server_port: 5432,
+          version: "PostgreSQL 15.6 on x86_64-pc-linux-gnu",
+        }] as unknown as T;
+      }
+      if (query.includes("pg_roles WHERE rolname = 'pulsepilot_app'")) {
+        return [{ exists: !this.failRoleCheck }] as unknown as T;
+      }
+      return [] as unknown as T;
+    }
+
+    async $disconnect(): Promise<void> {
+      this.isDisconnected = true;
+    }
+  }
+
+  // Test 9a: Preflight uses shared client factory & child process receives exact validated URLs with sslmode=verify-full
+  let factoryEndpointPassed: any = null;
+  let spawnCalls: Array<{ cmd: string; args: string[]; env: any }> = [];
+  const testPreflightPrisma = new MockMigrationPreflightPrisma();
+
+  const migrationResult = await runStagingMigration({
+    configOverride: validConfig,
+    prismaClientFactory: (endpoint) => {
+      factoryEndpointPassed = endpoint;
+      return testPreflightPrisma as any;
+    },
+    spawnPrismaFn: (cmd, args, opts) => {
+      spawnCalls.push({ cmd, args, env: opts.env });
+      return { status: 0 };
+    },
+  });
+
+  assert(migrationResult.success === true, "runStagingMigration succeeds on valid preflight and successful spawn");
+  assert(factoryEndpointPassed !== null, "Migration preflight instantiated via Prisma client factory");
+  assert(factoryEndpointPassed.rawUrl === VALID_STAGING_DIRECT_URL, "Shared factory received exact validated direct URL string");
+  assert(factoryEndpointPassed.rawUrl.includes("sslmode=verify-full"), "sslmode=verify-full preserved in preflight connection string");
+  assert(testPreflightPrisma.isDisconnected === true, "Preflight client disconnected before migration process execution");
+
+  assert(spawnCalls.length === 1, "Child process executed exactly once");
+  const executedCall = spawnCalls[0];
+  assert(executedCall.cmd === "npx", "Child process binary is npx");
+  assert(executedCall.args.join(" ") === "prisma migrate deploy", "Child process arguments are 'prisma migrate deploy'");
+  assert(executedCall.env.DATABASE_URL === VALID_STAGING_DB_URL, "Child process DATABASE_URL matches exact validated staging URL");
+  assert(executedCall.env.DIRECT_URL === VALID_STAGING_DIRECT_URL, "Child process DIRECT_URL matches exact validated staging direct URL");
+  assert(executedCall.env.DATABASE_URL.includes("sslmode=verify-full"), "sslmode=verify-full preserved in child process DATABASE_URL without stripping");
+  assert(executedCall.env.DIRECT_URL.includes("sslmode=verify-full"), "sslmode=verify-full preserved in child process DIRECT_URL without stripping");
+
+  // Test 9b: Production endpoint rejection happens BEFORE any Prisma connection is instantiated
+  let factoryCalledOnProd = false;
+  await expectAsyncThrows(
+    () => runStagingMigration({
+      envOverrides: {
+        STAGING_PROJECT_REF: KNOWN_PRODUCTION_PROJECT_REF,
+        STAGING_DATABASE_URL: `postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres?sslmode=verify-full`,
+        STAGING_DIRECT_URL: `postgresql://postgres:pass@db.${KNOWN_PRODUCTION_PROJECT_REF}.supabase.co:5432/postgres?sslmode=verify-full`,
+      },
+      prismaClientFactory: () => {
+        factoryCalledOnProd = true;
+        return new MockMigrationPreflightPrisma() as any;
+      },
+    }),
+    "PRODUCTION_COLLISION",
+    "Production endpoint is rejected during validation before any Prisma connection is instantiated"
+  );
+  assert(factoryCalledOnProd === false, "Zero database connections instantiated when production collision is detected");
+
+  // Test 9c: Failure during migration preflight prevents child-process execution & disconnects client
+  const failingPreflightPrisma = new MockMigrationPreflightPrisma();
+  failingPreflightPrisma.failRoleCheck = true; // pulsepilot_app missing
+  let spawnCalledOnPreflightFailure = false;
+
+  await expectAsyncThrows(
+    () => runStagingMigration({
+      configOverride: validConfig,
+      prismaClientFactory: () => failingPreflightPrisma as any,
+      spawnPrismaFn: () => {
+        spawnCalledOnPreflightFailure = true;
+        return { status: 0 };
+      },
+    }),
+    "PREREQUISITE CHECK FAILED",
+    "Migration runner halts when prerequisite role check fails"
+  );
+  assert(spawnCalledOnPreflightFailure === false, "Child process was NEVER executed due to preflight failure");
+  assert(failingPreflightPrisma.isDisconnected === true, "Preflight client disconnected cleanly in finally block on preflight failure");
+
+  // Test 9d: Child process failure terminates with nonzero exit status
+  let spawnFailureTeardownPrisma = new MockMigrationPreflightPrisma();
+  await expectAsyncThrows(
+    () => runStagingMigration({
+      configOverride: validConfig,
+      prismaClientFactory: () => spawnFailureTeardownPrisma as any,
+      spawnPrismaFn: () => {
+        return { status: 1 };
+      },
+    }),
+    "Prisma staging migration failed with exit code 1",
+    "Migration runner throws and terminates nonzero when child process exits with error"
+  );
+  assert(spawnFailureTeardownPrisma.isDisconnected === true, "Preflight client disconnected cleanly before child process execution");
+
+  console.log("  ✅ Test Suite 9 Passed.\n");
+
   console.log("=====================================================================");
-  console.log("   🎉 ALL FORMAL ACCEPTANCE RUNNER TESTS PASSED (8/8 suites)         ");
+  console.log("   🎉 ALL FORMAL ACCEPTANCE RUNNER TESTS PASSED (9/9 suites)         ");
   console.log("=====================================================================");
 }
 

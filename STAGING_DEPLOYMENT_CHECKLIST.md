@@ -1,6 +1,6 @@
 # PULSEPILOT AI — STAGING DEPLOYMENT ISOLATION CHECKLIST
 
-**Document Reference:** `STAGING-DEPLOY-CHECKLIST-V3`  
+**Document Reference:** `STAGING-DEPLOY-CHECKLIST-V4`  
 **Security Architect:** Principal Application Security Architect & DevOps Engineer  
 **Classification:** Staging Deployment Verification & Production Protection  
 **Status:** **ACTIVE CHECKLIST**  
@@ -52,12 +52,13 @@ In the [Vercel Dashboard](https://vercel.com/) $\to$ **Project Settings** $\to$ 
 
 ### Phase 2: Automated Unit & Process Safety Tests
 - `npm run test:staging-safety`
-- Status: **PASS (Automated Unit Tests Across 8 Suites Verified: Strict sslmode=verify-full, Isolated TLS Fixture, Outer Transaction Rollback, and Failure Injection Recovery)**
+- Status: **PASS (Automated Unit Tests Across 9 Suites Verified: Strict sslmode=verify-full, Isolated TLS Fixture, Outer Transaction Rollback, and Migration Runner TLS Consistency)**
 
 ### Phase 3: Read-Only Staging Preflight Inspection
 - `npm run staging:preflight`
 - Status: **GATED (Pending operator provisioning of dedicated staging database)**
 - Preflight success verifies connection and session state only; does NOT indicate acceptance tests have passed.
+- **TLS Assurance Note:** The TLS URL policy is strictly enforced. Local X.509 tests do not directly test Prisma's compiled Rust TLS handshake; live Prisma TLS behavior remains subject to successful dedicated staging connection verification.
 
 ### Phase 4: Authoritative Schema Migration
 - `npm run prisma:migrate:staging`
@@ -66,7 +67,7 @@ In the [Vercel Dashboard](https://vercel.com/) $\to$ **Project Settings** $\to$ 
 ### Phase 5: Live PostgreSQL Acceptance Tests
 - `npm run staging:acceptance`
 - Status: **GATED (Pending operator provisioning)**
-- Executes all 13 live behavioral tests over the exact validated connection in a self-reverting transaction.
+- Executes all 13 live behavioral tests over the exact validated connection in a self-reverting transaction. Live PostgreSQL acceptance tests remain pending until dedicated staging database is provisioned.
 
 ### Phase 6: Remote Staging End-to-End Probes
 Execute against deployed Vercel preview URL once provisioned:
