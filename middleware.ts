@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 
 function isPublicPath(pathname: string): boolean {
   return (
@@ -12,6 +12,29 @@ function isPublicPath(pathname: string): boolean {
     pathname.startsWith("/demo-store/") ||
     pathname === "/auth/callback"
   );
+}
+
+function setAuthCookies(
+  response: NextResponse,
+  accessToken: string,
+  refreshToken: string,
+  expiresIn: number
+) {
+  const secure = process.env.NODE_ENV === "production";
+  response.cookies.set("pulsepilot_session", accessToken, {
+    httpOnly: true,
+    secure,
+    sameSite: "lax",
+    maxAge: Math.max(60, expiresIn),
+    path: "/",
+  });
+  response.cookies.set("pulsepilot_refresh_token", refreshToken, {
+    httpOnly: true,
+    secure,
+    sameSite: "lax",
+    maxAge: 60 * 60 * 24 * 30,
+    path: "/",
+  });
 }
 
 export async function middleware(request: NextRequest) {
@@ -31,39 +54,52 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  let response = NextResponse.next({ request });
-  const supabase = createServerClient(supabaseUrl, supabaseKey, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value }) => {
-          request.cookies.set(name, value);
-        });
-        response = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) => {
-          response.cookies.set(name, value, options);
-        });
-      },
+  const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
     },
   });
 
-  // getUser() validates the session with Supabase Auth and refreshes cookies
-  // through setAll when needed. Never authorize from user_metadata or a
-  // client-provided role.
-  const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) {
+  const accessToken = request.cookies.get("pulsepilot_session")?.value;
+  const refreshToken = request.cookies.get("pulsepilot_refresh_token")?.value;
+  let user = null;
+  let refreshedSession: { access_token: string; refresh_token: string; expires_in: number } | null = null;
+
+  if (accessToken) {
+    const { data, error } = await supabase.auth.getUser(accessToken);
+    if (!error) user = data.user;
+  }
+
+  // Refresh the exact HTTP-only token pair issued by /api/auth/login.
+  if (!user && refreshToken) {
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+    if (!error && data.user && data.session) {
+      user = data.user;
+      refreshedSession = data.session;
+    }
+  }
+
+  if (!user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.searchParams.set("next", pathname);
-    const redirect = NextResponse.redirect(loginUrl);
-    response.cookies.getAll().forEach((cookie) => {
-      redirect.cookies.set(cookie);
-    });
-    return redirect;
+    const response = NextResponse.redirect(loginUrl);
+    response.cookies.delete("pulsepilot_session");
+    response.cookies.delete("pulsepilot_refresh_token");
+    return response;
   }
 
+  const response = NextResponse.next();
+  if (refreshedSession) {
+    setAuthCookies(
+      response,
+      refreshedSession.access_token,
+      refreshedSession.refresh_token,
+      refreshedSession.expires_in
+    );
+  }
   return response;
 }
 
