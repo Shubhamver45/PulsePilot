@@ -165,7 +165,7 @@ export const ReleaseGuardianOutputSchema = z.object({
     flagsmithActionPayload: z.object({
       featureName: z.string(),
       enabledState: z.boolean(),
-      proposedAllocation: z.record(z.number()),
+      proposedAllocation: z.record(z.string(), z.number()),
     }),
   }),
   safety_handshake: z.object({
