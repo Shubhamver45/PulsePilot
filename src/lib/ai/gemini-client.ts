@@ -266,6 +266,7 @@ function generateDeterministicStrategy(
         { eventName: "checkout_initiated", triggerPoint: "User lands on checkout route" },
         { eventName: "checkout_completed", triggerPoint: "Gateway returns 200 success receipt" },
         { eventName: "payment_failure", triggerPoint: "Gateway returns 402 or error payload" },
+        { eventName: "page_bounce", triggerPoint: "Checkout session ends without a completion event." },
       ],
       implementation_plan: [
         "Wrap CheckoutContainer with Flagsmith feature flag 'exp_checkout_layout_v2'",
@@ -352,6 +353,7 @@ function generateDeterministicStrategy(
     required_events: [
       { eventName: "onboarding_started", triggerPoint: "First login session" },
       { eventName: "registration_completed", triggerPoint: "Workspace record created in DB" },
+      { eventName: "api_error_rate", triggerPoint: "An API request fails validation or returns a server error." },
     ],
     implementation_plan: [
       "Integrate flagsmith.hasFeature('exp_onboarding_simplification') in OnboardingModal",
