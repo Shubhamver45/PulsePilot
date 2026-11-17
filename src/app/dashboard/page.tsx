@@ -83,6 +83,10 @@ export default function DashboardPage() {
   const [aiRecommendations, setAiRecommendations] = useState<AIRecommendationItem[]>([]);
   const [agentActivities, setAgentActivities] = useState<AgentActivityItem[]>([]);
   const [recentActivities, setRecentActivities] = useState<RecentActivityItem[]>([]);
+  const [workspaceName, setWorkspaceName] = useState("PulsePilot Workspace");
+  const [isDemoData, setIsDemoData] = useState(false);
+  const [flagsmithConnected, setFlagsmithConnected] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
 
   // Modals & Interaction States
   const [selectedRecommendation, setSelectedRecommendation] = useState<AIRecommendationItem | null>(null);
@@ -101,6 +105,10 @@ export default function DashboardPage() {
         const json = await res.json();
 
         setKpis(json.kpis);
+        setWorkspaceName(json.workspace?.name || "PulsePilot Workspace");
+        setIsDemoData(Boolean(json.workspace?.isDemoData));
+        setFlagsmithConnected(Boolean(json.workspace?.flagsmithConnected));
+        setDashboardError(null);
         setChartData(json.performance.data);
         setActiveExperiments(json.activeExperiments);
         setAiRecommendations(json.aiRecommendations);
@@ -108,6 +116,13 @@ export default function DashboardPage() {
         setRecentActivities(json.recentActivities);
       } catch (err) {
         console.error("Dashboard fetch error:", err);
+        setDashboardError("Live telemetry is currently unavailable. No sample figures are being displayed.");
+        setKpis(null);
+        setChartData([]);
+        setActiveExperiments([]);
+        setAiRecommendations([]);
+        setAgentActivities([]);
+        setRecentActivities([]);
       } finally {
         setLoading(false);
       }
@@ -122,8 +137,11 @@ export default function DashboardPage() {
     setIsAskingAI(true);
     setTimeout(() => {
       setIsAskingAI(false);
+      const exposures = kpis?.totalExposures.value ?? 0;
+      const rate = kpis?.overallConversionRate.displayValue ?? "0.00%";
+      const ready = kpis?.featuresReadyForRollout.value ?? 0;
       setAiResponse(
-        `Based on our current telemetry across 6 active Flagsmith feature flags, your overall conversion rate is up +0.48% (to 4.62%). The primary growth opportunity right now is Variant B on 'exp_checkout_social_proof', which reached 97.4% Bayesian confidence with an expected +18.4% lift. Would you like to review the rollout authorization?`
+        `Current persisted evidence: ${exposures.toLocaleString()} distinct experiment-user exposures and an aggregate conversion rate of ${rate} in the selected date range. ${ready} experiment(s) currently meet the configured rollout-readiness checks. An experiment without sufficient sample size or statistical significance should continue collecting data rather than be promoted.`
       );
     }, 1200);
   };
@@ -140,7 +158,7 @@ export default function DashboardPage() {
               Workspace Overview
             </span>
             <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-surface-muted text-text-secondary border border-border">
-              Interactive Demo Workspace
+              {isDemoData ? "Sample Data" : "Persisted Workspace Data"}
             </span>
           </div>
 
@@ -149,7 +167,7 @@ export default function DashboardPage() {
           </h1>
 
           <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-text-secondary">
-            <span className="font-semibold text-text">Acme Growth (Production)</span>
+            <span className="font-semibold text-text">{workspaceName}</span>
             <span>•</span>
             <span className="flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-text-muted" />
@@ -158,7 +176,7 @@ export default function DashboardPage() {
             <span>•</span>
             <span className="text-success font-medium flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              Flagsmith Sync Healthy
+              {flagsmithConnected ? "Flagsmith configured" : "Flagsmith status unavailable"}
             </span>
           </div>
         </div>
@@ -182,6 +200,12 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {dashboardError && (
+        <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          {dashboardError}
+        </div>
+      )}
+
       {/* ===================================================================== */}
       {/* SECTION 2: KPI CARDS (6 CARDS WITH TOOLTIPS & TRENDS)                 */}
       {/* ===================================================================== */}
@@ -192,10 +216,10 @@ export default function DashboardPage() {
               Core Experimentation Metrics
             </h2>
             <span className="text-[10px] text-text-secondary font-mono">
-              (Sample Workspace Telemetry)
+              (Persisted PostgreSQL telemetry)
             </span>
           </div>
-          <span className="text-xs text-text-secondary">Updated real-time from Flagsmith SDK</span>
+          <span className="text-xs text-text-secondary">Calculated from persisted experiment events</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
@@ -211,11 +235,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight">
-              {kpis?.activeExperiments.value ?? 6}
+              {kpis?.activeExperiments.value ?? 0}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.activeExperiments.change ?? "+2 from last week"}</span>
+              <span>{kpis?.activeExperiments.change ?? "No persisted status data"}</span>
             </div>
           </div>
 
@@ -231,11 +255,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight">
-              {kpis?.totalExposures.displayValue ?? "148.9k"}
+              {kpis?.totalExposures.displayValue ?? "0"}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.totalExposures.change ?? "+14.3% vs 30d"}</span>
+              <span>{kpis?.totalExposures.change ?? "No persisted events"}</span>
             </div>
           </div>
 
@@ -251,11 +275,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight font-mono">
-              {kpis?.overallConversionRate.displayValue ?? "4.62%"}
+              {kpis?.overallConversionRate.displayValue ?? "0.00%"}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.overallConversionRate.change ?? "+0.48% vs baseline"}</span>
+              <span>{kpis?.overallConversionRate.change ?? "No conversion evidence"}</span>
             </div>
           </div>
 
@@ -271,11 +295,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-success tracking-tight font-mono">
-              {kpis?.averageExpectedLift.displayValue ?? "+17.4%"}
+              {kpis?.averageExpectedLift.displayValue ?? "+0.0%"}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.averageExpectedLift.change ?? "+3.2% vs Q3"}</span>
+              <span>{kpis?.averageExpectedLift.change ?? "No statistically significant tests"}</span>
             </div>
           </div>
 
@@ -291,11 +315,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight">
-              {kpis?.successfulExperiments.value ?? 14}
+              {kpis?.successfulExperiments.value ?? 0}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-text-secondary font-medium">
               <CheckCircle2 className="w-3 h-3 text-success" />
-              <span>{kpis?.successfulExperiments.change ?? "77.8% win rate"}</span>
+              <span>{kpis?.successfulExperiments.change ?? "No successful tests recorded"}</span>
             </div>
           </div>
 
@@ -311,11 +335,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-primary tracking-tight">
-              {kpis?.featuresReadyForRollout.value ?? 2}
+              {kpis?.featuresReadyForRollout.value ?? 0}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-warning font-medium">
               <ShieldCheck className="w-3 h-3 text-warning" />
-              <span>{kpis?.featuresReadyForRollout.change ?? "Requires human review"}</span>
+              <span>{kpis?.featuresReadyForRollout.change ?? "No experiments meet the evidence gate"}</span>
             </div>
           </div>
         </div>
