@@ -11,6 +11,8 @@ interface FlagItem {
   name: string;
   description: string;
   enabled: boolean;
+  featureId?: number | string;
+  initialValue?: any;
   type: "MULTIVARIATE" | "BOOLEAN";
   variants: { key: string; trafficAllocation: number; value: string }[];
   environment?: string;
@@ -20,6 +22,8 @@ export default function FeatureFlagsPage() {
   const [flags, setFlags] = useState<FlagItem[]>([
     {
       name: "exp_checkout_layout_v2",
+      featureId: 291896,
+      initialValue: "multi_step",
       description: "PulsePilot Live Experiment: Multi-step wizard vs single-page accordion checkout (Remote Feature ID: 291896)",
       enabled: true,
       type: "MULTIVARIATE",
@@ -31,6 +35,8 @@ export default function FeatureFlagsPage() {
     },
     {
       name: "show_demo_button",
+      featureId: 290788,
+      initialValue: true,
       description: "Interactive demo telemetry trigger and sandbox activation",
       enabled: true,
       type: "BOOLEAN",
@@ -305,6 +311,8 @@ export default function FeatureFlagsPage() {
           <FeatureFlagCard
             key={flag.name}
             name={flag.name}
+            featureId={flag.featureId}
+            featureValue={flag.initialValue}
             description={flag.description}
             enabled={flag.enabled}
             type={flag.type}

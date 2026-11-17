@@ -7,6 +7,8 @@ export interface FeatureFlagCardProps {
   name: string;
   description?: string;
   enabled: boolean;
+  featureId?: number | string;
+  featureValue?: string | number | boolean | null;
   type?: "MULTIVARIATE" | "BOOLEAN";
   variants?: {
     key: string;
@@ -23,6 +25,8 @@ export function FeatureFlagCard({
   name,
   description,
   enabled,
+  featureId,
+  featureValue,
   type = "MULTIVARIATE",
   variants = [],
   environment = "Production",
@@ -56,6 +60,16 @@ export function FeatureFlagCard({
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-muted font-mono text-text-secondary border border-border shrink-0">
                 {type}
               </span>
+              {featureId && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-mono font-medium border border-primary/20 shrink-0" title="Flagsmith Remote Feature ID">
+                  ID: #{featureId}
+                </span>
+              )}
+              {featureValue !== undefined && featureValue !== null && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-muted text-text-secondary font-mono border border-border shrink-0" title={`Current State Value: ${String(featureValue)}`}>
+                  Value: {String(featureValue)}
+                </span>
+              )}
             </div>
             {description && (
               <p className="text-xs text-text-secondary mt-1 line-clamp-2" title={description}>
