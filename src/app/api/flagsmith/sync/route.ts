@@ -141,6 +141,7 @@ export async function POST(request: Request) {
         : "TRAFFIC_SPLIT_UPDATED";
 
     await recordAuditLog({
+      organizationId: user?.organizationId,
       action: auditAction,
       actor: { name: actorName, type: user ? "human" : "system" },
       entityType: "FLAGSMITH_FLAG",

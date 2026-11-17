@@ -3,6 +3,7 @@ import { z } from "zod";
 import { orchestrateAgentRequest } from "@/lib/agents/orchestrator";
 import { sanitizeUserInput, assertZeroSecretLeakage } from "@/lib/security/input-sanitizer";
 import { checkRateLimit } from "@/lib/security/rate-limiter";
+import { getUserFromToken } from "@/lib/auth/auth-service";
 
 const OrchestrateRequestSchema = z.object({
   prompt: z.string().min(2),
@@ -31,7 +32,21 @@ export async function POST(request: Request) {
     const sanitized = sanitizeUserInput(prompt);
     const effectivePrompt = sanitized.sanitized;
 
-    const response = await orchestrateAgentRequest(effectivePrompt, context);
+    const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock"));
+    const bearer = request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "");
+    const cookie = (request.headers.get("cookie") || "").split("; ").find((part) => part.startsWith("pulsepilot_session="))?.split("=")[1];
+    const token = bearer || cookie;
+    let organizationId: string | undefined;
+    if (databaseConfigured) {
+      if (!token) return NextResponse.json({ status: "ERROR", error: "UNAUTHORIZED" }, { status: 401 });
+      const user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+      if (!user) return NextResponse.json({ status: "ERROR", error: "INVALID_SESSION" }, { status: 401 });
+      organizationId = user.organizationId;
+    }
+    const response = await orchestrateAgentRequest(effectivePrompt, {
+      ...(context || {}),
+      ...(organizationId ? { organizationId } : {}),
+    });
 
     // Ensure zero secret leakage in agent output
     assertZeroSecretLeakage(response);

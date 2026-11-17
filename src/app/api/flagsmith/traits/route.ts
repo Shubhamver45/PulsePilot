@@ -170,6 +170,7 @@ export async function POST(request: Request) {
 
   // 2. Record Cryptographic Audit Log
   await recordAuditLog({
+    organizationId: auth.user.organizationId,
     action: "IDENTITY_TRAITS_UPDATED",
     actor: { name: "System Operator", type: "human" },
     entityType: "FLAGSMITH_IDENTITY",

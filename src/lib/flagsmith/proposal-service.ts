@@ -481,6 +481,7 @@ export async function rejectProposal(
 
   try {
     await recordAuditLog({
+      organizationId: user.organizationId,
       action: "EXPERIMENT_ARCHIVED",
       actor: { name: user.fullName || user.email, type: "human" },
       entityType: "EXPERIMENT_PROPOSAL",
@@ -665,6 +666,7 @@ export async function approveProposal(
   // Record Audit Trail for Approval Handshake
   try {
     await recordAuditLog({
+      organizationId: approvingUser.organizationId,
       action: "EXPERIMENT_APPROVED",
       actor: { name: verifiedAuthorizer, type: "human" },
       entityType: "EXPERIMENT_PROPOSAL",
@@ -938,6 +940,7 @@ export async function executeApprovedProposal(
       }
 
       await recordAuditLog({
+        organizationId: executingUser.organizationId,
         action: "OPERATION_FAILED",
         actor: { name: verifiedExecutor, type: "human" },
         entityType: "EXPERIMENT",
@@ -1043,6 +1046,7 @@ export async function executeApprovedProposal(
   // 12. Record Audit Log
   try {
     await recordAuditLog({
+      organizationId: executingUser.organizationId,
       action: "EXPERIMENT_CREATED",
       actor: { name: verifiedExecutor, type: "human" },
       entityType: "EXPERIMENT",

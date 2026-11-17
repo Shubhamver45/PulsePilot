@@ -7,6 +7,7 @@ import crypto from "crypto";
  */
 
 export interface AuditRecord {
+  organizationId?: string;
   id: string;
   timestamp: string;
   signature?: string;
@@ -180,138 +181,83 @@ export async function recordAuditLog(
   const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
 
   if (!isDbConfigured) {
-    // In-memory / offline mock path
     const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const timestamp = new Date().toISOString();
-    const previousSignature =
-      auditLogsStore.length > 0 && auditLogsStore[0].signature
-        ? auditLogsStore[0].signature
-        : GENESIS_SIGNATURE;
+    const previousSignature = auditLogsStore[0]?.signature || GENESIS_SIGNATURE;
     const sequenceNumber = (auditLogsStore[0]?.sequenceNumber || auditLogsStore.length) + 1;
-
     const baseRecord = { ...record, id, timestamp };
     const signature = computeRecordSignature(previousSignature, baseRecord);
-    const newRecord: AuditRecord = {
-      ...baseRecord,
-      previousSignature,
-      signature,
-      sequenceNumber,
-    };
+    const newRecord: AuditRecord = { ...baseRecord, previousSignature, signature, sequenceNumber };
     auditLogsStore.unshift(newRecord);
     if (auditLogsStore.length > 500) auditLogsStore.pop();
     return newRecord;
   }
 
-  // Queue locally per process, and synchronize across all serverless processes via PostgreSQL advisory lock
+  const organizationId = record.organizationId?.trim();
+  if (!organizationId) {
+    throw new Error("AUDIT_ORGANIZATION_REQUIRED: Durable audit writes require a verified organization ID.");
+  }
+
   return new Promise((resolve, reject) => {
     inProcessQueue = inProcessQueue.then(async () => {
       const MAX_RETRIES = 5;
       let lastError: any = null;
-
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const prisma = await getPrisma();
-
-          const persistedRecord = await prisma.$transaction(
-            async (tx) => {
-              // 1. Acquire transaction-scoped PostgreSQL advisory lock (distributed cross-instance mutex)
-              await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_ADVISORY_LOCK_ID})`;
-
-              // 2. Read the latest sequence number and previous signature ONLY after lock is held
-              const lastDbLog = await tx.auditLog.findFirst({
-                orderBy: { sequenceNumber: "desc" },
-              });
-
-              const previousSignature = lastDbLog?.signature || GENESIS_SIGNATURE;
-              const sequenceNumber = (lastDbLog?.sequenceNumber || 0) + 1;
-
-              const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-              const timestamp = new Date().toISOString();
-
-              const baseRecord = {
-                ...record,
-                id,
-                timestamp,
-              };
-
-              const signature = computeRecordSignature(previousSignature, baseRecord);
-
-              const auditRecord: AuditRecord = {
-                ...baseRecord,
-                previousSignature,
-                signature,
-                sequenceNumber,
-              };
-
-              const org = await tx.organization.findFirst();
-              if (!org) {
-                throw new Error("Cannot persist audit log: No organization found in database.");
-              }
-
-              // 3. Insert record within the same transaction
-              await tx.auditLog.create({
-                data: {
-                  id: auditRecord.id,
-                  organizationId: org.id,
-                  action: auditRecord.action as any,
-                  entityType: auditRecord.entityType,
-                  entityId: auditRecord.entityId,
-                  actorName: auditRecord.actor.name,
-                  actorType: auditRecord.actor.type,
-                  details: auditRecord.details,
-                  signature: auditRecord.signature,
-                  previousSignature: auditRecord.previousSignature,
-                  sequenceNumber: auditRecord.sequenceNumber,
-                  previousState: auditRecord.previousState || undefined,
-                  newState: auditRecord.newState || undefined,
-                  metadata: auditRecord.metadata || undefined,
-                  createdAt: new Date(auditRecord.timestamp),
-                },
-              });
-
-              return auditRecord;
-            },
-            {
-              maxWait: 20000,
-              timeout: 20000,
-            }
-          );
-
-          // 4. Synchronize in-memory cache upon verified transaction commit
+          const { withTenantContext } = await import("../db/prisma");
+          const persistedRecord = await withTenantContext(organizationId, async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('pulsepilot-audit'), hashtext(${organizationId}))`;
+            const previousLog = await tx.auditLog.findFirst({
+              where: { organizationId },
+              orderBy: { sequenceNumber: "desc" },
+            });
+            const previousSignature = previousLog?.signature || GENESIS_SIGNATURE;
+            const sequenceNumber = (previousLog?.sequenceNumber || 0) + 1;
+            const id = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            const timestamp = new Date().toISOString();
+            const baseRecord = { ...record, organizationId, id, timestamp };
+            const signature = computeRecordSignature(previousSignature, baseRecord);
+            const auditRecord: AuditRecord = { ...baseRecord, previousSignature, signature, sequenceNumber };
+            await tx.auditLog.create({
+              data: {
+                id: auditRecord.id,
+                organizationId,
+                action: auditRecord.action as any,
+                entityType: auditRecord.entityType,
+                entityId: auditRecord.entityId,
+                actorName: auditRecord.actor.name,
+                actorType: auditRecord.actor.type,
+                details: auditRecord.details,
+                signature: auditRecord.signature,
+                previousSignature: auditRecord.previousSignature,
+                sequenceNumber: auditRecord.sequenceNumber,
+                previousState: auditRecord.previousState || undefined,
+                newState: auditRecord.newState || undefined,
+                metadata: auditRecord.metadata || undefined,
+                createdAt: new Date(auditRecord.timestamp),
+              },
+            });
+            return auditRecord;
+          });
           auditLogsStore.unshift(persistedRecord);
-          if (auditLogsStore.length > 500) {
-            auditLogsStore.pop();
-          }
-
+          if (auditLogsStore.length > 500) auditLogsStore.pop();
           resolve(persistedRecord);
           return;
         } catch (err: any) {
           lastError = err;
-          const isRetryable =
-            err.code === "P2002" || // Unique constraint violation (sequenceNumber/signature)
-            err.code === "P2034" || // Transaction conflict
-            err.code === "P2028" || // Transaction API error
+          const retryable = err.code === "P2002" || err.code === "P2034" || err.code === "P2028" ||
             err.message?.includes("Unable to start a transaction") ||
             err.message?.includes("could not serialize access") ||
             err.message?.includes("deadlock detected") ||
             err.message?.includes("canceling statement due to lock timeout");
-
-          if (isRetryable && attempt < MAX_RETRIES) {
-            // Jittered backoff: 30ms * attempt + random [0..40ms]
+          if (retryable && attempt < MAX_RETRIES) {
             await new Promise((r) => setTimeout(r, 30 * attempt + Math.floor(Math.random() * 40)));
             continue;
           }
-
           break;
         }
       }
-
-      // Never return false success! Explicitly throw failure!
-      reject(
-        new Error(
-          `CRITICAL AUDIT PERSISTENCE FAILURE: Failed to persist audit record for [${record.action}] after ${MAX_RETRIES} attempts. Reason: ${lastError?.message || lastError}`
-        )
-      );
+      reject(new Error(`CRITICAL AUDIT PERSISTENCE FAILURE: Failed to persist [${record.action}] for organization [${organizationId}] after ${MAX_RETRIES} attempts. Reason: ${lastError?.message || lastError}`));
     });
   });
 }
@@ -326,41 +272,15 @@ export function getAuditLogs(): AuditRecord[] {
 /**
  * Returns latest audit logs from PostgreSQL if configured, falling back to memory.
  */
-export async function getPersistedAuditLogs(): Promise<AuditRecord[]> {
-  const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
-
-  if (isDbConfigured) {
-    try {
-      const prisma = await getPrisma();
-      const dbLogs = await prisma.auditLog.findMany({
-        orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
-      });
-
-      if (dbLogs && dbLogs.length > 0) {
-        return dbLogs.map((log) => ({
-          id: log.id,
-          timestamp: log.createdAt.toISOString(),
-          action: log.action as any,
-          actor: {
-            name: log.actorName || "system",
-            type: (log.actorType as any) || "system",
-          },
-          entityType: log.entityType as any,
-          entityId: log.entityId,
-          details: log.details || "",
-          signature: log.signature || undefined,
-          previousSignature: log.previousSignature || undefined,
-          sequenceNumber: log.sequenceNumber || undefined,
-          previousState: log.previousState,
-          newState: log.newState,
-          metadata: log.metadata as Record<string, any> | undefined,
-        }));
-      }
-    } catch (err: any) {
-      console.warn("[getPersistedAuditLogs Warning]:", err?.message);
-    }
+/**
+ * Global persistent audit reads are forbidden. Use the tenant-specific reader instead.
+ */
+export async function getPersistedAuditLogs(organizationId?: string): Promise<AuditRecord[]> {
+  const configured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+  if (configured) {
+    if (!organizationId) throw new Error("TENANT_CONTEXT_REQUIRED: authenticated organization ID required.");
+    return getPersistedAuditLogsForOrganization(organizationId);
   }
-
   return [...auditLogsStore];
 }
 
@@ -483,7 +403,7 @@ export function verifyAuditLogIntegrity(records?: AuditRecord[]): AuditIntegrity
 /**
  * Validates the cryptographic integrity of records stored in PostgreSQL.
  */
-export async function verifyPersistedAuditLogIntegrity(): Promise<AuditIntegrityReport> {
-  const persistedLogs = await getPersistedAuditLogs();
+export async function verifyPersistedAuditLogIntegrity(organizationId?: string): Promise<AuditIntegrityReport> {
+  const persistedLogs = await getPersistedAuditLogs(organizationId);
   return verifyAuditLogIntegrity(persistedLogs);
 }

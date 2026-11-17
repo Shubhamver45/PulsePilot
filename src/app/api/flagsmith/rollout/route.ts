@@ -268,6 +268,7 @@ export async function POST(request: Request) {
 
         if (!remoteRes.success) {
           await recordAuditLog({
+            organizationId: user.organizationId,
             action: "GRADUAL_STAGE_FAILED",
             actor: { name: verifiedAuthorizer, type: "human" },
             entityType: "FLAGSMITH_FLAG",
@@ -295,6 +296,7 @@ export async function POST(request: Request) {
         : `${req.winningVariantKey}: ${pct}%`;
 
       await recordAuditLog({
+            organizationId: user.organizationId,
         action: "GRADUAL_STAGE_UPDATED",
         actor: { name: verifiedAuthorizer, type: "human" },
         entityType: "FLAGSMITH_FLAG",
@@ -330,6 +332,7 @@ export async function POST(request: Request) {
         const remoteRes = await rollbackFlagsmithToControl(req.flagsmithFeatureName);
         if (!remoteRes.success) {
           await recordAuditLog({
+            organizationId: user.organizationId,
             action: "ROLLBACK_FAILED",
             actor: { name: verifiedAuthorizer, type: "human" },
             entityType: "FLAGSMITH_FLAG",
@@ -355,6 +358,7 @@ export async function POST(request: Request) {
         : "control: 100%";
 
       await recordAuditLog({
+            organizationId: user.organizationId,
         action: "ROLLBACK_EXECUTED",
         actor: { name: verifiedAuthorizer, type: "human" },
         entityType: "FLAGSMITH_FLAG",
@@ -397,6 +401,7 @@ export async function POST(request: Request) {
         );
         if (!remoteRes.success) {
           await recordAuditLog({
+            organizationId: user.organizationId,
             action: "ROLLOUT_FAILED",
             actor: { name: verifiedAuthorizer, type: "human" },
             entityType: "FLAGSMITH_FLAG",
@@ -421,6 +426,7 @@ export async function POST(request: Request) {
       const newAllocations = `${req.winningVariantKey}: 100%`;
 
       await recordAuditLog({
+            organizationId: user.organizationId,
         action: "ROLLOUT_APPROVED_EXECUTED",
         actor: { name: verifiedAuthorizer, type: "human" },
         entityType: "FLAGSMITH_FLAG",
@@ -454,6 +460,7 @@ export async function POST(request: Request) {
         const remoteRes = await triggerFlagsmithKillSwitch(req.flagsmithFeatureName);
         if (!remoteRes.success) {
           await recordAuditLog({
+            organizationId: user.organizationId,
             action: "KILL_SWITCH_FAILED",
             actor: { name: verifiedAuthorizer, type: "human" },
             entityType: "FLAGSMITH_FLAG",
@@ -475,6 +482,7 @@ export async function POST(request: Request) {
       flagsmithMockStore.toggleKillSwitch(req.flagsmithFeatureName, false);
 
       await recordAuditLog({
+            organizationId: user.organizationId,
         action: "KILL_SWITCH_TRIGGERED",
         actor: { name: verifiedAuthorizer, type: "human" },
         entityType: "FLAGSMITH_FLAG",

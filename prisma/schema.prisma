@@ -232,7 +232,7 @@ model AuditLog {
   details           String?       @db.Text
   signature         String?       @unique
   previousSignature String?
-  sequenceNumber    Int?          @unique
+  sequenceNumber    Int?
   previousState     Json?
   newState          Json?
   metadata          Json?
@@ -240,6 +240,7 @@ model AuditLog {
 
   @@index([organizationId, createdAt])
   @@map("audit_logs")
+  @@unique([organizationId, sequenceNumber])
 }
 
 model RevokedToken {
