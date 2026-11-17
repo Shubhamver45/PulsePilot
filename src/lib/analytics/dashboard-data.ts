@@ -178,13 +178,12 @@ export async function getProductionDashboardData(range: string): Promise<Product
     const totalExperimentExposures = experiment.variants.reduce(
       (sum, variant) => sum + (exposuresByVariant.get(variant.id)?.size || 0), 0
     );
-    if (
+    const isReadyForRollout = Boolean(
       totalExperimentExposures >= experiment.sampleSizeTarget &&
       leading?.result.isSignificant &&
       leading.result.bayesianProbabilityToBeatControl >= 0.95
-    ) {
-      readyForRollout++;
-    }
+    );
+    if (isReadyForRollout) readyForRollout++;
 
     activeExperiments.push({
       id: experiment.id,
@@ -196,7 +195,7 @@ export async function getProductionDashboardData(range: string): Promise<Product
         control: controlTraffic,
         treatment: treatmentTraffic,
       },
-      status: readyForRollout > 0 && totalExperimentExposures >= experiment.sampleSizeTarget
+      status: isReadyForRollout
         ? "ready_for_rollout"
         : experiment.status === "RUNNING" ? "running" : "active",
       liftPercent: leading ? Number(leading.result.relativeUpliftPercent.toFixed(1)) : null,
