@@ -7,10 +7,8 @@ import {
 } from "@/lib/flagsmith/flagsmith-admin";
 import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
-import {
-  checkProductionEvaluationGuard,
-  checkProductionRemoteFetchGuard,
-} from "@/lib/flagsmith/production-guards";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { checkProductionEvaluationGuard } from "@/lib/flagsmith/production-guards";
 
 export interface TraitItem {
   trait_key: string;
@@ -18,74 +16,64 @@ export interface TraitItem {
 }
 
 const TraitItemSchema = z.object({
-  trait_key: z.string().min(1),
-  trait_value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  trait_key: z.string().min(1).max(80),
+  trait_value: z.union([z.string().max(200), z.number(), z.boolean(), z.null()]),
 });
 
 const SetTraitsSchema = z.object({
-  identity: z.string().min(1),
-  traits: z.array(TraitItemSchema),
+  identity: z.string().min(1).max(120),
+  traits: z.array(TraitItemSchema).max(20),
 });
 
+const PUBLIC_DEMO_IDENTITIES = new Set(["user_alex_dev", "user_elena_ai"]);
+const PUBLIC_DEMO_TRAITS = new Set(["plan", "beta_tester", "device"]);
+
+function isHosted(): boolean {
+  return process.env.NODE_ENV === "production" || process.env.VERCEL === "1";
+}
+
+function getEnvironmentKey(): string {
+  return process.env.FLAGSMITH_SERVER_SIDE_API_KEY || process.env.FLAGSMITH_ENVIRONMENT_KEY || "";
+}
+
 export async function GET(request: Request) {
+  const user = await getAuthenticatedApplicationUser(request);
   const { searchParams } = new URL(request.url);
-  const identity = searchParams.get("identity") || "user_alex_dev";
+  const identity = searchParams.get("identity") || (user?.id ?? "user_alex_dev");
 
-  const envKey =
-    process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
-    process.env.FLAGSMITH_ENVIRONMENT_KEY;
-
-  // 1. Live Remote Query via Flagsmith Identities Endpoint
-  if (envKey && envKey !== "mock") {
-    try {
-      const result = await getFlagsmithIdentityTraitsAndFlags(identity);
-      if (result.success) {
-        const traits = result.traits || [];
-        const isBeta = evaluateBetaTesterSegment(traits);
-        const segments = isBeta ? ["Beta Testers"] : ["Standard Users"];
-
-        return NextResponse.json({
-          identity,
-          traits,
-          segments,
-          isBetaTester: isBeta,
-          source: "flagsmith_remote_api",
-        });
-      }
-    } catch (err: any) {
-      console.warn("[Flagsmith Traits Query Error]:", err.message);
-      const fetchGuard = checkProductionRemoteFetchGuard(err);
-      if (!fetchGuard.allowed) {
-        return NextResponse.json(
-          {
-            error: fetchGuard.error,
-            code: fetchGuard.code,
-            source: "error",
-          },
-          { status: fetchGuard.statusCode || 502 }
-        );
-      }
-    }
+  if (!user && !PUBLIC_DEMO_IDENTITIES.has(identity)) {
+    return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+  }
+  if (user && user.role !== "ADMIN" && identity !== user.id) {
+    return NextResponse.json({ error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
   }
 
-  // Production check: reject missing credentials without falling back to mock
-  const evalGuard = checkProductionEvaluationGuard(envKey);
-  if (!evalGuard.allowed) {
-    return NextResponse.json(
-      {
-        error: evalGuard.error,
-        code: evalGuard.code,
-        source: "error",
-      },
-      { status: evalGuard.statusCode || 503 }
-    );
+  const envKey = getEnvironmentKey();
+  const remote = await getFlagsmithIdentityTraitsAndFlags(identity);
+  if (remote.success) {
+    const traits = remote.traits || [];
+    const isBeta = evaluateBetaTesterSegment(traits);
+    return NextResponse.json({
+      identity,
+      traits,
+      segments: isBeta ? ["Beta Testers"] : ["Standard Users"],
+      isBetaTester: isBeta,
+      source: "flagsmith_remote_api",
+    });
   }
 
-  // 2. Local Fallback (Development / Sandbox / Testing)
+  if (isHosted()) {
+    const guard = checkProductionEvaluationGuard(envKey);
+    return NextResponse.json({
+      error: remote.error || guard.error || "Flagsmith identity lookup failed.",
+      code: guard.code || "FLAGSMITH_IDENTITY_LOOKUP_FAILED",
+      source: "error",
+    }, { status: guard.allowed ? 502 : (guard.statusCode || 503) });
+  }
+
   const traits = flagsmithMockStore.getTraits(identity);
   const segments = flagsmithMockStore.getSegmentsForIdentity(identity);
   const isBeta = segments.includes("Beta Testers");
-
   return NextResponse.json({
     identity,
     traits,
@@ -96,7 +84,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  let body: any;
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
@@ -111,45 +99,78 @@ export async function POST(request: Request) {
     );
   }
 
+  const user = await getAuthenticatedApplicationUser(request);
   const { identity, traits } = parsed.data;
-  const envKey =
-    process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
-    process.env.FLAGSMITH_ENVIRONMENT_KEY;
+
+  if (!user && !PUBLIC_DEMO_IDENTITIES.has(identity)) {
+    return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+  }
+  if (user && user.role === "VIEWER") {
+    return NextResponse.json({ error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
+  }
+  if (user && user.role !== "ADMIN" && identity !== user.id) {
+    return NextResponse.json({ error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
+  }
+  if (!user && traits.some((trait) => !PUBLIC_DEMO_TRAITS.has(trait.trait_key))) {
+    return NextResponse.json({
+      error: "PUBLIC_DEMO_TRAIT_NOT_ALLOWED",
+      message: "Anonymous storefront users can only change the plan, beta_tester, and device demonstration traits.",
+    }, { status: 403 });
+  }
+
+  const envKey = getEnvironmentKey();
+  const guard = checkProductionEvaluationGuard(envKey);
+  if (isHosted() && !guard.allowed) {
+    return NextResponse.json({
+      error: guard.error,
+      code: guard.code,
+      source: "error",
+    }, { status: guard.statusCode || 503 });
+  }
 
   let updatedTraits = traits;
   let source = "local_deterministic_fallback";
-
-  // 1. Remote update on Flagsmith Cloud if credentials exist
   if (envKey && envKey !== "mock") {
     const remoteResult = await setFlagsmithIdentityTraits(identity, traits);
-    if (remoteResult.success) {
+    if (!remoteResult.success) {
+      if (isHosted()) {
+        return NextResponse.json({
+          success: false,
+          error: remoteResult.error || "Flagsmith rejected the identity trait update.",
+          source: "error",
+        }, { status: 502 });
+      }
+    } else {
       updatedTraits = remoteResult.traits || traits;
       source = "flagsmith_remote_api";
-    } else {
-      console.warn("[Flagsmith Remote Trait Update Failed]:", remoteResult.error);
     }
+  } else if (isHosted()) {
+    return NextResponse.json({ success: false, error: "FLAGSMITH_ENVIRONMENT_KEY is not configured." }, { status: 503 });
   }
 
-  // Always sync local mock store as well
-  flagsmithMockStore.setTraits(identity, traits);
+  if (!isHosted()) {
+    flagsmithMockStore.setTraits(identity, traits);
+  }
 
   const isBeta = evaluateBetaTesterSegment(updatedTraits);
   const segments = isBeta ? ["Beta Testers"] : ["Standard Users"];
 
-  // 2. Record Cryptographic Audit Log
-  await recordAuditLog({
-    action: "IDENTITY_TRAITS_UPDATED",
-    actor: { name: "System Operator", type: "human" },
-    entityType: "FLAGSMITH_IDENTITY",
-    entityId: identity,
-    details: `Updated traits for identity '${identity}': ${traits.map((t) => `${t.trait_key}=${t.trait_value}`).join(", ")}`,
-    metadata: {
-      traitsCount: traits.length,
-      isBetaTester: isBeta,
-      segments,
-      source,
-    },
-  });
+  if (user) {
+    await recordAuditLog({
+      organizationId: user.organizationId,
+      action: "IDENTITY_TRAITS_UPDATED",
+      actor: { name: user.fullName, type: "human" },
+      entityType: "FLAGSMITH_IDENTITY",
+      entityId: identity,
+      details: `Updated Flagsmith identity traits for '${identity}': ${traits.map((trait) => `${trait.trait_key}=${String(trait.trait_value)}`).join(", ")}`,
+      metadata: {
+        traitsCount: traits.length,
+        isBetaTester: isBeta,
+        segments,
+        source,
+      },
+    });
+  }
 
   return NextResponse.json({
     success: true,
