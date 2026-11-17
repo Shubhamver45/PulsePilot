@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { getProductionDashboardData } from "@/lib/analytics/dashboard-data";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 export async function GET(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7D";
-    const dashboard = await getProductionDashboardData(range);
+    const dashboard = await getProductionDashboardData(range, user.organizationId);
     return NextResponse.json(dashboard);
   } catch (error: any) {
     console.error("[Dashboard] Failed to read persisted experiment telemetry:", error?.message || error);
