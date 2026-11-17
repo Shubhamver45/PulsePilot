@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { AlertTriangle, ArrowLeft, ArrowRight, RefreshCw, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 
@@ -36,7 +37,8 @@ interface Scorecard {
   variations: Variant[];
 }
 
-export default function ExperimentDetailPage({ params }: { params: { id: string } }) {
+export default function ExperimentDetailPage() {
+  const params = useParams<{ id: string }>();
   const featureName = decodeURIComponent(params.id);
   const [scorecard, setScorecard] = useState<Scorecard | null>(null);
   const [loading, setLoading] = useState(true);
