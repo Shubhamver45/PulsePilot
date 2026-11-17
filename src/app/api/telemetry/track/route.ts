@@ -79,10 +79,46 @@ export async function POST(request: Request) {
             );
           }
         } else {
-          const matchedVariant =
-            experiment.variants.find((v) => v.key === event.variantKey) ||
-            experiment.variants.find((v) => v.isControl) ||
-            experiment.variants[0];
+          let matchedVariant;
+          if (normalizedEventType === "EXPOSURE") {
+            matchedVariant = experiment.variants.find((variant) => variant.key === event.variantKey);
+            if (!matchedVariant) {
+              return NextResponse.json({
+                success: false,
+                error: "UNKNOWN_EXPOSURE_VARIANT",
+                message: "The supplied exposure variant does not belong to this experiment.",
+              }, { status: 422 });
+            }
+          } else {
+            // A conversion is attributed to the first persisted exposure for this
+            // experiment/user pair. Ignore any client-supplied conversion variant.
+            const priorExposure = await prisma.telemetryEvent.findFirst({
+              where: {
+                experimentId: experiment.id,
+                distinctUserId: event.distinctUserId,
+                eventType: "EXPOSURE",
+              },
+              orderBy: { timestamp: "asc" },
+              select: { variantId: true },
+            });
+
+            if (!priorExposure) {
+              return NextResponse.json({
+                success: false,
+                error: "EXPOSURE_REQUIRED",
+                message: "A conversion cannot be recorded before this user has a persisted experiment exposure.",
+              }, { status: 409 });
+            }
+
+            matchedVariant = experiment.variants.find((variant) => variant.id === priorExposure.variantId);
+            if (!matchedVariant) {
+              return NextResponse.json({
+                success: false,
+                error: "EXPOSURE_VARIANT_MISSING",
+                message: "The first-touch exposure references a variant that is no longer configured.",
+              }, { status: 409 });
+            }
+          }
 
           if (matchedVariant) {
             // Deterministic deduplication key:
@@ -101,19 +137,15 @@ export async function POST(request: Request) {
               if (conversionId) {
                 dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${conversionId}`;
               } else {
-                if (event.requirePersistence) {
-                  return NextResponse.json(
-                    {
-                      success: false,
-                      error: "MISSING_CONVERSION_IDENTIFIER",
-                      message:
-                        "Conversion telemetry events require an orderId, transactionId, eventId, or idempotencyKey for deterministic duplicate prevention.",
-                    },
-                    { status: 422 }
-                  );
-                }
-                // Fallback to deterministic single user conversion per metric key (never Date.now() or randomness)
-                dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${record.metricKey}`;
+                return NextResponse.json(
+                  {
+                    success: false,
+                    error: "MISSING_CONVERSION_IDENTIFIER",
+                    message:
+                      "Conversion telemetry requires an orderId, transactionId, eventId, or idempotencyKey to prevent duplicate attribution.",
+                  },
+                  { status: 422 }
+                );
               }
             }
 
