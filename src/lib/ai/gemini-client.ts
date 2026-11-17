@@ -121,9 +121,32 @@ Return JSON matching the ReadinessReview schema. Set isReadyForLaunch to true on
         systemPrompt,
         `Experiment Configuration: ${JSON.stringify(strategy)}`,
       ]);
-      const parsed = JSON.parse(result.response.text());
+      const parsed = ReadinessReviewSchema.parse(JSON.parse(result.response.text()));
+      const deterministic = generateDeterministicReadiness(strategy);
+      const checks = {
+        ...parsed.checks,
+        // The LLM may explain the plan, but platform-critical checks are
+        // always enforced by deterministic code.
+        isPrimaryMetricMeasurable: deterministic.checks.isPrimaryMetricMeasurable,
+        areEventsImplemented: deterministic.checks.areEventsImplemented,
+        areVariantsMeaningfullyDifferent: deterministic.checks.areVariantsMeaningfullyDifferent,
+        areGuardrailsAppropriate: deterministic.checks.areGuardrailsAppropriate,
+        isTrafficAllocationValid: deterministic.checks.isTrafficAllocationValid,
+        isTechnicallyFeasible: deterministic.checks.isTechnicallyFeasible,
+      };
+      const checkValues = Object.values(checks);
+      const allDeterministicChecksPass = checkValues.every((check) => check.pass);
+      const qualityScore = Math.round(
+        checkValues.filter((check) => check.pass).length / checkValues.length * 100
+      );
+
       return {
-        review: ReadinessReviewSchema.parse(parsed),
+        review: {
+          ...parsed,
+          checks,
+          qualityScore,
+          isReadyForLaunch: parsed.isReadyForLaunch && allDeterministicChecksPass,
+        },
         provider: "gemini",
         model: modelName,
         fallbackUsed: false,
