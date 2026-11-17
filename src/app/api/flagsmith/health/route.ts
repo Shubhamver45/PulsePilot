@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getLiveRemoteFeatureState } from "@/lib/flagsmith/flagsmith-admin";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const getApiUrl = () =>
   (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
 
