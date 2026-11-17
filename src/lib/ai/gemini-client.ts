@@ -45,7 +45,8 @@ Ensure:
 5. Every variant has a distinct JSON remote-config value.
 6. Explain why each variant is worth testing ("whyWorthTesting").
 7. The primary metric key is included in required_events.
-8. Include at least one measurable operational guardrail.`;
+8. Include at least one measurable operational guardrail.
+9. Add a required_events entry for the primary metric and for every guardrail metric, using each exact metric key.`;
 
       const userContent = `Objective Category: ${objective}\nUser Natural Language Description: ${userPrompt}`;
       const result = await model.generateContent([systemPrompt, userContent]);
