@@ -6,7 +6,7 @@ import { checkRateLimit } from "@/lib/security/rate-limiter";
 
 const OrchestrateRequestSchema = z.object({
   prompt: z.string().min(2),
-  context: z.record(z.any()).optional(),
+  context: z.record(z.string(), z.any()).optional(),
 });
 
 export async function POST(request: Request) {

@@ -1,0 +1,61 @@
+name: PulsePilot release gate
+
+on:
+  push:
+    branches:
+      - remediation/track02-flagsmith-agent
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pulsepilot-release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies and reconcile lockfile
+        run: npm install
+
+      - name: Commit synchronized lockfile on branch pushes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/remediation/track02-flagsmith-agent'
+        run: |
+          if ! git diff --quiet -- package-lock.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add package-lock.json
+            git commit -m "chore(deps): sync npm lockfile [skip ci]"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Verify lockfile installation
+        run: npm ci
+
+      - name: TypeScript
+        run: npm run lint
+
+      - name: Unit and security regression tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high

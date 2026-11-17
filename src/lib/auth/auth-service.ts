@@ -61,8 +61,8 @@ export function readPersistentRevocationStore(): Record<
   { userId: string; expiresAt: number; revokedAt: number; reason?: string }
 > {
   try {
-    if (fs.existsSync(PERSISTENT_REVOCATION_FILE)) {
-      const data = fs.readFileSync(PERSISTENT_REVOCATION_FILE, "utf8");
+    if (fs.existsSync(/*turbopackIgnore: true*/ PERSISTENT_REVOCATION_FILE)) {
+      const data = fs.readFileSync(/*turbopackIgnore: true*/ PERSISTENT_REVOCATION_FILE, "utf8");
       return JSON.parse(data);
     }
   } catch (err: any) {
@@ -76,12 +76,12 @@ export function writePersistentRevocationStore(
 ): void {
   try {
     const dir = path.dirname(PERSISTENT_REVOCATION_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(/*turbopackIgnore: true*/ dir)) {
+      fs.mkdirSync(/*turbopackIgnore: true*/ dir, { recursive: true });
     }
     const tmpPath = `${PERSISTENT_REVOCATION_FILE}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), "utf8");
-    fs.renameSync(tmpPath, PERSISTENT_REVOCATION_FILE);
+    fs.writeFileSync(/*turbopackIgnore: true*/ tmpPath, JSON.stringify(store, null, 2), "utf8");
+    fs.renameSync(/*turbopackIgnore: true*/ tmpPath, PERSISTENT_REVOCATION_FILE);
   } catch (err: any) {
     console.warn("[Revocation Store] Warning writing persistent store file:", err.message);
   }

@@ -16,7 +16,7 @@ const TelemetryEventSchema = z.object({
   ]),
   variantKey: z.string().optional(),
   metricKey: z.string().optional(),
-  properties: z.record(z.any()).optional(),
+  properties: z.record(z.string(), z.any()).optional(),
   idempotencyKey: z.string().optional(),
   requirePersistence: z.boolean().optional(),
 });
@@ -195,7 +195,7 @@ export async function POST(request: Request) {
               eventType: normalizedEventType,
               metricKey: record.metricKey,
               dedupKey,
-              properties: record.properties,
+              properties: record.properties as import("@prisma/client").Prisma.InputJsonValue,
             },
           });
 
