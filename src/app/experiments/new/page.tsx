@@ -886,7 +886,7 @@ export default function AIExperimentStudioPage() {
             <div>
               <h2 className="text-base font-bold text-text">Step 5: AI Readiness Report</h2>
               <p className="text-xs text-text-secondary mt-0.5">
-                Automated validation of statistical testability, event instrumentation, and safety guardrails.
+                Review of the experiment plan, Flagsmith configuration, metrics, event requirements and safety guardrails. This validates the plan; it does not inspect your product's source code.
               </p>
               {reviewMeta && (
                 <p className={`mt-1 text-[10px] font-semibold ${reviewMeta.fallbackUsed ? "text-amber-700" : "text-emerald-700"}`}>
@@ -905,7 +905,7 @@ export default function AIExperimentStudioPage() {
               </div>
               <StatusBadge
                 status={readinessReview.isReadyForLaunch ? "active" : "warning"}
-                label={readinessReview.isReadyForLaunch ? "READY FOR LAUNCH" : "NEEDS ADJUSTMENT"}
+                label={readinessReview.isReadyForLaunch ? "PLAN VALID · READY FOR APPROVAL" : "NEEDS ADJUSTMENT"}
               />
             </div>
           </div>
@@ -926,7 +926,9 @@ export default function AIExperimentStudioPage() {
                 )}
                 <div>
                   <span className="font-bold text-text capitalize">
-                    {key.replace(/([A-Z])/g, " $1")}
+                    {key === "areEventsImplemented"
+                      ? "Event instrumentation specified"
+                      : key.replace(/([A-Z])/g, " $1")}
                   </span>
                   <p className="text-text-secondary text-[11px] mt-0.5 leading-relaxed">
                     {check.feedback}
@@ -995,7 +997,7 @@ export default function AIExperimentStudioPage() {
                 <h2 className="text-base font-bold text-text">Step 6: Human Approval & Authorization</h2>
               </div>
               <p className="text-xs text-text-secondary mt-1">
-                Autonomous agents never deploy live feature flags without authenticated human review.
+                An authenticated workspace user must approve creating the remote Flagsmith experiment. This does not deploy application code or claim that event instrumentation is already implemented.
               </p>
             </div>
             <StatusBadge status="warning" label="APPROVAL REQUIRED" />
@@ -1097,7 +1099,7 @@ export default function AIExperimentStudioPage() {
                   </>
                 ) : (
                   <>
-                    <ShieldCheck className="w-4 h-4" /> Approve & Create Experiment
+                    <ShieldCheck className="w-4 h-4" /> Approve & Provision Flagsmith
                   </>
                 )}
               </button>
@@ -1138,8 +1140,10 @@ export default function AIExperimentStudioPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-text-secondary">Provisioning Status:</span>
-              <span className="text-success font-bold">
-                {deploymentResult.remoteCreated ? "LIVE REMOTE CREATED" : deploymentResult.isExisting ? "LIVE REMOTE VERIFIED (EXISTING)" : "ACTIVE"}
+              <span className={deploymentResult.allocationVerification?.verified ? "text-success font-bold" : "text-warning font-bold"}>
+                {deploymentResult.allocationVerification?.verified
+                  ? deploymentResult.remoteCreated ? "REMOTE CREATED · ALLOCATION VERIFIED" : "EXISTING FEATURE · ALLOCATION VERIFIED"
+                  : "REMOTE STATE NOT VERIFIED"}
               </span>
             </div>
             <div className="flex justify-between">
