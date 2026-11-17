@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
-import {
-  getFlagsmithExperimentResults,
-  createRealFlagsmithExperiment,
-  CreateExperimentPayload,
-} from "@/lib/flagsmith/experimentation-service";
+import { getFlagsmithExperimentResults } from "@/lib/flagsmith/experimentation-service";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { prisma } from "@/lib/db/prisma";
 
@@ -29,44 +25,32 @@ export async function GET(request: Request) {
   const results = await getFlagsmithExperimentResults(flag);
   if (!results) {
     return NextResponse.json(
-      { error: `Experiment for flag '${flag}' not found.` },
-      { status: 404 }
+      { error: "EXPERIMENT_SCORECARD_UNAVAILABLE", message: "The experiment scorecard could not be read from persisted telemetry." },
+      { status: 503 }
     );
   }
 
   return NextResponse.json(results);
 }
 
+/**
+ * Experiment creation has one canonical path so Flagsmith keyed MV options,
+ * PostgreSQL variants, and the audit record are created as a single governed
+ * workflow. The older in-memory experiment creator is intentionally disabled.
+ */
 export async function POST(request: Request) {
-  try {
-    const user = await getAuthenticatedApplicationUser(request);
-    if (!user) {
-      return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
-    }
-    if (user.role !== "ADMIN" && user.role !== "EDITOR") {
-      return NextResponse.json({ error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
-    }
-
-    const body: CreateExperimentPayload = await request.json();
-    const result = await createRealFlagsmithExperiment(body);
-
-    if (!result.success) {
-      return NextResponse.json(
-        { error: result.error || "Failed to create experiment." },
-        { status: 400 }
-      );
-    }
-
-    return NextResponse.json({
-      success: true,
-      experiment: result.experiment,
-      message: `Experiment '${body.name}' created in Flagsmith with feature flag '${body.featureFlagName}'.`,
-    });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "Invalid experiment payload", details: err.message },
-      { status: 400 }
-    );
+  const user = await getAuthenticatedApplicationUser(request);
+  if (!user) {
+    return NextResponse.json({ success: false, error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
   }
-}
+  if (user.role !== "ADMIN" && user.role !== "EDITOR") {
+    return NextResponse.json({ success: false, error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
+  }
 
+  return NextResponse.json({
+    success: false,
+    error: "CANONICAL_PROVISIONING_ENDPOINT_REQUIRED",
+    message: "Use POST /api/experiments/create. That endpoint creates keyed multivariate options in Flagsmith, persists the experiment and variants transactionally, and records the verified operator in the audit log.",
+    canonicalEndpoint: "/api/experiments/create",
+  }, { status: 410 });
+}
