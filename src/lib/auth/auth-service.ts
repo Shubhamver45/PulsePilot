@@ -615,12 +615,18 @@ export async function loginUser(input: z.infer<typeof LoginInputSchema>): Promis
     return { success: false, error: "Invalid email or password." };
   }
 
-  // Verify password matches demo master password, exact hash, or demo pre-set password
+  // In production, master passwords and in-memory mock passwords are strictly prohibited.
+  // Only cryptographically verified passwords or external Supabase Auth tokens are permitted in production.
+  const isProduction = process.env.NODE_ENV === "production";
+
+  // Verify password matches hashed password, or pre-set developer demo accounts strictly in non-production
   const isValid =
-    input.password === "pulsepilot2026" ||
     entry.passwordHash === `hash_${input.password}` ||
-    (entry.passwordHash === "demo_password_hash_sarah123" && input.password === "sarah123") ||
-    (entry.passwordHash === "demo_password_hash_alex123" && input.password === "alex123");
+    (!isProduction && (
+      input.password === "pulsepilot2026" ||
+      (entry.passwordHash === "demo_password_hash_sarah123" && input.password === "sarah123") ||
+      (entry.passwordHash === "demo_password_hash_alex123" && input.password === "alex123")
+    ));
 
   if (!isValid) {
     return { success: false, error: "Invalid email or password." };

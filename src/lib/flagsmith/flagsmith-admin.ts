@@ -1017,3 +1017,153 @@ export function evaluateBetaTesterSegment(traits: { trait_key: string; trait_val
       (t.trait_value === true || t.trait_value === "true" || t.trait_value === 1)
   );
 }
+
+/**
+ * Enables or disables a feature flag in the live remote Flagsmith environment.
+ * Performs read-after-write verification against the remote API.
+ */
+export async function toggleFlagsmithFeatureState(
+  featureName: string,
+  enabled: boolean
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  return mutateRemoteFeatureState(
+    featureName,
+    enabled ? "enable-flag" : "disable-flag",
+    () => ({
+      enabled,
+    }),
+    (verifiedState) => {
+      if (verifiedState.enabled !== enabled) {
+        return { valid: false, error: `Feature flag enabled state is ${verifiedState.enabled}, expected ${enabled}.` };
+      }
+      return { valid: true };
+    }
+  );
+}
+
+/**
+ * Fetches all live feature flags from Flagsmith via the Flags endpoint,
+ * enriching multivariate options from the project definition when available.
+ */
+export async function listFlagsmithFeatures(): Promise<{
+  success: boolean;
+  flags: any[];
+  error?: string;
+  source: "flagsmith_remote_api" | "flagsmith_mock_store";
+}> {
+  const apiUrl = getApiUrl();
+  const envKey =
+    process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
+    process.env.FLAGSMITH_ENVIRONMENT_KEY;
+  const projectId = process.env.FLAGSMITH_PROJECT_ID;
+  const managementAuth = getManagementAuthHeader();
+
+  if (!envKey || envKey === "mock") {
+    const { flagsmithMockStore } = await import("./flagsmith-mock");
+    return {
+      success: true,
+      flags: flagsmithMockStore.getAllFlags(),
+      source: "flagsmith_mock_store",
+    };
+  }
+
+  try {
+    const res = await fetch(`${apiUrl}/flags/`, {
+      method: "GET",
+      headers: {
+        "X-Environment-Key": envKey,
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return {
+        success: false,
+        flags: [],
+        error: `Flagsmith API Error (${res.status}): ${errText}`,
+        source: "flagsmith_remote_api",
+      };
+    }
+
+    const liveFlags = await res.json();
+    if (!Array.isArray(liveFlags)) {
+      return {
+        success: false,
+        flags: [],
+        error: "Malformed response from Flagsmith flags API.",
+        source: "flagsmith_remote_api",
+      };
+    }
+
+    // Attempt to fetch project features for full multivariate option enrichment
+    let projectFeaturesMap = new Map<string, any>();
+    if (projectId && managementAuth.Authorization) {
+      try {
+        const projRes = await fetch(`${apiUrl}/projects/${projectId}/features/`, {
+          headers: { ...managementAuth, "Content-Type": "application/json" },
+          cache: "no-store",
+        });
+        if (projRes.ok) {
+          const projJson = await projRes.json();
+          const results = Array.isArray(projJson) ? projJson : projJson.results;
+          if (Array.isArray(results)) {
+            for (const f of results) {
+              projectFeaturesMap.set(f.name, f);
+            }
+          }
+        }
+      } catch {
+        // Fall open: continue with environment flag data
+      }
+    }
+
+    const mappedFlags = liveFlags.map((f: any) => {
+      const featureName = f.feature?.name || f.name;
+      const projFeat = projectFeaturesMap.get(featureName);
+      const isMultivariate = f.feature?.type === "MULTIVARIATE" || projFeat?.type === "MULTIVARIATE";
+
+      let variants: Array<{ key: string; trafficAllocation: number; value: string }> = [];
+
+      if (Array.isArray(f.multivariate_feature_state_values) && f.multivariate_feature_state_values.length > 0) {
+        variants = f.multivariate_feature_state_values.map((mv: any) => ({
+          key: mv.multivariate_feature_option?.string_value || `variant_${mv.id}`,
+          trafficAllocation: mv.percentage_allocation,
+          value: mv.multivariate_feature_option?.string_value || "",
+        }));
+      } else if (projFeat && Array.isArray(projFeat.multivariate_options)) {
+        variants = projFeat.multivariate_options.map((opt: any) => ({
+          key: opt.string_value || `opt_${opt.id}`,
+          trafficAllocation: opt.default_percentage_allocation,
+          value: opt.string_value || "",
+        }));
+      }
+
+      return {
+        name: featureName,
+        featureId: f.feature?.id || f.id || projFeat?.id,
+        description: projFeat?.description || (featureName === "exp_checkout_layout_v2" ? "Checkout Experience Optimization (Multi-step vs Single-page)" : "Flagsmith Remote Feature"),
+        enabled: f.enabled ?? true,
+        type: isMultivariate ? "MULTIVARIATE" : "BOOLEAN",
+        initialValue: f.feature_state_value,
+        variants,
+        environment: f.environment,
+      };
+    });
+
+    return {
+      success: true,
+      flags: mappedFlags,
+      source: "flagsmith_remote_api",
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      flags: [],
+      error: `Network error connecting to Flagsmith: ${err.message}`,
+      source: "flagsmith_remote_api",
+    };
+  }
+}
+

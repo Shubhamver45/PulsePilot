@@ -33,7 +33,7 @@ function hasFlagsmithRemoteCredentials(): boolean {
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const featureName = searchParams.get("featureName") || "exp_checkout_social_proof";
+    const featureName = searchParams.get("featureName") || "exp_checkout_layout_v2";
 
     // Attempt live remote lookup if remote credentials configured
     if (hasFlagsmithRemoteCredentials()) {

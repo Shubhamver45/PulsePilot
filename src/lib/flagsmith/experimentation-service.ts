@@ -367,7 +367,7 @@ async function getPrismaClient() {
 // 3. RETRIEVE EXPERIMENT RESULTS (ACTUAL FLAGSMITH & POSTGRESQL SCORECARDS)
 // -----------------------------------------------------------------------------
 export async function getFlagsmithExperimentResults(
-  featureFlagName: string = "checkout_experience",
+  featureFlagName: string = "exp_checkout_layout_v2",
   options?: { includeSynthetic?: boolean }
 ): Promise<FlagsmithExperimentResults | null> {
   const includeSynthetic = options?.includeSynthetic ?? false;
@@ -376,10 +376,21 @@ export async function getFlagsmithExperimentResults(
   if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
     try {
       const prisma = await getPrismaClient();
-      const experiment = await prisma.experiment.findUnique({
+      let experiment: any = await prisma.experiment.findUnique({
         where: { flagsmithFeatureName: featureFlagName },
         include: { variants: true },
       });
+
+      if (!experiment && (featureFlagName === "checkout_experience" || featureFlagName === "exp_checkout_layout_v2")) {
+        experiment = await prisma.experiment.findFirst({
+          where: {
+            flagsmithFeatureName: {
+              in: ["exp_checkout_layout_v2", "checkout_experience"],
+            },
+          },
+          include: { variants: true },
+        });
+      }
 
       if (experiment && experiment.variants.length > 0) {
         // 1. Fetch unique exposures per user (first-touch variant assignment)
@@ -450,11 +461,11 @@ export async function getFlagsmithExperimentResults(
           totalUniqueConvertedUsers += set.size;
         }
 
-        const controlVariant = experiment.variants.find((v) => v.isControl) || experiment.variants[0];
+        const controlVariant = experiment.variants.find((v: any) => v.isControl) || experiment.variants[0];
         const controlExposures = exposuresByVariant[controlVariant.id] || 0;
         const controlUniqueConverted = convertedUsersByVariant.get(controlVariant.id)?.size || 0;
 
-        const variations: ExperimentVariationResult[] = experiment.variants.map((v) => {
+        const variations: ExperimentVariationResult[] = experiment.variants.map((v: any) => {
           const expCount = exposuresByVariant[v.id] || 0;
           const uniqueConverted = convertedUsersByVariant.get(v.id)?.size || 0;
           const isControl = v.id === controlVariant.id;

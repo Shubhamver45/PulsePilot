@@ -67,18 +67,83 @@ export async function POST(request: Request) {
     // 2. Persistent Database Write
     if (isDbConfigured) {
       try {
-        const experiment = await prisma.experiment.findUnique({
+        let experiment = await prisma.experiment.findUnique({
           where: { flagsmithFeatureName: event.experimentFlag },
           include: { variants: true },
         });
 
         if (!experiment) {
+          // Auto-provision experiment container in PostgreSQL for active Flagsmith feature
+          let project = await prisma.project.findFirst();
+          if (!project) {
+            const org = await prisma.organization.findFirst();
+            const orgId = org?.id || "org_acme_growth";
+            project = await prisma.project.create({
+              data: {
+                id: "prj_flagsmith_main",
+                name: "Acme Production App",
+                organizationId: orgId,
+                flagsmithProjectId: "53867",
+              },
+            });
+          }
+
+          const expId = `exp_${event.experimentFlag.replace(/[^a-zA-Z0-9]/g, "_")}`;
+          const isCheckout = event.experimentFlag.includes("checkout");
+
+          try {
+            experiment = await prisma.experiment.create({
+              data: {
+                id: expId,
+                projectId: project.id,
+                title: isCheckout
+                  ? "Checkout Conversion Optimization (Single-Page vs Multi-Step)"
+                  : `Optimization: ${event.experimentFlag}`,
+                hypothesis: isCheckout
+                  ? "Switching from a 3-step checkout wizard to a single-page streamlined accordion will reduce drop-off and increase completed orders by +15%."
+                  : `Optimizing experience via Flagsmith multivariate feature '${event.experimentFlag}'.`,
+                status: "ACTIVE",
+                flagsmithFeatureName: event.experimentFlag,
+                primaryMetric: "checkout_completed",
+                variants: {
+                  create: [
+                    {
+                      id: `var_${expId}_ctrl`,
+                      key: "control",
+                      name: "Multi-Step Checkout (Control)",
+                      isControl: true,
+                      trafficAllocation: 50,
+                      featureValue: { layout: "multi_step" },
+                    },
+                    {
+                      id: `var_${expId}_treat`,
+                      key: event.variantKey && event.variantKey !== "control" ? event.variantKey : "variant_single_page",
+                      name: "Single-Page Checkout (Treatment)",
+                      isControl: false,
+                      trafficAllocation: 50,
+                      featureValue: { layout: "single_page" },
+                    },
+                  ],
+                },
+              },
+              include: { variants: true },
+            });
+          } catch {
+            // Concurrency safe: fetch again if another request created it in parallel
+            experiment = await prisma.experiment.findUnique({
+              where: { flagsmithFeatureName: event.experimentFlag },
+              include: { variants: true },
+            });
+          }
+        }
+
+        if (!experiment || !experiment.variants || experiment.variants.length === 0) {
           return NextResponse.json(
             {
               success: false,
               status: "FAILED",
-              error: "EXPERIMENT_NOT_FOUND",
-              message: `Experiment for feature flag '${event.experimentFlag}' was not found in the database.`,
+              error: "EXPERIMENT_UNAVAILABLE",
+              message: `Experiment container for feature flag '${event.experimentFlag}' is unavailable.`,
             },
             { status: 404 }
           );

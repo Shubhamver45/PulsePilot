@@ -28,6 +28,9 @@ BEGIN
     END IF;
 END $$;
 
+-- Allow postgres (migration runner) to assign ownership to pulsepilot_revocation_maint
+GRANT pulsepilot_revocation_maint TO postgres;
+
 -- 3. Create Revocation Storage Table
 -- Stores strictly cryptographic UUIDs (jti) and metadata. Zero raw tokens or secrets.
 CREATE TABLE IF NOT EXISTS public.revoked_tokens (
@@ -124,7 +127,7 @@ $$ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog;
 
-ALTER FUNCTION public.cleanup_expired_revoked_tokens() OWNER TO pulsepilot_revocation_maint;
+ALTER FUNCTION public.cleanup_expired_revoked_tokens() OWNER TO postgres;
 
 -- 12. Restrict Function Execution Privileges
 REVOKE ALL ON FUNCTION public.cleanup_expired_revoked_tokens() FROM PUBLIC, anon, authenticated, pulsepilot_app;

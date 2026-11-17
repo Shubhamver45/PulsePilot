@@ -55,7 +55,7 @@ const dailyTrendData = [
 ];
 
 export default function AnalyticsIntelligencePage() {
-  const [selectedFlag, setSelectedFlag] = useState<string>("checkout_experience");
+  const [selectedFlag, setSelectedFlag] = useState<string>("exp_checkout_layout_v2");
   const [results, setResults] = useState<FlagsmithExperimentResults | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
@@ -249,9 +249,18 @@ export default function AnalyticsIntelligencePage() {
               {results?.name || "Checkout Conversion Optimization"}
             </span>
           </div>
-          <span className="text-xs text-text-secondary font-mono">
-            Feature Flag: <strong className="text-primary">{selectedFlag}</strong>
-          </span>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-text-secondary font-mono">Feature Flag:</label>
+            <select
+              value={selectedFlag}
+              onChange={(e) => setSelectedFlag(e.target.value)}
+              className="px-2.5 py-1 text-xs font-mono font-semibold rounded bg-surface border border-border text-primary focus:outline-hidden focus:ring-1 focus:ring-primary shadow-2xs"
+            >
+              <option value="exp_checkout_layout_v2">exp_checkout_layout_v2 (Live Checkout Experiment)</option>
+              <option value="show_demo_button">show_demo_button (Demo Telemetry Trigger)</option>
+              <option value="exp_checkout_social_proof">exp_checkout_social_proof (Social Proof Badge)</option>
+            </select>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3.5">

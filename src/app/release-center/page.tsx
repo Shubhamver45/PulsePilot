@@ -49,9 +49,9 @@ interface AuditLogItem {
 const STAGES = [5, 10, 25, 50, 75, 100];
 
 export default function ReleaseCenterPage() {
-  // Selected flag & experiment
-  const [selectedFlag, setSelectedFlag] = useState("exp_checkout_social_proof");
-  const [winningVariant, setWinningVariant] = useState("variant_social_proof");
+  // Selected flag & experiment (Defaults to live competition experiment exp_checkout_layout_v2)
+  const [selectedFlag, setSelectedFlag] = useState("exp_checkout_layout_v2");
+  const [winningVariant, setWinningVariant] = useState("single_page");
 
   // Feature 1: Evidence Configuration
   const [minSampleSize, setMinSampleSize] = useState(2500);
