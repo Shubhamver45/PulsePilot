@@ -889,11 +889,11 @@ export default function ReleaseCenterPage() {
               Checkout Bounce Rate
             </span>
             <div className="text-xl font-bold font-mono mt-1 flex items-baseline justify-between">
-              <span>28.2%</span>
-              <span className="text-xs text-emerald-700 font-bold">-17.6% (Better)</span>
+              <span>{liveDataMode ? "N/A" : "28.2% (SIMULATED)"}</span>
+              <span className={`text-xs ${liveDataMode ? "text-amber-700" : "text-emerald-700"} font-bold`}>{liveDataMode ? "UNAVAILABLE" : "SIMULATION ONLY"}</span>
             </div>
             <div className="mt-2 text-[11px] text-text-muted">
-              <span>Baseline: 34.0%</span>
+              <span>{liveDataMode ? "No checkout-bounce telemetry connected" : "Illustrative baseline: 34.0%"}</span>
             </div>
           </div>
 
@@ -903,11 +903,11 @@ export default function ReleaseCenterPage() {
               P99 Latency (API)
             </span>
             <div className="text-xl font-bold font-mono mt-1 flex items-baseline justify-between">
-              <span>320 ms</span>
-              <span className="text-xs text-emerald-700 font-bold">HEALTHY</span>
+              <span>{liveDataMode ? "N/A" : "320 ms (SIMULATED)"}</span>
+              <span className={`text-xs ${liveDataMode ? "text-amber-700" : "text-emerald-700"} font-bold`}>{liveDataMode ? "UNAVAILABLE" : "SIMULATION ONLY"}</span>
             </div>
             <div className="mt-2 text-[11px] text-text-muted">
-              <span>Threshold: &le; 800 ms</span>
+              <span>{liveDataMode ? "No latency telemetry connected" : "Illustrative threshold: ≤ 800 ms"}</span>
             </div>
           </div>
         </div>
