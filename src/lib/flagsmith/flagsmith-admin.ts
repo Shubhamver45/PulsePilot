@@ -257,10 +257,23 @@ export async function createFlagsmithMultivariateFeature(
   const authHeaders = getManagementAuthHeader();
   const apiUrl = getApiUrl();
 
+  // Feature provisioning always requires an Organisation Management API token.
+  // Check this first so callers receive the precise credential prerequisite,
+  // even when the project ID is also missing.
+  if (!authHeaders.Authorization) {
+    return {
+      success: false,
+      error:
+        "FLAGSMITH_ORG_API_TOKEN is not configured. Project-level multivariate feature creation requires a Flagsmith Organisation API Token (Settings -> API Keys in Flagsmith).",
+      remoteCreated: false,
+    };
+  }
+
   if (!projectId) {
     return {
       success: false,
       error: "FLAGSMITH_PROJECT_ID is not configured in .env.",
+      remoteCreated: false,
     };
   }
 
