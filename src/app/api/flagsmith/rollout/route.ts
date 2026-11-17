@@ -13,7 +13,6 @@ import { recordAuditLog } from "@/lib/audit/audit-logger";
 import { checkProductionRolloutGuard } from "@/lib/flagsmith/production-guards";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
-import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 const RolloutRequestSchema = z.object({
   flagsmithFeatureName: z.string().min(1),
