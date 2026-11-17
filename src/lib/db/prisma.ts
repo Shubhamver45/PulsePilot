@@ -12,10 +12,6 @@ export const prisma =
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
-/**
- * Executes a database operation under the restricted least-privilege runtime role 'pulsepilot_app'.
- * Strictly enforces rolbypassrls = false at the database level.
- */
 export async function withRestrictedAppRole<T>(
   fn: (tx: Prisma.TransactionClient) => Promise<T>
 ): Promise<T> {
@@ -26,18 +22,22 @@ export async function withRestrictedAppRole<T>(
 }
 
 /**
- * Executes a database operation under the restricted role 'pulsepilot_app' AND scopes the session
- * to a specific organization for multi-tenant Row Level Security (RLS) enforcement.
+ * Establishes a transaction-local organization context for RLS enforcement.
+ * The tenant ID is passed as a parameter, never interpolated into SQL.
  */
 export async function withTenantContext<T>(
   organizationId: string,
   fn: (tx: Prisma.TransactionClient) => Promise<T>
 ): Promise<T> {
-  const sanitizedOrgId = organizationId.replace(/'/g, "''");
+  const tenantId = organizationId?.trim();
+  if (!tenantId) throw new Error("TENANT_CONTEXT_REQUIRED: organization ID is required.");
+
   return prisma.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET LOCAL ROLE pulsepilot_app;");
-    await tx.$executeRawUnsafe(`SET LOCAL app.current_organization_id = '${sanitizedOrgId}';`);
+    await tx.$queryRawUnsafe(
+      "SELECT set_config('app.current_organization_id', $1, true)",
+      tenantId
+    );
     return fn(tx);
   });
 }
-

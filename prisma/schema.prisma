@@ -269,6 +269,7 @@ model ExperimentProposal {
   status               ProposalStatus @default(PENDING_APPROVAL)
   targetEnvironment    String         @default("development") @map("target_environment")
   flagsmithFeatureName String         @map("flagsmith_feature_name")
+  organizationId       String         @map("organization_id")
   strategy             Json
   duplicateCheck       Json           @map("duplicate_check")
   validation           Json

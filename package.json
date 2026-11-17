@@ -8,7 +8,7 @@
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "tsc --noEmit",
-    "test": "node --experimental-strip-types tests/stats.test.ts && node --experimental-strip-types tests/analytics-agent.test.ts && node --experimental-strip-types tests/telemetry-persistence.test.ts && node --experimental-strip-types tests/audit-persistence.test.ts && node --loader ./tests/next-server-loader.mjs --experimental-strip-types tests/auth-rollout-sec03.test.ts",
+    "test": "node --experimental-strip-types tests/stats.test.ts && node --experimental-strip-types tests/analytics-agent.test.ts && node --experimental-strip-types tests/telemetry-persistence.test.ts && node --experimental-strip-types tests/audit-persistence.test.ts && node --loader ./tests/next-server-loader.mjs --experimental-strip-types tests/auth-rollout-sec03.test.ts && node --experimental-strip-types tests/rls-fail-closed.test.ts",
     "test:auth": "node --loader ./tests/next-server-loader.mjs --experimental-strip-types tests/auth-rollout-sec03.test.ts",
     "test:staging-revocation": "node --loader ./tests/next-server-loader.mjs --experimental-strip-types scripts/staging-revocation-acceptance.ts",
     "test:staging-safety": "node --experimental-strip-types tests/staging-runner-safety.test.ts",

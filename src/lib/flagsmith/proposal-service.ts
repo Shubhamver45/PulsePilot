@@ -22,9 +22,32 @@ import {
   createFlagsmithMultivariateFeature,
   getLiveRemoteFeatureState,
 } from "./flagsmith-admin";
-import { prisma } from "@/lib/db/prisma";
+import type { Prisma } from "@prisma/client";
+import { withTenantContext } from "@/lib/db/prisma";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
 import type { AuthUser } from "@/lib/auth/auth-service";
+
+
+// Durable proposal and experiment data access always runs as pulsepilot_app,
+// scoped to the authenticated user's organization.
+function tenantScopedPrisma(organizationId: string) {
+  return {
+    experiment: {
+      findUnique: (args: Prisma.ExperimentFindUniqueArgs) =>
+        withTenantContext(organizationId, (tx) => tx.experiment.findUnique(args)),
+    },
+    experimentProposal: {
+      create: (args: Prisma.ExperimentProposalCreateArgs) =>
+        withTenantContext(organizationId, (tx) => tx.experimentProposal.create(args)),
+      findUnique: (args: Prisma.ExperimentProposalFindUniqueArgs) =>
+        withTenantContext(organizationId, (tx) => tx.experimentProposal.findUnique(args)),
+      update: (args: Prisma.ExperimentProposalUpdateArgs) =>
+        withTenantContext(organizationId, (tx) => tx.experimentProposal.update(args)),
+      updateMany: (args: Prisma.ExperimentProposalUpdateManyArgs) =>
+        withTenantContext(organizationId, (tx) => tx.experimentProposal.updateMany(args)),
+    },
+  };
+}
 
 export interface ExperimentProposal {
   proposalId: string;
@@ -206,6 +229,7 @@ export async function createExperimentProposal(
   proposingUser: AuthUser,
   targetEnvironment: string = "development"
 ): Promise<ExperimentProposal> {
+  const db = tenantScopedPrisma(proposingUser.organizationId);
   const proposalId = `prop_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
   const configurationHash = computeConfigurationHash(strategy);
 
@@ -229,7 +253,7 @@ export async function createExperimentProposal(
   let existsInDatabase = false;
   if (isDatabaseConfigured()) {
     try {
-      const existingExp = await prisma.experiment.findUnique({
+      const existingExp = await db.experiment.findUnique({
         where: { flagsmithFeatureName: strategy.flagsmith_feature_name },
       });
       if (existingExp) {
@@ -296,13 +320,14 @@ export async function createExperimentProposal(
   // 5. Fail-Closed Persistence Gate
   if (isDatabaseConfigured()) {
     try {
-      await prisma.experimentProposal.create({
+      await db.experimentProposal.create({
         data: {
           id: proposalId,
           configurationHash,
           status: "PENDING_APPROVAL",
           targetEnvironment,
           flagsmithFeatureName: strategy.flagsmith_feature_name,
+          organizationId: proposingUser.organizationId,
           strategy: strategy as any,
           duplicateCheck: proposal.duplicateCheck as any,
           validation: proposal.validation as any,
@@ -339,10 +364,11 @@ export async function createExperimentProposal(
  * Retrieves a proposal by its unique ID.
  * In database mode, reads strictly from PostgreSQL (never silently falls back to in-memory store).
  */
-export async function getProposal(proposalId: string): Promise<ExperimentProposal | null> {
+export async function getProposal(proposalId: string, organizationId: string): Promise<ExperimentProposal | null> {
+  const db = tenantScopedPrisma(organizationId);
   if (isDatabaseConfigured()) {
     try {
-      const record = await prisma.experimentProposal.findUnique({
+      const record = await db.experimentProposal.findUnique({
         where: { id: proposalId },
       });
       if (!record) return null;
@@ -350,7 +376,7 @@ export async function getProposal(proposalId: string): Promise<ExperimentProposa
       let status = record.status as ExperimentProposal["status"];
       if (status === "PENDING_APPROVAL" && new Date() > record.expiresAt) {
         status = "EXPIRED";
-        await prisma.experimentProposal.update({
+        await db.experimentProposal.update({
           where: { id: proposalId },
           data: { status: "EXPIRED" },
         }).catch(() => {});
@@ -416,7 +442,8 @@ export async function rejectProposal(
   proposalId: string,
   user: AuthUser,
   reason: string = "Rejected by reviewer"
-): Promise<{ success: boolean; message: string }> {
+): Promise<{
+  const db = tenantScopedPrisma(user.organizationId); success: boolean; message: string }> {
   // Guest and Viewer role cannot reject proposals
   if (user.role === "VIEWER" || user.id === "usr_guest") {
     const error: any = new Error(
@@ -426,7 +453,7 @@ export async function rejectProposal(
     throw error;
   }
 
-  const proposal = await getProposal(proposalId);
+  const proposal = await getProposal(proposalId, user.organizationId);
   if (!proposal) {
     throw new Error(`Proposal '${proposalId}' not found.`);
   }
@@ -437,7 +464,7 @@ export async function rejectProposal(
 
   if (isDatabaseConfigured()) {
     try {
-      await prisma.experimentProposal.update({
+      await db.experimentProposal.update({
         where: { id: proposalId },
         data: { status: "REJECTED", executionStep: `REJECTED: ${reason}` },
       });
@@ -485,6 +512,7 @@ export async function approveProposal(
   submittedHash: string,
   approvingUser: AuthUser
 ): Promise<{
+  const db = tenantScopedPrisma(approvingUser.organizationId);
   success: boolean;
   proposalId: string;
   status: "APPROVED";
@@ -511,7 +539,7 @@ export async function approveProposal(
   }
 
   // 2. Proposal Lookup
-  const proposal = await getProposal(proposalId);
+  const proposal = await getProposal(proposalId, approvingUser.organizationId);
   if (!proposal) {
     const error: any = new Error(`Proposal '${proposalId}' was not found. Please regenerate the proposal.`);
     error.statusCode = 404;
@@ -580,7 +608,7 @@ export async function approveProposal(
   // 7. Atomic State Transition: PENDING_APPROVAL -> APPROVED in PostgreSQL
   if (isDatabaseConfigured()) {
     try {
-      const updateResult = await prisma.experimentProposal.updateMany({
+      const updateResult = await db.experimentProposal.updateMany({
         where: {
           id: proposalId,
           status: "PENDING_APPROVAL",
@@ -596,7 +624,7 @@ export async function approveProposal(
       });
 
       if (updateResult.count === 0) {
-        const latest = await prisma.experimentProposal.findUnique({ where: { id: proposalId } });
+        const latest = await db.experimentProposal.findUnique({ where: { id: proposalId } });
         if (latest?.status === "APPROVED") {
           return {
             success: true,
@@ -677,6 +705,7 @@ export async function executeApprovedProposal(
   submittedHash: string,
   executingUser: AuthUser,
   options?: {
+  const db = tenantScopedPrisma(executingUser.organizationId);
     idempotencyKey?: string;
     confirmedProductionTarget?: boolean;
   }
@@ -713,7 +742,7 @@ export async function executeApprovedProposal(
   }
 
   // 2. Proposal Lookup
-  const proposal = await getProposal(proposalId);
+  const proposal = await getProposal(proposalId, executingUser.organizationId);
   if (!proposal) {
     const error: any = new Error(`Proposal '${proposalId}' was not found.`);
     error.statusCode = 404;
@@ -785,7 +814,7 @@ export async function executeApprovedProposal(
   // 7. Atomic Execution Lease Acquisition in PostgreSQL
   if (isDatabaseConfigured()) {
     try {
-      const leaseResult = await prisma.experimentProposal.updateMany({
+      const leaseResult = await db.experimentProposal.updateMany({
         where: {
           id: proposalId,
           configurationHash: submittedHash,
@@ -810,7 +839,7 @@ export async function executeApprovedProposal(
       });
 
       if (leaseResult.count === 0) {
-        const latest = await prisma.experimentProposal.findUnique({ where: { id: proposalId } });
+        const latest = await db.experimentProposal.findUnique({ where: { id: proposalId } });
         if (latest?.status === "EXECUTED") {
           if (latest.executionResult) {
             return { ...(latest.executionResult as any), success: true };
@@ -860,7 +889,7 @@ export async function executeApprovedProposal(
       remoteState = remoteCheck.state;
 
       if (isDatabaseConfigured()) {
-        await prisma.experimentProposal.update({
+        await db.experimentProposal.update({
           where: { id: proposalId },
           data: {
             remoteFeatureId,
@@ -887,7 +916,7 @@ export async function executeApprovedProposal(
     };
 
     if (isDatabaseConfigured()) {
-      await prisma.experimentProposal.update({
+      await db.experimentProposal.update({
         where: { id: proposalId },
         data: { executionStep: "DISPATCHING_FLAGSMITH_MUTATION" },
       }).catch(() => {});
@@ -899,7 +928,7 @@ export async function executeApprovedProposal(
       // NOTE: Do NOT reset to PENDING_APPROVAL on uncertain network failure
       // Keep in EXECUTING with explicit error step so it can be reconciled
       if (isDatabaseConfigured()) {
-        await prisma.experimentProposal.update({
+        await db.experimentProposal.update({
           where: { id: proposalId },
           data: {
             executionStep: `MUTATION_FAILED_UNRECONCILED: ${fsResult.error?.slice(0, 200)}`,
@@ -936,7 +965,7 @@ export async function executeApprovedProposal(
   const verification = await getLiveRemoteFeatureState(strategy.flagsmith_feature_name);
   if (!verification.success || !verification.state) {
     if (isDatabaseConfigured()) {
-      await prisma.experimentProposal.update({
+      await db.experimentProposal.update({
         where: { id: proposalId },
         data: {
           remoteFeatureId,
@@ -985,7 +1014,7 @@ export async function executeApprovedProposal(
 
   if (isDatabaseConfigured()) {
     try {
-      await prisma.experimentProposal.update({
+      await db.experimentProposal.update({
         where: { id: proposalId },
         data: {
           status: "EXECUTED",
@@ -1049,7 +1078,7 @@ export async function approveAndExecuteProposal(
   }
 ) {
   // 1. Approve proposal if not already approved
-  const current = await getProposal(proposalId);
+  const current = await getProposal(proposalId, user.organizationId);
   if (current?.status === "PENDING_APPROVAL") {
     await approveProposal(proposalId, submittedHash, user);
   }
