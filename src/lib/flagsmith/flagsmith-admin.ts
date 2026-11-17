@@ -564,6 +564,8 @@ export async function rolloutFlagsmithWinner(
     const targetId = multivariateOptionId(target);
     return {
       enabled: true,
+      // The winning treatment must retain a real 100% multivariate weight.
+      // Changing only the default value would bypass the experiment bucketing engine.
       multivariate_feature_state_values: options.map((item: any) => ({
         ...item,
         percentage_allocation: multivariateOptionId(item) === targetId ? 100 : 0,
