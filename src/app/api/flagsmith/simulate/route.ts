@@ -88,6 +88,16 @@ async function simulateAgainstLiveFlagsmith(
   const simulationId = randomUUID();
   const simulatedUsers: string[] = [];
   const eventRows: any[] = [];
+  const perVariant = new Map<string, { key: string; name: string; isControl: boolean; exposures: number; conversions: number }>();
+  for (const variant of experiment.variants) {
+    perVariant.set(variant.id, {
+      key: variant.key,
+      name: variant.name,
+      isControl: variant.isControl,
+      exposures: 0,
+      conversions: 0,
+    });
+  }
   let conversions = 0;
 
   // Evaluate each synthetic identity through the real Flagsmith identity API.
@@ -120,7 +130,7 @@ async function simulateAgainstLiveFlagsmith(
       const assignedVariant =
         experiment.variants.find((variant) => variant.key === evaluated!.variantKey) ||
         experiment.variants.find((variant) =>
-          normaliseFeatureValue(variant.featureValue) === String(evaluated!.rawValue)
+          normaliseFeatureValue(variant.featureValue) === normaliseFeatureValue(evaluated!.rawValue)
         );
 
       if (!assignedVariant) {
@@ -144,6 +154,8 @@ async function simulateAgainstLiveFlagsmith(
 
     for (const result of results) {
       simulatedUsers.push(result.identity);
+      const variantStats = perVariant.get(result.assignedVariant.id)!;
+      variantStats.exposures++;
       eventRows.push({
         experimentId: experiment.id,
         variantId: result.assignedVariant.id,
@@ -162,6 +174,7 @@ async function simulateAgainstLiveFlagsmith(
 
       if (result.converted) {
         conversions++;
+        variantStats.conversions++;
         eventRows.push({
           experimentId: experiment.id,
           variantId: result.assignedVariant.id,
@@ -186,6 +199,18 @@ async function simulateAgainstLiveFlagsmith(
     skipDuplicates: true,
   });
 
+  const controlStats = [...perVariant.values()].find((variant) => variant.isControl);
+  const winnerStats = winner ? perVariant.get(winner.id) : null;
+  const controlRate = controlStats && controlStats.exposures > 0
+    ? controlStats.conversions / controlStats.exposures
+    : 0;
+  const winnerRate = winnerStats && winnerStats.exposures > 0
+    ? winnerStats.conversions / winnerStats.exposures
+    : 0;
+  const observedLiftPercent = winnerStats && controlRate > 0
+    ? Number((((winnerRate - controlRate) / controlRate) * 100).toFixed(1))
+    : null;
+
   return {
     syntheticVisitorsGenerated: count,
     exposures: count,
@@ -195,6 +220,8 @@ async function simulateAgainstLiveFlagsmith(
     simulatedUsers,
     scenario,
     winnerVariantKey: winner?.key ?? null,
+    observedLiftPercent,
+    variantResults: [...perVariant.values()],
     isSynthetic: true,
   };
 }
