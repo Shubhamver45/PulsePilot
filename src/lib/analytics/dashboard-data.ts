@@ -49,7 +49,7 @@ export interface ProductionDashboardData {
  * Build dashboard metrics only from persisted experiment/telemetry records.
  * This intentionally does not import or fall back to seeded demonstration KPIs.
  */
-export async function getProductionDashboardData(range: string): Promise<ProductionDashboardData> {
+export async function getProductionDashboardData(range: string, organizationId: string): Promise<ProductionDashboardData> {
   const selectedRange = (["7D", "14D", "30D", "90D"].includes(range) ? range : "7D") as DashboardRange;
   const days = rangeDays(selectedRange);
   const start = new Date();
@@ -58,13 +58,19 @@ export async function getProductionDashboardData(range: string): Promise<Product
 
   const [experiments, events, auditLogs, agentRuns, project] = await Promise.all([
     prisma.experiment.findMany({
-      where: { status: { in: ["ACTIVE", "RUNNING"] } },
+      where: {
+        status: { in: ["ACTIVE", "RUNNING"] },
+        project: { organizationId },
+      },
       include: { variants: true },
       orderBy: { updatedAt: "desc" },
       take: 50,
     }),
     prisma.telemetryEvent.findMany({
-      where: { timestamp: { gte: start } },
+      where: {
+        timestamp: { gte: start },
+        experiment: { project: { organizationId } },
+      },
       include: {
         experiment: { select: { id: true, flagsmithFeatureName: true } },
         variant: { select: { id: true, key: true, isControl: true } },
@@ -73,16 +79,19 @@ export async function getProductionDashboardData(range: string): Promise<Product
       take: 20000,
     }),
     prisma.auditLog.findMany({
+      where: { organizationId },
       orderBy: { createdAt: "desc" },
       take: 12,
       select: { id: true, action: true, entityId: true, actorName: true, actorType: true, details: true, createdAt: true },
     }),
     prisma.agentRun.findMany({
+      where: { experiment: { project: { organizationId } } },
       orderBy: { createdAt: "desc" },
       take: 8,
       select: { id: true, agentType: true, modelName: true, createdAt: true, structuredOutput: true },
     }),
     prisma.project.findFirst({
+      where: { organizationId },
       include: { organization: { select: { name: true } } },
       orderBy: { createdAt: "asc" },
     }),
