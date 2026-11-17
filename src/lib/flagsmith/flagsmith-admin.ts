@@ -264,16 +264,140 @@ export async function createFlagsmithMultivariateFeature(
     };
   }
 
-  // 1. Idempotency Check: Does the feature already exist in the environment?
+  // 1. Idempotency Check: if the feature exists, reconcile missing keyed
+  // options instead of silently claiming it is ready for experimentation.
   const existingCheck = await getLiveRemoteFeatureState(input.name);
   if (existingCheck.success && existingCheck.state) {
-    const featureId = existingCheck.state.feature?.id || existingCheck.state.id;
+    const existingState = existingCheck.state;
+    const featureId = existingState.feature?.id || existingState.id;
+    const existingOptions = Array.isArray(existingState.feature?.multivariate_options)
+      ? existingState.feature.multivariate_options
+      : [];
+    const existingByKey = new Map<string, any>();
+    for (const option of existingOptions) {
+      const key = optionKey(option);
+      if (key) existingByKey.set(key, option);
+    }
+
+    const mismatched = input.variants.find((variant) => {
+      const current = existingByKey.get(variant.key);
+      return current && optionFeatureValue(current) !== variant.value;
+    });
+    if (mismatched) {
+      return {
+        success: false,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: existingState,
+        error: `Flagsmith feature '${input.name}' already has key '${mismatched.key}' with a different value. Reconcile the remote option before provisioning this strategy.`,
+      };
+    }
+
+    const missing = input.variants.filter((variant) => !existingByKey.has(variant.key));
+    // Legacy options that were created without explicit keys cannot safely be
+    // associated with experiment events; do not add a duplicate string value.
+    const legacyValueCollision = missing.find((variant) =>
+      existingOptions.some((option: any) =>
+        !optionKey(option) && optionFeatureValue(option) === variant.value
+      )
+    );
+    if (legacyValueCollision) {
+      return {
+        success: false,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: existingState,
+        error: `Flagsmith feature '${input.name}' contains a legacy unkeyed option for '${legacyValueCollision.key}'. Migrate that option to an explicit variant key in Flagsmith before reusing it.`,
+      };
+    }
+
+    if (missing.length) {
+      if (!authHeaders.Authorization) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          state: existingState,
+          error: "A Flagsmith Organisation API token is required to add missing keyed multivariate options.",
+        };
+      }
+
+      for (const variant of missing) {
+        const optionResponse = await fetch(
+          `${apiUrl}/projects/${projectId}/features/${featureId}/mv-options/`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            body: JSON.stringify({
+              type: "unicode",
+              string_value: variant.value,
+              key: variant.key,
+              default_percentage_allocation: variant.trafficAllocation,
+            }),
+          }
+        );
+        if (!optionResponse.ok) {
+          const detail = await optionResponse.text();
+          return {
+            success: false,
+            featureId,
+            isExisting: true,
+            remoteCreated: false,
+            state: existingState,
+            error: `Flagsmith could not add missing keyed option '${variant.key}' (${optionResponse.status}): ${detail.slice(0, 500)}`,
+          };
+        }
+      }
+
+      const verification = await getLiveRemoteFeatureState(input.name);
+      if (!verification.success || !verification.state) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          error: `Missing options were submitted, but the environment could not be verified: ${verification.error || "No state returned"}`,
+        };
+      }
+
+      const verifiedKeys = new Set(
+        (verification.state.feature?.multivariate_options || [])
+          .map((option: any) => optionKey(option))
+          .filter(Boolean)
+      );
+      const stillMissing = input.variants.map((variant) => variant.key).filter((key) => !verifiedKeys.has(key));
+      if (stillMissing.length) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          state: verification.state,
+          error: `Flagsmith verification is still missing keyed options: ${stillMissing.join(", ")}.`,
+        };
+      }
+
+      return {
+        success: true,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: verification.state,
+      };
+    }
+
     return {
       success: true,
       featureId,
       isExisting: true,
       remoteCreated: false,
-      state: existingCheck.state,
+      state: existingState,
     };
   }
 
