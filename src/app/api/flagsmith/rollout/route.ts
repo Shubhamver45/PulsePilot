@@ -13,13 +13,13 @@ import { recordAuditLog } from "@/lib/audit/audit-logger";
 import { checkProductionRolloutGuard } from "@/lib/flagsmith/production-guards";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 const RolloutRequestSchema = z.object({
   flagsmithFeatureName: z.string().min(1),
   action: z.enum(["ROLLOUT_WINNER", "GRADUAL_STAGE", "ROLLBACK_TO_CONTROL", "EMERGENCY_KILL_SWITCH"]),
   winningVariantKey: z.string().optional(),
   stagePercentage: z.number().min(0).max(100).optional(),
-  authorizer: z.string().trim().min(2).max(120).optional(),
   rationale: z.string().trim().max(2000).optional(),
 });
 
@@ -359,6 +359,9 @@ export async function POST(request: Request) {
         details: `${req.action} verified against Flagsmith. Previous: ${JSON.stringify(before)}; New: ${JSON.stringify(after)}.`,
         metadata: {
           authorizer: actorName,
+          authenticatedUserId: user.id,
+          authenticatedUserEmail: user.email,
+          authenticatedRole: user.role,
           winningVariantKey: req.winningVariantKey,
           requestedPercentage: pct,
           previousAllocation: before,
@@ -429,6 +432,9 @@ export async function POST(request: Request) {
         details: `Rollback verified against Flagsmith. Previous: ${JSON.stringify(before)}; New: ${JSON.stringify(after)}.`,
         metadata: {
           authorizer: actorName,
+          authenticatedUserId: user.id,
+          authenticatedUserEmail: user.email,
+          authenticatedRole: user.role,
           previousAllocation: before,
           verifiedAllocation: after,
           status: "SUCCESS_VERIFIED",
