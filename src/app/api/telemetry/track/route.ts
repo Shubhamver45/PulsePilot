@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { inMemoryTelemetryLogs } from "@/lib/telemetry/store";
 import { prisma } from "@/lib/db/prisma";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 const TelemetryEventSchema = z.object({
   experimentFlag: z.string().min(1),
@@ -44,9 +45,10 @@ export async function POST(request: Request) {
     };
 
     const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+    const mustPersist = Boolean(event.requirePersistence || process.env.NODE_ENV === "production" || process.env.VERCEL === "1");
 
-    // Check if persistence is explicitly required or configured
-    if (event.requirePersistence && !isDbConfigured) {
+    // Hosted experiment telemetry must never silently degrade to an in-memory success.
+    if (mustPersist && !isDbConfigured) {
       return NextResponse.json(
         {
           success: false,
@@ -68,7 +70,7 @@ export async function POST(request: Request) {
         });
 
         if (!experiment) {
-          if (event.requirePersistence) {
+          if (mustPersist) {
             return NextResponse.json(
               {
                 success: false,
@@ -163,6 +165,7 @@ export async function POST(request: Request) {
               });
 
               persistedToDb = true;
+              record.variantKey = matchedVariant.key;
 
               // Increment current sample size if exposure
               if (normalizedEventType === "EXPOSURE") {
@@ -191,7 +194,7 @@ export async function POST(request: Request) {
         }
       } catch (dbErr: any) {
         console.error("[Telemetry Tracking DB Error]:", dbErr.message);
-        if (event.requirePersistence) {
+        if (mustPersist) {
           return NextResponse.json(
             {
               success: false,
@@ -226,13 +229,20 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const user = await getAuthenticatedApplicationUser(request);
+  if (!user) {
+    return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+  }
+
   const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
 
   if (isDbConfigured) {
     try {
-      const dbCount = await prisma.telemetryEvent.count();
+      const scopedWhere = { experiment: { project: { organizationId: user.organizationId } } };
+      const dbCount = await prisma.telemetryEvent.count({ where: scopedWhere });
       const recentDbEvents = await prisma.telemetryEvent.findMany({
+        where: scopedWhere,
         take: 50,
         orderBy: { timestamp: "desc" },
         include: {
@@ -255,9 +265,14 @@ export async function GET() {
           properties: evt.properties,
         })),
       });
-    } catch {
-      // Fall through to in-memory
+    } catch (error: any) {
+      console.error("[Telemetry GET] Database read failed:", error?.message || error);
+      return NextResponse.json({ error: "PERSISTENT_TELEMETRY_UNAVAILABLE" }, { status: 503 });
     }
+  }
+
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+    return NextResponse.json({ error: "PERSISTENT_STORAGE_REQUIRED" }, { status: 503 });
   }
 
   return NextResponse.json({
