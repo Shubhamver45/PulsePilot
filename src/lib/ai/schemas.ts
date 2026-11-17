@@ -41,7 +41,7 @@ export const ExperimentStrategySchema = z.object({
   }),
   traffic_allocation: z.object({
     controlPercent: z.number(),
-    treatmentPercents: z.record(z.number()),
+    treatmentPercents: z.record(z.string(), z.number()),
     totalPercent: z.number(),
   }),
   required_events: z.array(
