@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { getProductionDashboardData } from "@/lib/analytics/dashboard-data";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 export async function GET(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
     const { searchParams } = new URL(request.url);
-    const dashboard = await getProductionDashboardData(searchParams.get("range") || "7D");
+    const dashboard = await getProductionDashboardData(searchParams.get("range") || "7D", user.organizationId);
     const data = dashboard.performance.data;
     return NextResponse.json({
       range: dashboard.performance.range,
