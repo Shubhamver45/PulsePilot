@@ -100,6 +100,7 @@ export async function getProductionDashboardData(range: string, organizationId: 
   const persistedEvents = events.filter((event) => !isSynthetic(event.properties));
   const experimentById = new Map(experiments.map((experiment) => [experiment.id, experiment]));
   const exposureVariantByIdentity = new Map<string, string>();
+  const exposureDayByIdentity = new Map<string, string>();
   const exposuresByVariant = new Map<string, Set<string>>();
   const conversionsByVariant = new Map<string, Set<string>>();
   const daily = new Map<string, {
@@ -134,7 +135,10 @@ export async function getProductionDashboardData(range: string, organizationId: 
 
     if (!exposuresByVariant.has(event.variantId)) exposuresByVariant.set(event.variantId, new Set());
     exposuresByVariant.get(event.variantId)!.add(identityKey);
-    exposureVariantByIdentity.set(identityKey, event.variantId);
+    if (!exposureVariantByIdentity.has(identityKey)) {
+      exposureVariantByIdentity.set(identityKey, event.variantId);
+      exposureDayByIdentity.set(identityKey, day);
+    }
     bucket.exposures.add(identityKey);
     if (variant.isControl) bucket.controlExposures.add(identityKey);
     else bucket.treatmentExposures.add(identityKey);
@@ -149,7 +153,11 @@ export async function getProductionDashboardData(range: string, organizationId: 
     const variant = experimentById.get(event.experimentId)?.variants.find((item) => item.id === assignedVariantId);
     if (!variant) continue;
 
-    const day = dayKey(event.timestamp);
+    // Attribute each conversion to the cohort day of the visitor's first
+    // exposure, not the conversion event's later calendar day. This preserves
+    // a valid exposure denominator for daily conversion-rate reporting.
+    const day = exposureDayByIdentity.get(identityKey);
+    if (!day) continue;
     if (!daily.has(day)) {
       daily.set(day, {
         exposures: new Set(),
