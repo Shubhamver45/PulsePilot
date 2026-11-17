@@ -104,6 +104,16 @@ async function main() {
     "Identical remote-config values are rejected"
   );
 
+  const missingGuardrailEvent = structuredClone(strategy);
+  missingGuardrailEvent.required_events = missingGuardrailEvent.required_events.filter(
+    (event) => event.eventName !== "payment_failure"
+  );
+  check(
+    !validateExperimentStrategy(missingGuardrailEvent).valid &&
+      validateExperimentStrategy(missingGuardrailEvent).errors.some((error) => error.includes("payment_failure")),
+    "Guardrails without telemetry instrumentation are rejected"
+  );
+
   const controlValue = JSON.stringify(strategy.control_variant.featureValue);
   const treatmentValue = JSON.stringify(strategy.treatment_variants[0].featureValue);
   const input: CreateFlagInput = {
