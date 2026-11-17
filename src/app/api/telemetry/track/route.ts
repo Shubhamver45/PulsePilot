@@ -3,10 +3,14 @@ import { z } from "zod";
 import { inMemoryTelemetryLogs } from "@/lib/telemetry/store";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { checkRateLimit } from "@/lib/security/rate-limiter";
+
+const PUBLIC_DEMO_EXPERIMENTS = new Set(["exp_checkout_layout_v2", "checkout_experience"]);
+const PUBLIC_DEMO_ORGANIZATION_ID = "org_acme_growth";
 
 const TelemetryEventSchema = z.object({
-  experimentFlag: z.string().min(1),
-  distinctUserId: z.string().min(1),
+  experimentFlag: z.string().min(1).max(120),
+  distinctUserId: z.string().min(1).max(120),
   eventType: z.enum([
     "EXPOSURE",
     "CONVERSION",
@@ -24,8 +28,22 @@ const TelemetryEventSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
     const body = await request.json();
     const event = TelemetryEventSchema.parse(body);
+    const isPublicDemoExperiment = PUBLIC_DEMO_EXPERIMENTS.has(event.experimentFlag);
+
+    if (!user && !isPublicDemoExperiment) {
+      return NextResponse.json({ success: false, error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
+
+    const clientIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+      || request.headers.get("x-real-ip")
+      || "unknown";
+    const rateLimit = checkRateLimit(`telemetry:${clientIp}`, { maxRequests: 120, windowMs: 60000 });
+    if (!rateLimit.allowed) {
+      return NextResponse.json({ success: false, error: "TELEMETRY_RATE_LIMITED" }, { status: 429 });
+    }
 
     const normalizedEventType: "EXPOSURE" | "CONVERSION" =
       event.eventType === "experiment_exposure" || event.eventType === "EXPOSURE"
@@ -41,7 +59,9 @@ export async function POST(request: Request) {
       rawEventType: event.eventType,
       variantKey: event.variantKey || "control",
       metricKey: event.metricKey || (event.eventType === "EXPOSURE" ? "exposure" : event.eventType),
-      properties: event.properties || {},
+      // Clients cannot mark customer events synthetic to evade attribution or
+      // mark synthetic rows as real. The server owns this classification.
+      properties: { ...(event.properties || {}), isSynthetic: false },
     };
 
     const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
@@ -66,7 +86,7 @@ export async function POST(request: Request) {
       try {
         const experiment = await prisma.experiment.findUnique({
           where: { flagsmithFeatureName: event.experimentFlag },
-          include: { variants: true },
+          include: { variants: true, project: true },
         });
 
         if (!experiment) {
@@ -81,6 +101,15 @@ export async function POST(request: Request) {
             );
           }
         } else {
+          const allowedOrganizationId = user?.organizationId || PUBLIC_DEMO_ORGANIZATION_ID;
+          if (experiment.project.organizationId !== allowedOrganizationId) {
+            return NextResponse.json({
+              success: false,
+              error: "EXPERIMENT_WORKSPACE_MISMATCH",
+              message: "This feature flag is not available for the current visitor or authenticated workspace.",
+            }, { status: 403 });
+          }
+
           let matchedVariant;
           if (normalizedEventType === "EXPOSURE") {
             matchedVariant = experiment.variants.find((variant) => variant.key === event.variantKey);
