@@ -371,61 +371,101 @@ function generateDeterministicStrategy(
 }
 
 function generateDeterministicReadiness(strategy: ExperimentStrategy): ReadinessReview {
-  const sum =
-    strategy.control_variant.trafficAllocation +
-    strategy.treatment_variants.reduce((acc, v) => acc + v.trafficAllocation, 0);
+  const variants = [strategy.control_variant, ...strategy.treatment_variants];
+  const totalAllocation = variants.reduce((sum, variant) => sum + variant.trafficAllocation, 0);
+  const trafficValid = Math.abs(totalAllocation - 100) <= 0.01;
+  const hypothesisValid = strategy.hypothesis.trim().length >= 20;
+  const primaryMetricValid = Boolean(
+    strategy.primary_metric.key.trim() &&
+    strategy.required_events.some((event) => event.eventName === strategy.primary_metric.key)
+  );
+  const guardrailsValid = strategy.guardrail_metrics.length > 0 &&
+    strategy.guardrail_metrics.every((guardrail) =>
+      strategy.required_events.some((event) => event.eventName === guardrail.key)
+    );
+  const eventsSpecified = strategy.required_events.length > 0 &&
+    strategy.required_events.every((event) => event.eventName.trim() && event.triggerPoint.trim());
+  const variantValues = variants.map((variant) => JSON.stringify(variant.featureValue));
+  const variantsMeaningfullyDifferent =
+    new Set(variantValues).size === variants.length &&
+    variants.every((variant) =>
+      Boolean(variant.key.trim() && variant.name.trim() && variant.description.trim() && variant.whyWorthTesting.trim())
+    );
+  const technicallyFeasible =
+    /^exp_[a-z0-9_]+$/.test(strategy.flagsmith_feature_name) &&
+    strategy.control_variant.key === "control" &&
+    strategy.control_variant.isControl &&
+    strategy.treatment_variants.every((variant) =>
+      !variant.isControl && /^[a-z0-9_]+$/.test(variant.key)
+    );
 
-  const trafficValid = sum === 100;
-  const hypothesisValid = strategy.hypothesis.length >= 20;
-  const metricValid = !!strategy.primary_metric.key;
-  const guardrailsValid = strategy.guardrail_metrics.length > 0;
+  const checks = {
+    isHypothesisTestable: {
+      pass: hypothesisValid,
+      feedback: hypothesisValid
+        ? "The hypothesis has enough detail to be reviewed as a measurable cause/effect statement."
+        : "The hypothesis is too short or incomplete. State the proposed change and measurable outcome.",
+    },
+    isPrimaryMetricMeasurable: {
+      pass: primaryMetricValid,
+      feedback: primaryMetricValid
+        ? `Primary metric '${strategy.primary_metric.key}' is present in the required event plan.`
+        : "The primary metric needs a matching required event and trigger point.",
+    },
+    areEventsImplemented: {
+      pass: eventsSpecified,
+      feedback: eventsSpecified
+        ? "Required event names and trigger points are specified. Actual application-code instrumentation still needs to be verified before rollout."
+        : "One or more required events are missing a name or trigger point.",
+    },
+    areVariantsMeaningfullyDifferent: {
+      pass: variantsMeaningfullyDifferent,
+      feedback: variantsMeaningfullyDifferent
+        ? "Control and treatment variants have distinct remote values and explanatory descriptions."
+        : "Variants need distinct feature values, names, descriptions, and test rationale.",
+    },
+    areGuardrailsAppropriate: {
+      pass: guardrailsValid,
+      feedback: guardrailsValid
+        ? "Each configured safety guardrail has a corresponding required telemetry event."
+        : "Add at least one guardrail and a required event for every guardrail metric.",
+    },
+    isTrafficAllocationValid: {
+      pass: trafficValid,
+      feedback: trafficValid
+        ? `Configured variant weights total ${totalAllocation}%.`
+        : `Traffic allocations total ${totalAllocation}%; they must total 100%.`,
+    },
+    isTechnicallyFeasible: {
+      pass: technicallyFeasible,
+      feedback: technicallyFeasible
+        ? "The feature key, control key, treatment keys and value shapes satisfy the Flagsmith provisioning contract."
+        : "The feature key or variant keys do not satisfy the Flagsmith provisioning contract.",
+    },
+  };
+
+  const passedChecks = Object.values(checks).filter((check) => check.pass).length;
+  const isReadyForLaunch = Object.values(checks).every((check) => check.pass);
+  const recommendations: string[] = [];
+  if (!hypothesisValid) recommendations.push("Rewrite the hypothesis with a clear intervention and measurable outcome.");
+  if (!primaryMetricValid) recommendations.push("Add a primary-metric event and trigger point.");
+  if (!eventsSpecified) recommendations.push("Specify exact event names and trigger points for the instrumentation plan.");
+  if (!variantsMeaningfullyDifferent) recommendations.push("Give each variant a distinct remote configuration and rationale.");
+  if (!guardrailsValid) recommendations.push("Add measurable safety guardrails and include their event keys in required_events.");
+  if (!trafficValid) recommendations.push("Adjust the variant percentages so the configured total equals 100%.");
+  if (!technicallyFeasible) recommendations.push("Correct the Flagsmith feature key, control key and treatment variant keys.");
+  recommendations.push("Before release, verify that the listed events are implemented in the application and that operational guardrail values are persisted.");
 
   return {
-    qualityScore: trafficValid && hypothesisValid && metricValid && guardrailsValid ? 96 : 82,
-    isReadyForLaunch: trafficValid && hypothesisValid && metricValid,
-    checks: {
-      isHypothesisTestable: {
-        pass: hypothesisValid,
-        feedback: "Hypothesis includes a clear cause, effect, and measurable outcome statement.",
-      },
-      isPrimaryMetricMeasurable: {
-        pass: metricValid,
-        feedback: `Primary metric '${strategy.primary_metric.key}' maps cleanly to a distinct binary conversion event.`,
-      },
-      areEventsImplemented: {
-        pass: true,
-        feedback: "All required events are cataloged and follow production telemetry standards.",
-      },
-      areVariantsMeaningfullyDifferent: {
-        pass: true,
-        feedback: "Variants present distinct UX paradigms suitable for detecting behavioral lift.",
-      },
-      areGuardrailsAppropriate: {
-        pass: guardrailsValid,
-        feedback: guardrailsValid
-          ? `${strategy.guardrail_metrics.length} guardrail metrics monitor against regressions and revenue loss.`
-          : "Warning: Consider adding at least one guardrail metric (e.g. error rate or bounce).",
-      },
-      isTrafficAllocationValid: {
-        pass: trafficValid,
-        feedback: trafficValid
-          ? `Traffic split sums to exactly 100% (${strategy.control_variant.trafficAllocation}% Control, ${strategy.treatment_variants.map((v) => `${v.trafficAllocation}% ${v.key}`).join(", ")}).`
-          : `Traffic allocations sum to ${sum}%, but must equal 100%.`,
-      },
-      isTechnicallyFeasible: {
-        pass: true,
-        feedback: "Flagsmith JSON payload format is compatible with client-side React and server-side SDKs.",
-      },
-    },
+    qualityScore: Math.round((passedChecks / Object.keys(checks).length) * 100),
+    isReadyForLaunch,
+    checks,
     strengths: [
-      "High statistical power with clean 50/50 initial split.",
-      "Guardrail metrics safeguard against conversion regressions.",
-      "Clear, falsifiable hypothesis.",
+      ...(hypothesisValid ? ["A testable hypothesis is specified."] : []),
+      ...(trafficValid ? ["Traffic allocation satisfies the 100% invariant."] : []),
+      ...(guardrailsValid ? ["Safety guardrails are paired with telemetry events."] : []),
+      ...(variantsMeaningfullyDifferent ? ["Variant remote values are distinct."] : []),
     ],
-    recommendations: [
-      "Ensure minimum runtime of 7 days to account for day-of-week seasonality.",
-      "Set up instant kill-switch notifications in your team's Slack channel.",
-    ],
+    recommendations,
   };
 }
-
