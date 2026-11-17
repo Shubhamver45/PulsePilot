@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { z } from "zod";
-import { formulateExperimentStrategy } from "@/lib/ai/gemini-client";
-import { ExperimentStrategySchema } from "@/lib/ai/schemas";
+import { formulateExperimentStrategyWithMetadata } from "@/lib/ai/gemini-client";
+import { ExperimentStrategySchema, validateExperimentStrategy } from "@/lib/ai/schemas";
 import { sanitizeUserInput, assertZeroSecretLeakage } from "@/lib/security/input-sanitizer";
 import { checkRateLimit } from "@/lib/security/rate-limiter";
 
@@ -35,14 +35,37 @@ export async function POST(request: Request) {
     const cleanObjective = sanitizeUserInput(objective).sanitized;
     const cleanPrompt = sanitizeUserInput(prompt).sanitized;
 
-    const strategy = await formulateExperimentStrategy(cleanObjective, cleanPrompt);
-    const validatedStrategy = ExperimentStrategySchema.parse(strategy);
+    const generated = await formulateExperimentStrategyWithMetadata(cleanObjective, cleanPrompt);
+    const validatedStrategy = ExperimentStrategySchema.parse(generated.strategy);
+    const validation = validateExperimentStrategy(validatedStrategy);
 
     assertZeroSecretLeakage(validatedStrategy);
+
+    if (!validation.valid) {
+      return NextResponse.json({
+        success: false,
+        error: "GENERATED_STRATEGY_INVALID",
+        message: "The generated experiment plan failed deterministic validation. Review the errors and regenerate the plan.",
+        validation,
+        generation: {
+          provider: generated.provider,
+          model: generated.model,
+          fallbackUsed: generated.fallbackUsed,
+          fallbackReason: generated.fallbackReason,
+        },
+      }, { status: 422 });
+    }
 
     return NextResponse.json({
       success: true,
       strategy: validatedStrategy,
+      validation,
+      generation: {
+        provider: generated.provider,
+        model: generated.model,
+        fallbackUsed: generated.fallbackUsed,
+        fallbackReason: generated.fallbackReason,
+      },
     });
   } catch (error: any) {
     console.error("Agent formulate error:", error);
