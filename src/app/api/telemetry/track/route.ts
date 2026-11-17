@@ -21,7 +21,7 @@ const TelemetryEventSchema = z.object({
   ]),
   variantKey: z.string().optional(),
   metricKey: z.string().optional(),
-  properties: z.record(z.any()).optional(),
+  properties: z.record(z.string(), z.any()).optional(),
   idempotencyKey: z.string().optional(),
   requirePersistence: z.boolean().optional(),
 });
