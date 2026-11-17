@@ -102,7 +102,10 @@ export async function getProductionDashboardData(range: string): Promise<Product
     treatmentConversions: Set<string>;
   }>();
 
+  // First-touch assignments are established from exposures before any conversions
+  // are considered. Conversion events without a prior experiment exposure are ignored.
   for (const event of persistedEvents) {
+    if (event.eventType !== "EXPOSURE") continue;
     const day = dayKey(event.timestamp);
     if (!daily.has(day)) {
       daily.set(day, {
@@ -116,24 +119,44 @@ export async function getProductionDashboardData(range: string): Promise<Product
     }
     const bucket = daily.get(day)!;
     const identityKey = `${event.experimentId}:${event.distinctUserId}`;
-    const assignment = exposureVariantByIdentity.get(identityKey) || event.variantId;
-    const assignmentVariant = experimentById.get(event.experimentId)?.variants.find((variant) => variant.id === assignment);
-    const isControl = assignmentVariant?.isControl ?? event.variant.isControl;
+    const experiment = experimentById.get(event.experimentId);
+    const variant = experiment?.variants.find((item) => item.id === event.variantId);
+    if (!variant) continue;
 
-    if (event.eventType === "EXPOSURE") {
-      if (!exposuresByVariant.has(event.variantId)) exposuresByVariant.set(event.variantId, new Set());
-      exposuresByVariant.get(event.variantId)!.add(identityKey);
-      exposureVariantByIdentity.set(identityKey, event.variantId);
-      bucket.exposures.add(identityKey);
-      if (isControl) bucket.controlExposures.add(identityKey);
-      else bucket.treatmentExposures.add(identityKey);
-    } else {
-      if (!conversionsByVariant.has(assignment)) conversionsByVariant.set(assignment, new Set());
-      conversionsByVariant.get(assignment)!.add(identityKey);
-      bucket.conversions.add(identityKey);
-      if (isControl) bucket.controlConversions.add(identityKey);
-      else bucket.treatmentConversions.add(identityKey);
+    if (!exposuresByVariant.has(event.variantId)) exposuresByVariant.set(event.variantId, new Set());
+    exposuresByVariant.get(event.variantId)!.add(identityKey);
+    exposureVariantByIdentity.set(identityKey, event.variantId);
+    bucket.exposures.add(identityKey);
+    if (variant.isControl) bucket.controlExposures.add(identityKey);
+    else bucket.treatmentExposures.add(identityKey);
+  }
+
+  for (const event of persistedEvents) {
+    if (event.eventType !== "CONVERSION") continue;
+    const identityKey = `${event.experimentId}:${event.distinctUserId}`;
+    const assignedVariantId = exposureVariantByIdentity.get(identityKey);
+    if (!assignedVariantId) continue;
+
+    const variant = experimentById.get(event.experimentId)?.variants.find((item) => item.id === assignedVariantId);
+    if (!variant) continue;
+
+    const day = dayKey(event.timestamp);
+    if (!daily.has(day)) {
+      daily.set(day, {
+        exposures: new Set(),
+        conversions: new Set(),
+        controlExposures: new Set(),
+        controlConversions: new Set(),
+        treatmentExposures: new Set(),
+        treatmentConversions: new Set(),
+      });
     }
+    const bucket = daily.get(day)!;
+    if (!conversionsByVariant.has(assignedVariantId)) conversionsByVariant.set(assignedVariantId, new Set());
+    conversionsByVariant.get(assignedVariantId)!.add(identityKey);
+    bucket.conversions.add(identityKey);
+    if (variant.isControl) bucket.controlConversions.add(identityKey);
+    else bucket.treatmentConversions.add(identityKey);
   }
 
   const activeExperiments: ActiveExperimentItem[] = [];
