@@ -154,7 +154,9 @@ export default function ReleaseCenterPage() {
         const rawValue = typeof leading.featureValue === "string"
           ? leading.featureValue
           : JSON.stringify(leading.featureValue);
-        const remoteOption = flagPayload.flag?.variants?.find((item: any) => item.value === rawValue);
+        const remoteOption = flagPayload.flag?.variants?.find(
+          (item: any) => item.key === leading.variantKey || item.value === rawValue
+        );
         setCurrentStage(Number(remoteOption?.percentageAllocation || 0));
       } else {
         setCurrentStage(0);
