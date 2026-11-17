@@ -235,10 +235,14 @@ export default function ReleaseCenterPage() {
     },
   ];
 
-  const allReadinessPassed = readinessChecks.every((check) => check.passed) && !loadingLiveEvidence && !liveEvidenceError && Boolean(liveFlagState);
+  const allReadinessPassed = liveDataMode && readinessChecks.every((check) => check.passed) && !loadingLiveEvidence && !liveEvidenceError && Boolean(liveFlagState);
 
   // Handlers for Flagsmith Actuation
   const handleApplyGradualStage = async () => {
+    if (!liveDataMode || !allReadinessPassed || !liveFlagState) {
+      setFeedback({ message: "Release blocked: only verified live experiment evidence can authorize a Flagsmith rollout. Simulation scenarios are never accepted.", type: "error" });
+      return;
+    }
     setIsExecuting(true);
     try {
       const res = await fetch("/api/flagsmith/rollout", {
@@ -800,7 +804,7 @@ export default function ReleaseCenterPage() {
               setTargetStage(100);
               setStageModalOpen(true);
             }}
-            disabled={!allReadinessPassed || isSimulatedBreach || loadingLiveEvidence || !liveFlagState}
+            disabled={!liveDataMode || !allReadinessPassed || isSimulatedBreach || loadingLiveEvidence || !liveFlagState}
             className={`px-4 py-2 rounded-md text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 ${
               allReadinessPassed && !isSimulatedBreach
                 ? "bg-primary hover:bg-primary-dark text-white cursor-pointer"
