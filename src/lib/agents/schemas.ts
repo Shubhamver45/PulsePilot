@@ -33,7 +33,7 @@ export const StrategyAgentOutputSchema = z.object({
       description: z.string(),
       isControl: z.boolean(),
       trafficAllocation: z.number().min(0).max(100),
-      featureValue: z.record(z.any()),
+      featureValue: z.record(z.string(), z.any()),
       whyWorthTesting: z.string(),
     })
   ).min(2),
