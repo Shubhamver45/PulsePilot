@@ -318,10 +318,15 @@ export default function DemoStorePage() {
         parsedValue = {};
       }
 
+      // Render the actual Flagsmith-evaluated remote value first. A generic
+      // option key named "treatment" is not enough to infer a UI variant.
+      const remoteLayout = typeof parsedValue === "string"
+        ? parsedValue
+        : parsedValue?.layout;
       const layout =
-        parsedValue?.layout === "single_page" || data.variantKey === "variant_single_page" || data.variantKey === "treatment"
+        remoteLayout === "single_page" || data.variantKey === "variant_single_page"
           ? "single_page"
-          : parsedValue?.layout === "express" || data.variantKey === "variant_express"
+          : remoteLayout === "express" || data.variantKey === "variant_express"
           ? "express"
           : "multi_step";
 
