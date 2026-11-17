@@ -415,11 +415,14 @@ export async function getFlagsmithExperimentResults(
         }
 
         for (const conv of conversionEvents) {
-          // Attribute conversion to user's assigned exposed variant, or event's variant
-          const assignedVariantId = userVariantMap.get(conv.distinctUserId) || conv.variantId;
+          // Conversions count only for users with a persisted first-touch exposure.
+          // The exposure record, not a client-supplied conversion variant, owns attribution.
+          const assignedVariantId = userVariantMap.get(conv.distinctUserId);
+          if (!assignedVariantId) continue;
+
           const userSet = convertedUsersByVariant.get(assignedVariantId);
           if (userSet) {
-            userSet.add(conv.distinctUserId); // Deduplicates repeat conversions by same user
+            userSet.add(conv.distinctUserId);
             totalPurchasesByVariant[assignedVariantId] = (totalPurchasesByVariant[assignedVariantId] || 0) + 1;
 
             const props = conv.properties as any;
@@ -509,12 +512,44 @@ export async function getFlagsmithExperimentResults(
             },
           };
         }
+
+        // A persisted experiment with no valid exposures has an empty scorecard.
+        // Never substitute seeded demo statistics when PostgreSQL is configured.
+        const control = experiment.variants.find((variant) => variant.isControl) || experiment.variants[0];
+        return {
+          experimentId: experiment.id,
+          name: experiment.title,
+          featureFlagName: experiment.flagsmithFeatureName,
+          status: experiment.status as any,
+          lastRefreshedAt: new Date().toISOString(),
+          warehouseConnected: true,
+          sampleSizeTarget: experiment.sampleSizeTarget,
+          sampleSizeCurrent: experiment.sampleSizeCurrent,
+          variations: experiment.variants.map((variant) => ({
+            variantKey: variant.key,
+            variantName: variant.name,
+            isControl: variant.id === control?.id,
+            exposures: 0,
+            conversions: 0,
+            conversionRate: 0,
+            featureValue: variant.featureValue,
+          })),
+          primaryMetric: { key: experiment.primaryMetric, name: experiment.primaryMetric },
+          summary: {
+            totalExposures: 0,
+            totalConversions: 0,
+            leadingVariationKey: null,
+            statisticalCertaintyReached: false,
+          },
+        };
       }
     } catch (dbErr: any) {
       console.warn("[PostgreSQL Telemetry Aggregate Error]:", dbErr.message);
+      return null;
     }
   }
 
+  if (process.env.NODE_ENV === "production") return null;
   initDefaultDemoExperiment();
   const exp = activeFlagsmithExperiments.get(featureFlagName);
   if (!exp) return null;
