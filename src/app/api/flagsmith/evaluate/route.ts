@@ -34,7 +34,15 @@ export async function GET(request: Request) {
         }
       );
 
-      if (res.ok) {
+      if (!res.ok) {
+        if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+          return NextResponse.json({
+            error: "FLAGSMITH_REMOTE_EVALUATION_FAILED",
+            message: `Flagsmith identity evaluation failed with HTTP ${res.status}. Local mock evaluation is disabled in hosted deployments.`,
+            source: "error",
+          }, { status: 502 });
+        }
+      } else {
         const data = await res.json();
         const matched = Array.isArray(data.flags)
           ? data.flags.find((f: any) => f.feature?.name === flag || f.name === flag)
@@ -75,6 +83,13 @@ export async function GET(request: Request) {
             isBetaTester: isBeta,
             source: "flagsmith_remote_api",
           });
+        }
+        if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+          return NextResponse.json({
+            error: "FLAG_NOT_PRESENT_IN_REMOTE_ENVIRONMENT",
+            message: `Feature '${flag}' was not returned for this identity by Flagsmith. Local mock evaluation is disabled in hosted deployments.`,
+            source: "error",
+          }, { status: 404 });
         }
       }
     } catch (err: any) {
