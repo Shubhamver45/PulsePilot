@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
-import { reviewExperimentReadiness } from "@/lib/ai/gemini-client";
+import { reviewExperimentReadinessWithMetadata } from "@/lib/ai/gemini-client";
 import { ExperimentStrategySchema, validateExperimentStrategy } from "@/lib/ai/schemas";
 
 export async function POST(request: Request) {
@@ -23,12 +23,18 @@ export async function POST(request: Request) {
       }, { status: 422 });
     }
 
-    const review = await reviewExperimentReadiness(strategy);
+    const generated = await reviewExperimentReadinessWithMetadata(strategy);
 
     return NextResponse.json({
       success: true,
-      review,
+      review: generated.review,
       validation,
+      generation: {
+        provider: generated.provider,
+        model: generated.model,
+        fallbackUsed: generated.fallbackUsed,
+        fallbackReason: generated.fallbackReason,
+      },
     });
   } catch (error: any) {
     console.error("Agent review error:", error);
