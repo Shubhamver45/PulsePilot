@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { z } from "zod";
 import { formulateExperimentStrategy } from "@/lib/ai/gemini-client";
 import { ExperimentStrategySchema } from "@/lib/ai/schemas";
@@ -12,6 +13,13 @@ const FormulateRequestSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ success: false, error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
+    if (user.role === "VIEWER") {
+      return NextResponse.json({ success: false, error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
+    }
     const ip = request.headers.get("x-forwarded-for") || "127.0.0.1";
     const rateCheck = checkRateLimit(`formulate_${ip}`, { maxRequests: 60, windowMs: 60000 });
     if (!rateCheck.allowed) {
