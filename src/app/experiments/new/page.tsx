@@ -82,10 +82,17 @@ export default function AIExperimentStudioPage() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [strategy, setStrategy] = useState<ExperimentStrategy | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generationMeta, setGenerationMeta] = useState<{
+    provider: "gemini" | "deterministic";
+    model: string;
+    fallbackUsed: boolean;
+    fallbackReason?: string;
+  } | null>(null);
 
   // Step 5: Readiness Review State
   const [isReviewing, setIsReviewing] = useState<boolean>(false);
   const [readinessReview, setReadinessReview] = useState<ReadinessReview | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   // Step 7: Flags Mapping / Creation State
   const [isDeploying, setIsDeploying] = useState<boolean>(false);
@@ -110,6 +117,10 @@ export default function AIExperimentStudioPage() {
     try {
       setIsGenerating(true);
       setGenerationError(null);
+      setReviewError(null);
+      setReadinessReview(null);
+      setDeploymentResult(null);
+      setDeploymentError(null);
 
       const objectiveToUse =
         selectedObjective === "Custom objective"
@@ -126,11 +137,12 @@ export default function AIExperimentStudioPage() {
       });
 
       const data = await res.json();
-      if (!data.success) {
+      if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to formulate experiment spec");
       }
 
       setStrategy(data.strategy);
+      setGenerationMeta(data.generation || null);
       setCurrentStep(3); // Proceed to Step 3: Variant Configuration
     } catch (err: any) {
       setGenerationError(err.message || "Failed to contact AI Strategy Agent");
@@ -142,23 +154,31 @@ export default function AIExperimentStudioPage() {
   // Handle Step 5: Trigger Readiness Review
   const handleReviewReadiness = async () => {
     if (!strategy) return;
+    const validation = validateExperimentStrategy(strategy);
+    if (!validation.valid) {
+      setReviewError(validation.errors.join(" "));
+      setReadinessReview(null);
+      return;
+    }
+
     try {
       setIsReviewing(true);
+      setReviewError(null);
       const res = await fetch("/api/agent/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ strategy }),
       });
       const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.error || "Review failed");
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || data.error || "The readiness review could not be completed.");
       }
       setReadinessReview(data.review);
       setCurrentStep(5);
     } catch (err: any) {
       console.error("Readiness check error:", err);
-      // Fallback local review
-      setCurrentStep(5);
+      setReadinessReview(null);
+      setReviewError(err.message || "The experiment review failed. Fix the issue and retry; approval is blocked.");
     } finally {
       setIsReviewing(false);
     }
@@ -167,16 +187,22 @@ export default function AIExperimentStudioPage() {
   // Handle Step 7: Flags Mapping & Human Approval
   const handleApproveAndDeploy = async () => {
     if (!strategy) return;
+    const validation = validateExperimentStrategy(strategy);
+    if (!validation.valid) {
+      setDeploymentError(validation.errors.join(" "));
+      return;
+    }
+    if (!readinessReview?.isReadyForLaunch) {
+      setDeploymentError("The AI readiness review must pass before a workspace administrator can approve Flagsmith provisioning.");
+      return;
+    }
     try {
       setIsDeploying(true);
       setDeploymentError(null);
       const res = await fetch("/api/experiments/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          strategy,
-          approvedBy: "Sarah Lin (Product Lead)",
-        }),
+        body: JSON.stringify({ strategy }),
       });
       const data = await res.json();
       if (!data.success) {
@@ -195,6 +221,7 @@ export default function AIExperimentStudioPage() {
   const totalTrafficAllocation =
     (strategy?.control_variant.trafficAllocation || 0) +
     (strategy?.treatment_variants.reduce((acc, v) => acc + v.trafficAllocation, 0) || 0);
+  const planValidationErrors = strategy ? validateExperimentStrategy(strategy).errors : [];
 
   return (
     <div className="space-y-8 animate-in fade-in duration-150 pb-16">
@@ -423,6 +450,13 @@ export default function AIExperimentStudioPage() {
       {/* ===================================================================== */}
       {currentStep === 3 && strategy && (
         <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-6 animate-in fade-in">
+          {generationMeta && (
+            <div className={`rounded-md border px-3 py-2 text-xs ${generationMeta.fallbackUsed ? "border-amber-300 bg-amber-50 text-amber-950" : "border-emerald-200 bg-emerald-50 text-emerald-950"}`}>
+              <strong>{generationMeta.fallbackUsed ? "Deterministic strategy fallback" : "Gemini strategy generated"}</strong>
+              <span> · {generationMeta.model}</span>
+              {generationMeta.fallbackReason && <p className="mt-1 text-[11px]">{generationMeta.fallbackReason}</p>}
+            </div>
+          )}
           <div className="flex items-center justify-between pb-4 border-b border-border">
             <div>
               <h2 className="text-base font-bold text-text">Step 3: Variant Configuration</h2>
@@ -631,6 +665,11 @@ export default function AIExperimentStudioPage() {
       {/* ===================================================================== */}
       {currentStep === 4 && strategy && (
         <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-6 animate-in fade-in">
+          {reviewError && (
+            <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+              <strong>Review blocked:</strong> {reviewError}
+            </div>
+          )}
           <div>
             <h2 className="text-base font-bold text-text">Step 4: Metric & Telemetry Configuration</h2>
             <p className="text-xs text-text-secondary mt-0.5">
@@ -891,7 +930,8 @@ export default function AIExperimentStudioPage() {
             </button>
             <button
               onClick={() => setCurrentStep(6)}
-              className="px-5 py-2.5 bg-primary hover:bg-primary-dark text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors"
+              disabled={!readinessReview.isReadyForLaunch}
+              className="px-5 py-2.5 bg-primary hover:bg-primary-dark text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Next: Human Approval Gate <ArrowRight className="w-4 h-4" />
             </button>
@@ -916,6 +956,18 @@ export default function AIExperimentStudioPage() {
             </div>
             <StatusBadge status="warning" label="APPROVAL REQUIRED" />
           </div>
+
+          {!readinessReview?.isReadyForLaunch && (
+            <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+              Approval is disabled because the AI readiness review did not pass. Return to Metrics, address the recommendations, and run the review again.
+            </div>
+          )}
+          {planValidationErrors.length > 0 && (
+            <div role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-950">
+              <strong>Deterministic plan validation failed.</strong>
+              <ul className="mt-1 list-disc pl-4">{planValidationErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+            </div>
+          )}
 
           {/* Full Experiment Specification Preview */}
           <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-3 text-xs">
@@ -991,7 +1043,7 @@ export default function AIExperimentStudioPage() {
             <div className="flex items-center gap-3">
               <button
                 onClick={handleApproveAndDeploy}
-                disabled={isDeploying}
+                disabled={isDeploying || !readinessReview?.isReadyForLaunch || planValidationErrors.length > 0}
                 className="px-5 py-2.5 bg-success hover:bg-success-text text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors disabled:opacity-50"
               >
                 {isDeploying ? (
