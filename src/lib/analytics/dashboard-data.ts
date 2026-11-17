@@ -246,10 +246,11 @@ export async function getProductionDashboardData(range: string, organizationId: 
 
   const exposureIdentities = new Set<string>();
   const conversionIdentities = new Set<string>();
-  for (const event of persistedEvents) {
-    const identityKey = `${event.experimentId}:${event.distinctUserId}`;
-    if (event.eventType === "EXPOSURE") exposureIdentities.add(identityKey);
-    else conversionIdentities.add(identityKey);
+  for (const [identityKey, assignedVariantId] of exposureVariantByIdentity.entries()) {
+    exposureIdentities.add(identityKey);
+    if (conversionsByVariant.get(assignedVariantId)?.has(identityKey)) {
+      conversionIdentities.add(identityKey);
+    }
   }
 
   const totalExposures = exposureIdentities.size;
