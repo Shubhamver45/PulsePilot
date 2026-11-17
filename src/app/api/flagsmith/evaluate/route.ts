@@ -60,11 +60,19 @@ export async function GET(request: Request) {
           } catch {
             // Keep the original string when it is not JSON.
           }
+          const evaluatedOption =
+            matched.multivariate_feature_option ??
+            matched.multivariate_feature_state_value?.multivariate_feature_option ??
+            matched.multivariate_feature_option_value ??
+            null;
+          // Do not trust the generic "variant" metadata field: the Flagsmith
+          // identity response can label the flag's default/control state while
+          // feature_state_value contains the actual evaluated multivariate value.
           const variantKey =
-            matched.variant ??
-            matched.multivariate_feature_option?.string_value ??
-            matched.multivariate_feature_option?.value ??
+            evaluatedOption?.key ??
             (typeof parsedValue === "object" && parsedValue?.variantKey ? parsedValue.variantKey : null) ??
+            evaluatedOption?.string_value ??
+            evaluatedOption?.value ??
             (typeof parsedValue === "string" ? parsedValue : "control");
 
           const traits = Array.isArray(data.traits) ? data.traits : [];
