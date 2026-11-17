@@ -8,17 +8,26 @@ import {
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-export async function formulateExperimentStrategy(
+export interface StrategyGenerationResult {
+  strategy: ExperimentStrategy;
+  provider: "gemini" | "deterministic";
+  model: string;
+  fallbackUsed: boolean;
+  fallbackReason?: string;
+}
+
+export async function formulateExperimentStrategyWithMetadata(
   objective: string,
   userPrompt: string
-): Promise<ExperimentStrategy> {
+): Promise<StrategyGenerationResult> {
   const isMock = !GEMINI_API_KEY || GEMINI_API_KEY === "mock";
+  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
   if (!isMock) {
     try {
       const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
       const model = genAI.getGenerativeModel({
-        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        model: modelName,
         generationConfig: {
           responseMimeType: "application/json",
           temperature: 0.2,
@@ -31,23 +40,50 @@ Given the user's business objective and product intent, produce a complete struc
 Ensure:
 1. "flagsmith_feature_name" starts with "exp_" and uses only lowercase alphanumeric and underscores.
 2. Total traffic allocation between control and treatments equals exactly 100%.
-3. Explain why each variant is worth testing ("whyWorthTesting").
-4. Choose exact telemetry event names matching production standards (e.g. "checkout_completed", "registration_completed").`;
+3. The control variant key is exactly "control" and isControl is true.
+4. Treatment keys are unique lowercase alphanumeric/underscore identifiers and isControl is false.
+5. Every variant has a distinct JSON remote-config value.
+6. Explain why each variant is worth testing ("whyWorthTesting").
+7. The primary metric key is included in required_events.
+8. Include at least one measurable operational guardrail.`;
 
       const userContent = `Objective Category: ${objective}\nUser Natural Language Description: ${userPrompt}`;
-
       const result = await model.generateContent([systemPrompt, userContent]);
-      const rawText = result.response.text();
-      const parsedJson = JSON.parse(rawText);
+      const parsedJson = JSON.parse(result.response.text());
 
-      return ExperimentStrategySchema.parse(parsedJson);
+      return {
+        strategy: ExperimentStrategySchema.parse(parsedJson),
+        provider: "gemini",
+        model: modelName,
+        fallbackUsed: false,
+      };
     } catch (err) {
-      console.warn("Gemini API call failed or timed out. Falling back to local intelligence generator:", err);
+      console.warn("Gemini strategy generation failed; deterministic fallback will be clearly labelled.", err);
+      return {
+        strategy: ExperimentStrategySchema.parse(generateDeterministicStrategy(objective, userPrompt)),
+        provider: "deterministic",
+        model: "PulsePilot deterministic planner",
+        fallbackUsed: true,
+        fallbackReason: "Gemini was unavailable or returned a response that failed schema validation.",
+      };
     }
   }
 
-  // High-Fidelity Local Intelligence Generator
-  return generateDeterministicStrategy(objective, userPrompt);
+  return {
+    strategy: ExperimentStrategySchema.parse(generateDeterministicStrategy(objective, userPrompt)),
+    provider: "deterministic",
+    model: "PulsePilot deterministic planner",
+    fallbackUsed: true,
+    fallbackReason: "GEMINI_API_KEY is not configured for this deployment.",
+  };
+}
+
+export async function formulateExperimentStrategy(
+  objective: string,
+  userPrompt: string
+): Promise<ExperimentStrategy> {
+  const result = await formulateExperimentStrategyWithMetadata(objective, userPrompt);
+  return result.strategy;
 }
 
 export async function reviewExperimentReadiness(
