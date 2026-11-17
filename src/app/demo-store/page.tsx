@@ -678,6 +678,22 @@ export default function DemoStorePage() {
         }
       />
 
+      <div className="rounded-lg border border-border bg-surface-subtle px-3 py-2 text-xs text-text-secondary">
+        Demo checkout only: purchase buttons record experiment telemetry. No payment is processed and no card is charged.
+      </div>
+
+      {(evaluationError || orderFeedback) && (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+          {evaluationError || orderFeedback}
+        </div>
+      )}
+
+      {isTrackingExposure && currentView === "CHECKOUT" && (
+        <div className="rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-secondary">
+          Recording the visitor's first-touch exposure before enabling checkout…
+        </div>
+      )}
+
       {/* IDENTITY TARGETING & FLAGSMITH TRAITS PANEL */}
       <div className="p-4 rounded-xl border border-violet-200 bg-gradient-to-br from-white via-violet-50/20 to-white shadow-xs space-y-3.5">
         {/* Header Row */}
@@ -1593,7 +1609,7 @@ export default function DemoStorePage() {
                     </button>
                     <button
                       onClick={handleCompleteOrder}
-                      disabled={isSubmittingOrder}
+                      disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                       className="w-2/3 py-3 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2"
                     >
                       <Lock className="w-3.5 h-3.5" />
@@ -1715,7 +1731,7 @@ export default function DemoStorePage() {
 
                   <button
                     onClick={handleCompleteOrder}
-                    disabled={isSubmittingOrder}
+                    disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                     className="w-full py-3 rounded-lg bg-primary hover:bg-primary-dark text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-xs transition-colors"
                   >
                     <Lock className="w-3.5 h-3.5" />
@@ -1745,7 +1761,7 @@ export default function DemoStorePage() {
               <div className="space-y-2">
                 <button
                   onClick={handleCompleteOrder}
-                  disabled={isSubmittingOrder}
+                  disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                   className="w-full py-3 rounded-lg bg-black hover:bg-zinc-800 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-colors"
                 >
                   <CreditCard className="w-4 h-4" />
@@ -1754,7 +1770,7 @@ export default function DemoStorePage() {
 
                 <button
                   onClick={handleCompleteOrder}
-                  disabled={isSubmittingOrder}
+                  disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                   className="w-full py-3 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-colors"
                 >
                   <Zap className="w-4 h-4 text-amber-400" />
@@ -1789,7 +1805,7 @@ export default function DemoStorePage() {
 
                 <button
                   onClick={handleCompleteOrder}
-                  disabled={isSubmittingOrder}
+                  disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                   className="w-full py-2.5 mt-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
                 >
                   <Check className="w-3.5 h-3.5" />
@@ -1812,7 +1828,7 @@ export default function DemoStorePage() {
 
           <div className="space-y-1">
             <span className="text-[11px] font-mono uppercase px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold">
-              Conversion Event Recorded in Flagsmith
+              Conversion Event Persisted & Attributed
             </span>
             <h2 className="text-2xl font-bold text-text tracking-tight mt-1">
               Thank You for Your Order!
@@ -1830,7 +1846,7 @@ export default function DemoStorePage() {
             <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
               <div>
                 <span className="text-text-muted block text-[10px]">Experiment Flag:</span>
-                <span className="text-text font-bold">checkout_experience</span>
+                <span className="text-text font-bold">{lastOrderDetails.experimentFlag}</span>
               </div>
               <div>
                 <span className="text-text-muted block text-[10px]">Assigned Variant:</span>
