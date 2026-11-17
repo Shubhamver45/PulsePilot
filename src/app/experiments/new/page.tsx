@@ -94,6 +94,12 @@ export default function AIExperimentStudioPage() {
   const [isReviewing, setIsReviewing] = useState<boolean>(false);
   const [readinessReview, setReadinessReview] = useState<ReadinessReview | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewMeta, setReviewMeta] = useState<{
+    provider: "gemini" | "deterministic";
+    model: string;
+    fallbackUsed: boolean;
+    fallbackReason?: string;
+  } | null>(null);
 
   // Step 7: Flags Mapping / Creation State
   const [isDeploying, setIsDeploying] = useState<boolean>(false);
@@ -165,6 +171,7 @@ export default function AIExperimentStudioPage() {
     try {
       setIsReviewing(true);
       setReviewError(null);
+      setReviewMeta(null);
       const res = await fetch("/api/agent/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -175,6 +182,7 @@ export default function AIExperimentStudioPage() {
         throw new Error(data.message || data.error || "The readiness review could not be completed.");
       }
       setReadinessReview(data.review);
+      setReviewMeta(data.generation || null);
       setCurrentStep(5);
     } catch (err: any) {
       console.error("Readiness check error:", err);
@@ -690,7 +698,16 @@ export default function AIExperimentStudioPage() {
                   <button
                     key={metric.key}
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      const requiredEvents = strategy.required_events.some((event) => event.eventName === metric.key)
+                        ? strategy.required_events
+                        : [
+                            ...strategy.required_events,
+                            {
+                              eventName: metric.key,
+                              triggerPoint: `Record this event when the '${metric.name}' outcome occurs.`,
+                            },
+                          ];
                       setStrategy({
                         ...strategy,
                         primary_metric: {
@@ -699,8 +716,9 @@ export default function AIExperimentStudioPage() {
                           name: metric.name,
                           type: metric.type,
                         },
-                      })
-                    }
+                        required_events: requiredEvents,
+                      });
+                    }}
                     className={`p-3 rounded border text-left transition-colors flex items-center justify-between ${
                       isSelected
                         ? "bg-surface border-primary shadow-xs"
@@ -790,7 +808,25 @@ export default function AIExperimentStudioPage() {
                               description: guard.name,
                             },
                           ];
-                      setStrategy({ ...strategy, guardrail_metrics: newGuard });
+                      const retainedEvents = strategy.required_events.filter((event) =>
+                        event.eventName !== guard.key ||
+                        strategy.primary_metric.key === guard.key ||
+                        strategy.secondary_metrics.some((metric) => metric.key === guard.key)
+                      );
+                      const requiredEvents = isChecked
+                        ? retainedEvents
+                        : [
+                            ...retainedEvents,
+                            {
+                              eventName: guard.key,
+                              triggerPoint: `Record this event whenever the '${guard.name}' safety metric occurs.`,
+                            },
+                          ];
+                      setStrategy({
+                        ...strategy,
+                        guardrail_metrics: newGuard,
+                        required_events: requiredEvents,
+                      });
                     }}
                     className={`p-3 rounded border cursor-pointer transition-colors flex items-center justify-between ${
                       isChecked
@@ -852,6 +888,13 @@ export default function AIExperimentStudioPage() {
               <p className="text-xs text-text-secondary mt-0.5">
                 Automated validation of statistical testability, event instrumentation, and safety guardrails.
               </p>
+              {reviewMeta && (
+                <p className={`mt-1 text-[10px] font-semibold ${reviewMeta.fallbackUsed ? "text-amber-700" : "text-emerald-700"}`}>
+                  {reviewMeta.fallbackUsed ? "Deterministic readiness review" : "Gemini AI readiness review"}
+                  {" · "}{reviewMeta.model}
+                  {reviewMeta.fallbackReason ? ` · ${reviewMeta.fallbackReason}` : ""}
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <div className="text-right">
