@@ -20,7 +20,17 @@
 
 ## Deployment configuration
 
-Hosted deployments require a Supabase Auth configuration, a persistent PostgreSQL database, and a Flagsmith environment key. Remote flag creation and release mutations additionally require a secret Flagsmith Organisation API token. The application distinguishes edge evaluation from Management API access and blocks a production mutation when the Management API cannot be verified.
+Hosted deployments require Supabase Auth, a persistent PostgreSQL connection, a Flagsmith environment key, a Flagsmith Organisation Management API token, and a Gemini API key for hosted AI-agent calls. The application distinguishes read-only Flagsmith Edge evaluation from Management API provisioning and mutations. It fails closed when authoritative Management state, persistent evidence, or operational guardrails cannot be verified.
+
+### Live verification snapshot — 17 November 2026
+
+- **Vercel Preview:** latest remediation commit builds and deploys successfully; the public landing page and Flagsmith health endpoint return HTTP 200.
+- **Flagsmith Edge:** connected; the environment returns two flags. Two distinct test identities evaluated for `exp_checkout_layout_v2` both currently receive `treatment`. This confirms live evaluation, **not** a valid control/treatment traffic split.
+- **Flagsmith Management API:** not configured in Vercel because an Organisation API token is absent. Keyed multivariate provisioning and remote rollout therefore remain unavailable.
+- **PostgreSQL:** the Supabase project is active, but Vercel has no configured `DATABASE_URL`/`DIRECT_URL` for the hosted app. Database-backed registration, scorecards, and persistent telemetry cannot be signed off end-to-end.
+- **Gemini:** the hosted Gemini API credential is not configured, so hosted multi-agent generation has not been verified.
+
+The Release Guardian blocks real rollout while these prerequisites or real statistical/guardrail evidence are missing. Do not interpret a connected Edge API or an offline mock test as proof that the hosted A/B experiment is fully configured.
 
 See [Competition Readiness & Deployment Notes](docs/COMPETITION_READINESS.md) for the complete environment-variable contract, canonical provisioning path, telemetry attribution rules, synthetic traffic isolation, and safe Preview setup.
 
@@ -60,8 +70,9 @@ flowchart TD
       Strategy & Builder -->|"POST /projects/53867/features/"| FS_Create["Remote Multivariate Provisioning"]
       FS_Create --> FS_Edge["Flagsmith Cloud Edge (ID: 115953)"]
       FS_Edge -->|"GET /api/v1/identities/?identifier=..."| Store["Live Storefront (/demo-store)"]
-      Store -->|"user_elena_ai"| V_Control["Control: 3-Step Wizard"]
-      Store -->|"user_alex_dev"| V_Treatment["Treatment: 1-Page Express"]
+      Store -->|"Stable identity"| V_Assignment["Flagsmith-assigned feature value"]
+      V_Assignment --> V_Control["Control variant (when configured)"]
+      V_Assignment --> V_Treatment["Treatment variant (when configured)"]
     end
 
     subgraph TelemetryPlane["3. Telemetry & Deterministic Math"]
@@ -110,22 +121,24 @@ PulsePilot interacts directly with live Flagsmith Cloud resources on **Project I
      1. `POST /environments/{envId}/features/{featureId}/versions/` $\to$ Creates version draft.
      2. `PUT /environments/{envId}/features/{featureId}/versions/{uuid}/featurestates/{draftId}/` $\to$ Mutates traffic weights.
      3. `POST /environments/{envId}/features/{featureId}/versions/{uuid}/publish/` $\to$ Publishes to the edge.
-3. **Sub-200ms Read-After-Write Verification:**
-   - Every mutation is immediately followed by a `GET /flags/` edge verification with a 3-attempt exponential backoff retry.
+3. **Authoritative Read-After-Write Verification:**
+   - A published mutation is followed by a Management API read of the environment feature state.
+   - The application compares the requested enabled/default-value/variant allocations with the returned state and reports success only when they match.
+   - A read-only Edge evaluation is not treated as proof that a Management API mutation succeeded.
 4. **Architectural Evaluation: Direct REST API vs. CLI & MCP Subprocesses:**
    - *Flagsmith CLI & MCP:* Evaluated thoroughly. Flagsmith CLI is optimal for local shell scripting, while `@flagsmith/mcp` is designed for desktop IDE extensions (Cursor/Claude Desktop).
    - *Decision:* In a cloud serverless runtime (Next.js/Vercel), spawning shell CLI/MCP subprocesses introduces container cold-starts, lacks typed return schemas, and adds container image bloat. Direct HTTPS REST API integration with v2 Feature Versioning provides deterministic, type-safe execution with zero container overhead.
 
 ---
 
-## 🎬 Proven 3-Minute Demo Sequence (Track 02)
+## 🎬 Planned 3-Minute Demo Sequence (Track 02 — after live prerequisites are configured)
 
 | Timestamp | Screen | Narrative & Demonstration |
 | :--- | :--- | :--- |
 | **0:00 – 0:35** | [`/studio`](https://pulse-pilot-two.vercel.app/studio) | **Act 1: Gemini AI Strategy Formulation.** Input: *"Test single-page versus multi-step checkout. Use a 50/50 traffic split. Optimize checkout completion. Monitor payment failure rate."* Gemini autonomously synthesizes the hypothesis, primary metric (`checkout_completed`), guardrails, and provisions `exp_checkout_layout_v2` in Flagsmith. |
-| **0:35 – 1:20** | [`/demo-store`](https://pulse-pilot-two.vercel.app/demo-store?flag=exp_checkout_layout_v2) | **Act 2: Live Flagsmith Multivariate Bucketing.** Show identity `user_elena_ai` $\to$ Flagsmith edge resolves `multi_step` (Control 3-step wizard). Switch identity to `user_alex_dev` $\to$ Flagsmith edge dynamically resolves `single_page` (Treatment 1-page express checkout). Exact same codebase; two live experiences. |
-| **1:20 – 1:55** | [`/analytics`](https://pulse-pilot-two.vercel.app/analytics) | **Act 3: Telemetry & Anti-Hallucination Analytics.** Place order in demo store $\to$ captures exposure and conversion with deduplication. Open Analytics $\to$ show deterministic TypeScript math: $+20.2\%$ relative lift, exact two-tailed Z-test ($p = 0.134$), SRM $\chi^2$ ($p = 0.69$), and payment failure guardrail safe at $1.10\%$. |
-| **1:55 – 2:40** | [`/release-center`](https://pulse-pilot-two.vercel.app/release-center) | **Act 4: Human-in-the-Loop Rollout.** Release Guardian confirms all 5 gates passed. Displays before/after diff (`50/50 -> 25/75`). Human operator inputs authorization signature and approves. Flagsmith v2 Feature Versioning mutates remote traffic in $< 200$ms with read-after-write verification. |
+| **0:35 – 1:20** | [`/demo-store`](https://pulse-pilot-two.vercel.app/demo-store?flag=exp_checkout_layout_v2) | **Act 2: Live Flagsmith Multivariate Bucketing.** Demonstrate two distinct identities receiving different values only after the remote feature has verified keyed Control and Treatment options with a non-zero allocation split. The current environment has not passed this check yet. |
+| **1:20 – 1:55** | [`/analytics`](https://pulse-pilot-two.vercel.app/analytics) | **Act 3: Telemetry & Anti-Hallucination Analytics.** Record a persisted exposure and conversion, then show the actual sample size, conversion rates, deterministic Z-test, Bayesian probability and SRM result. Do not use seeded or synthetic figures as customer evidence. |
+| **1:55 – 2:40** | [`/release-center`](https://pulse-pilot-two.vercel.app/release-center) | **Act 4: Human-in-the-Loop Rollout.** Show the live evidence gate. Proceed only if the server confirms real sample size, significance, Bayesian probability, SRM and configured guardrails. The server rejects simulated readiness and blocks mutations until a Management API token is available. |
 | **2:40 – 3:00** | [`/activity`](https://pulse-pilot-two.vercel.app/activity) | **Act 5: Tamper-Evident Governance Audit Log.** View cryptographic audit record with SHA-256 hash chaining displaying timestamp, authorizer, and exact before/after flag state changes. |
 
 ---
@@ -152,7 +165,7 @@ All functional, security, and Flagsmith integration test suites run automaticall
 # 1. TypeScript Strict Type-Check (0 Errors)
 npx tsc --noEmit
 
-# 2. Flagsmith Management & Edge Evaluation Test Suite (15/15 Passed)
+# 2. Flagsmith integration and offline lifecycle suite (21/21 Passed)
 npm run test:flagsmith
 
 # 3. Comprehensive QA, Math Integrity & Security Audit (36/36 Passed)
@@ -163,7 +176,7 @@ npm run build
 ```
 
 ### Test Suite Summary:
-- **15 / 15 Flagsmith Tests Passed:** Credential isolation, idempotent remote provisioning, identity stability, multivariate canary allocation, 100% winner rollout, safe rollback to Control, < 50ms emergency kill-switch, production vs mock guards, and zero-silent-fallback enforcement.
+- **21 / 21 Flagsmith integration checks passed in the isolated test environment:** Credential validation, deterministic identity behavior, offline canary/winner/rollback/kill-switch lifecycle, production-vs-mock guards, segment/trait checks, and secret-leakage checks. The suite explicitly skips live Management API calls when the Organisation token is unavailable; it is not evidence of a live remote rollout.
 - **36 / 36 Comprehensive Audit Tests Passed:** High-precision Normal CDF approximation, two-tailed p-value calculation, Bayesian win probability, SRM Chi-Square detection, prompt injection neutralization, and zero-secret-leakage verification.
 
 ---
