@@ -136,10 +136,12 @@ export async function getLiveRemoteFeatureState(
   try {
     const headers = { "Content-Type": "application/json", ...authHeaders };
 
-    const [environmentsResponse, featuresResponse, statesResponse] = await Promise.all([
+    // Resolve the human-managed environment API key to its numeric Management
+    // API environment ID first. Feature-state endpoints require that ID, not the
+    // non-secret environment key used by the Flags evaluation API.
+    const [environmentsResponse, featuresResponse] = await Promise.all([
       fetch(`${apiUrl}/environments/`, { headers, cache: "no-store" }),
       fetch(`${apiUrl}/projects/${projectId}/features/`, { headers, cache: "no-store" }),
-      fetch(`${apiUrl}/environments/${encodeURIComponent(environmentKey)}/featurestates/`, { headers, cache: "no-store" }),
     ]);
 
     if (!environmentsResponse.ok) {
@@ -148,18 +150,13 @@ export async function getLiveRemoteFeatureState(
     if (!featuresResponse.ok) {
       return { success: false, error: `Flagsmith project feature lookup failed (${featuresResponse.status}).` };
     }
-    if (!statesResponse.ok) {
-      return { success: false, error: `Flagsmith environment feature-state lookup failed (${statesResponse.status}).` };
-    }
 
-    const [environmentsPayload, featuresPayload, statesPayload] = await Promise.all([
+    const [environmentsPayload, featuresPayload] = await Promise.all([
       environmentsResponse.json(),
       featuresResponse.json(),
-      statesResponse.json(),
     ]);
     const environments = unwrapApiList(environmentsPayload);
     const features = unwrapApiList(featuresPayload);
-    const states = unwrapApiList(statesPayload);
 
     const environment = environments.find((item: any) =>
       item.api_key === environmentKey ||
@@ -176,6 +173,15 @@ export async function getLiveRemoteFeatureState(
     if (!feature) {
       return { success: false, error: `Feature '${featureName}' was not found in Flagsmith project ${projectId}.` };
     }
+
+    const statesResponse = await fetch(
+      `${apiUrl}/environments/${environment.id}/featurestates/`,
+      { headers, cache: "no-store" }
+    );
+    if (!statesResponse.ok) {
+      return { success: false, error: `Flagsmith environment feature-state lookup failed (${statesResponse.status}).` };
+    }
+    const states = unwrapApiList(await statesResponse.json());
 
     const state = states.find((item: any) => {
       const featureRef = item.feature ?? item.feature_id;
