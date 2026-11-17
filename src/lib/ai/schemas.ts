@@ -151,6 +151,11 @@ export function validateExperimentStrategy(
   if (!strategy.required_events.some((event) => event.eventName === strategy.primary_metric.key)) {
     errors.push("The primary metric key must appear in the required event instrumentation plan.");
   }
+  for (const guardrail of strategy.guardrail_metrics) {
+    if (!strategy.required_events.some((event) => event.eventName === guardrail.key)) {
+      errors.push(`Guardrail metric '${guardrail.key}' must have a corresponding required instrumentation event.`);
+    }
+  }
 
   return {
     valid: errors.length === 0,
