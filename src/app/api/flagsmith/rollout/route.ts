@@ -212,15 +212,25 @@ export async function POST(request: Request) {
         }
       }
 
-      const after = isRemoteConfigured
+      const after: {
+        variants: Array<{ value: string; percentageAllocation: number }>;
+        defaultValue?: string | null;
+        defaultAllocationPercent: number;
+        totalAllocationPercent: number;
+      } = isRemoteConfigured
         ? allocationSnapshot(result.verifiedState)
         : (() => {
             const updated = flagsmithMockStore.getFlag(req.flagsmithFeatureName);
+            const variants = updated?.multivariateOptions.map((item) => ({
+              value: item.key,
+              percentageAllocation: item.trafficAllocation,
+            })) || [];
+            const allocationTotal = variants.reduce((sum, item) => sum + item.percentageAllocation, 0);
             return {
-              variants: updated?.multivariateOptions.map((item) => ({
-                value: item.key,
-                percentageAllocation: item.trafficAllocation,
-              })) || [],
+              variants,
+              defaultValue: updated?.value ?? null,
+              defaultAllocationPercent: Math.max(0, 100 - allocationTotal),
+              totalAllocationPercent: allocationTotal + Math.max(0, 100 - allocationTotal),
             };
           })();
 
