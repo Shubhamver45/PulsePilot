@@ -242,7 +242,7 @@ export const OrchestratorResponseSchema = z.object({
     AnalyticsAgentOutputSchema,
     ReleaseGuardianOutputSchema,
     GrowthAdvisorOutputSchema,
-    z.record(z.any()),
+    z.record(z.string(), z.any()),
   ]),
 });
 
