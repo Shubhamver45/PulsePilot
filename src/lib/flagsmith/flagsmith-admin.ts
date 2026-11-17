@@ -482,13 +482,44 @@ async function mutateRemoteFeatureState(
         return { success: false, error: "Flagsmith returned an empty feature-version draft.", liveUpdated: false };
       }
 
-      expectedMutation = mutatePayloadFn(draft);
+      // Versioned draft payloads may expose only the numeric multivariate option
+      // ID. Hydrate option definitions from the authoritative environment state
+      // for key/value matching, but keep numeric IDs in the Management API body.
+      const sourceOptions = new Map<number, any>();
+      for (const item of state.multivariate_feature_state_values || []) {
+        const optionId = multivariateOptionId(item);
+        if (optionId !== undefined) sourceOptions.set(optionId, item.multivariate_feature_option);
+      }
+      const enrichedDraft = {
+        ...draft,
+        multivariate_feature_state_values: (draft.multivariate_feature_state_values || []).map((item: any) => ({
+          ...item,
+          multivariate_feature_option:
+            typeof item.multivariate_feature_option === "object"
+              ? item.multivariate_feature_option
+              : sourceOptions.get(multivariateOptionId(item) || -1) ?? item.multivariate_feature_option,
+        })),
+      };
+
+      expectedMutation = mutatePayloadFn(enrichedDraft);
+      const mutationsForWire = {
+        ...expectedMutation,
+        ...(Array.isArray(expectedMutation?.multivariate_feature_state_values)
+          ? {
+              multivariate_feature_state_values: expectedMutation.multivariate_feature_state_values.map((item: any) => ({
+                ...item,
+                multivariate_feature_option: multivariateOptionId(item),
+              })),
+            }
+          : {}),
+      };
+
       const updateResponse = await fetch(
         `${apiUrl}/environments/${envId}/features/${featureId}/versions/${version.uuid}/featurestates/${draft.id}/`,
         {
           method: "PUT",
           headers,
-          body: JSON.stringify({ ...draft, ...expectedMutation }),
+          body: JSON.stringify({ ...draft, ...mutationsForWire }),
         }
       );
       if (!updateResponse.ok) {
