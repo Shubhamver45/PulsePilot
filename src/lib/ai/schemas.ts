@@ -48,7 +48,7 @@ export const ExperimentStrategySchema = z.object({
     z.object({
       eventName: z.string(),
       triggerPoint: z.string(),
-      payloadSchema: z.record(z.string()).optional(),
+      payloadSchema: z.record(z.string(), z.string()).optional(),
     })
   ),
   implementation_plan: z.array(z.string()).min(2),
