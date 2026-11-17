@@ -69,6 +69,119 @@ async function syncExperimentAllocations(
   });
 }
 
+async function getWorkspaceExperiment(featureName: string, organizationId: string) {
+  return prisma.experiment.findFirst({
+    where: {
+      flagsmithFeatureName: featureName,
+      project: { organizationId },
+    },
+    include: { variants: true },
+  });
+}
+
+async function getPersistedRolloutEvidence(experimentId: string, sampleSizeTarget: number) {
+  const [exposureEvents, conversionEvents] = await Promise.all([
+    prisma.telemetryEvent.findMany({
+      where: { experimentId, eventType: "EXPOSURE" },
+      select: { distinctUserId: true, variantId: true, properties: true, timestamp: true },
+      orderBy: { timestamp: "asc" },
+    }),
+    prisma.telemetryEvent.findMany({
+      where: { experimentId, eventType: "CONVERSION" },
+      select: { distinctUserId: true, metricKey: true, properties: true },
+    }),
+  ]);
+
+  const realExposures = exposureEvents.filter((event: any) => event.properties?.isSynthetic !== true);
+  const realConversions = conversionEvents.filter((event: any) => event.properties?.isSynthetic !== true);
+  const assignment = new Map<string, string>();
+  const exposureUsersByVariant = new Map<string, Set<string>>();
+  for (const event of realExposures) {
+    const previous = assignment.get(event.distinctUserId);
+    if (!previous) assignment.set(event.distinctUserId, event.variantId);
+    if (!exposureUsersByVariant.has(event.variantId)) exposureUsersByVariant.set(event.variantId, new Set());
+    exposureUsersByVariant.get(event.variantId)!.add(event.distinctUserId);
+  }
+
+  const convertedUsersByVariant = new Map<string, Set<string>>();
+  for (const event of realConversions) {
+    const variantId = assignment.get(event.distinctUserId);
+    if (!variantId) continue;
+    if (!convertedUsersByVariant.has(variantId)) convertedUsersByVariant.set(variantId, new Set());
+    convertedUsersByVariant.get(variantId)!.add(event.distinctUserId);
+  }
+
+  const totalExposures = [...exposureUsersByVariant.values()].reduce((sum, users) => sum + users.size, 0);
+  return {
+    totalExposures,
+    sampleSizeTarget,
+    exposureUsersByVariant,
+    convertedUsersByVariant,
+    guardrailMetricKeys: [...new Set(realConversions.map((event: any) => event.metricKey).filter(Boolean))] as string[],
+  };
+}
+
+function getRolloutEvidenceBlockers(experiment: any, evidence: Awaited<ReturnType<typeof getPersistedRolloutEvidence>>, winningVariantKey: string) {
+  const blockers: string[] = [];
+  const variants = experiment.variants || [];
+  const control = variants.find((variant: any) => variant.isControl);
+  const treatment = variants.find((variant: any) => variant.key === winningVariantKey);
+
+  if (!control) blockers.push("A configured control variant is required.");
+  if (!treatment || treatment.isControl) blockers.push("The requested winner must be a configured treatment variant.");
+  if (variants.length !== 2) blockers.push("The release gate currently requires a two-arm control/treatment experiment so its allocation and SRM checks are unambiguous.");
+
+  if (evidence.totalExposures < evidence.sampleSizeTarget) {
+    blockers.push(`Insufficient real exposure sample: ${evidence.totalExposures}/${evidence.sampleSizeTarget}.`);
+  }
+
+  if (control && treatment) {
+    const controlExposureCount = evidence.exposureUsersByVariant.get(control.id)?.size || 0;
+    const treatmentExposureCount = evidence.exposureUsersByVariant.get(treatment.id)?.size || 0;
+    const controlConversions = evidence.convertedUsersByVariant.get(control.id)?.size || 0;
+    const treatmentConversions = evidence.convertedUsersByVariant.get(treatment.id)?.size || 0;
+
+    if (controlExposureCount === 0 || treatmentExposureCount === 0) {
+      blockers.push("Both control and treatment require real exposure events.");
+    } else {
+      const result = compareVariants(
+        { key: control.key, name: control.name, isControl: true, exposures: controlExposureCount, conversions: controlConversions },
+        { key: treatment.key, name: treatment.name, isControl: false, exposures: treatmentExposureCount, conversions: treatmentConversions },
+        [Number(control.trafficAllocation || 0), Number(treatment.trafficAllocation || 0)]
+      );
+      if (!result.isSignificant || result.pValue > 0.05) {
+        blockers.push(`The primary metric is not statistically significant (p=${result.pValue.toFixed(4)}; required p<=0.05).`);
+      }
+      if (result.bayesianProbabilityToBeatControl < 0.95) {
+        blockers.push(`Bayesian win probability is ${(result.bayesianProbabilityToBeatControl * 100).toFixed(1)}% (required >=95%).`);
+      }
+      if (result.sampleRatioMismatch.srmDetected) {
+        blockers.push(`Sample-ratio mismatch detected (p=${result.sampleRatioMismatch.pValue.toFixed(4)}).`);
+      }
+      if (result.relativeUpliftPercent <= 0) {
+        blockers.push("The treatment does not currently show positive conversion uplift.");
+      }
+    }
+  }
+
+  // Guardrail names alone are not measurable thresholds. Do not claim they
+  // have passed until metric thresholds and corresponding persisted event data
+  // are both configured for this experiment.
+  if (!Array.isArray(experiment.guardrailMetrics) || experiment.guardrailMetrics.length === 0) {
+    blockers.push("No operational guardrail metrics are configured for this experiment.");
+  } else {
+    const missing = experiment.guardrailMetrics.filter((metric: string) =>
+      !evidence.guardrailMetricKeys.includes(metric)
+    );
+    if (missing.length > 0) {
+      blockers.push(`Missing persisted operational guardrail telemetry: ${missing.join(", ")}.`);
+    }
+    blockers.push("Guardrail thresholds are not stored in the experiment configuration, so guardrail safety cannot be certified.");
+  }
+
+  return blockers;
+}
+
 function optionValue(item: any): string {
   const option = item?.multivariate_feature_option || {};
   return String(option.string_value ?? option.value ?? "");
@@ -157,6 +270,10 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const featureName = searchParams.get("featureName") || "exp_checkout_layout_v2";
+    const workspaceExperiment = await getWorkspaceExperiment(featureName, user.organizationId);
+    if (!workspaceExperiment) {
+      return NextResponse.json({ success: false, error: "EXPERIMENT_NOT_FOUND_IN_WORKSPACE" }, { status: 404 });
+    }
 
     if (hasFlagsmithRemoteCredentials()) {
       const remote = await getLiveRemoteFeatureState(featureName);
@@ -225,6 +342,11 @@ export async function POST(request: Request) {
     }
 
     const req = RolloutRequestSchema.parse(await request.json());
+    const workspaceExperiment = await getWorkspaceExperiment(req.flagsmithFeatureName, user.organizationId);
+    if (!workspaceExperiment) {
+      return NextResponse.json({ success: false, error: "EXPERIMENT_NOT_FOUND_IN_WORKSPACE" }, { status: 404 });
+    }
+
     const isRemoteConfigured = hasFlagsmithRemoteCredentials();
     if (!isRemoteConfigured) {
       return NextResponse.json({
@@ -263,6 +385,21 @@ export async function POST(request: Request) {
     if (req.action === "GRADUAL_STAGE" || req.action === "ROLLOUT_WINNER") {
       if (!req.winningVariantKey) {
         return NextResponse.json({ success: false, error: "winningVariantKey is required." }, { status: 400 });
+      }
+
+      const evidence = await getPersistedRolloutEvidence(workspaceExperiment.id, workspaceExperiment.sampleSizeTarget);
+      const blockers = getRolloutEvidenceBlockers(workspaceExperiment, evidence, req.winningVariantKey);
+      if (blockers.length > 0) {
+        return NextResponse.json({
+          success: false,
+          error: "ROLLOUT_EVIDENCE_GATE_BLOCKED",
+          message: "The server-side release gate rejected this mutation. Client-side demo scenarios cannot override persisted evidence.",
+          blockers,
+          evidence: {
+            realExposures: evidence.totalExposures,
+            sampleSizeTarget: evidence.sampleSizeTarget,
+          },
+        }, { status: 409 });
       }
 
       const pct = req.action === "ROLLOUT_WINNER" ? 100 : (req.stagePercentage ?? 25);
