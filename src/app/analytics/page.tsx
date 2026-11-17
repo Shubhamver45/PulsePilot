@@ -1,947 +1,502 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  BarChart3,
-  TrendingUp,
-  Users,
-  CheckCircle2,
+  Activity,
   AlertTriangle,
-  RefreshCw,
-  Download,
-  Printer,
-  Sparkles,
-  ShieldCheck,
-  Flag,
-  Sliders,
-  FileText,
-  Calendar,
-  Percent,
-  Check,
-  ChevronDown,
-  Info,
-  Layers,
   ArrowRight,
+  BarChart3,
+  CheckCircle2,
+  Clock3,
+  Download,
+  Info,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Users,
 } from "lucide-react";
 import {
   ResponsiveContainer,
-  ComposedChart,
-  LineChart,
   BarChart,
-  Line,
   Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   Cell,
 } from "recharts";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { StatusBadge } from "@/components/ui/StatusBadge";
-import { FlagsmithExperimentResults, ExperimentVariationResult } from "@/lib/flagsmith/experimentation-service";
-import { compareVariants } from "@/lib/analytics/stats";
+import type {
+  FlagsmithExperimentResults,
+  ExperimentVariationResult,
+} from "@/lib/flagsmith/experimentation-service";
 
-// Trend and Performance Over Time Data
-const dailyTrendData = [
-  { day: "Day 1", controlCR: 4.02, variantSinglePageCR: 4.15, variantExpressCR: 4.08, paymentFailureRate: 1.05 },
-  { day: "Day 2", controlCR: 4.05, variantSinglePageCR: 4.38, variantExpressCR: 4.25, paymentFailureRate: 1.08 },
-  { day: "Day 3", controlCR: 4.04, variantSinglePageCR: 4.58, variantExpressCR: 4.42, paymentFailureRate: 1.04 },
-  { day: "Day 4", controlCR: 4.08, variantSinglePageCR: 4.72, variantExpressCR: 4.51, paymentFailureRate: 1.10 },
-  { day: "Day 5", controlCR: 4.06, variantSinglePageCR: 4.81, variantExpressCR: 4.58, paymentFailureRate: 1.09 },
-  { day: "Day 6", controlCR: 4.07, variantSinglePageCR: 4.88, variantExpressCR: 4.62, paymentFailureRate: 1.12 },
-  { day: "Day 7", controlCR: 4.08, variantSinglePageCR: 4.91, variantExpressCR: 4.64, paymentFailureRate: 1.10 },
+const EXPERIMENT_OPTIONS = [
+  { value: "checkout_experience", label: "Checkout Conversion Optimization" },
+  { value: "exp_checkout_layout_v2", label: "Checkout Layout Experiment" },
 ];
 
+function percent(value: number | null | undefined, digits = 2): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "Not available";
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function signedPercent(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "Not available";
+  return `${value > 0 ? "+" : ""}${value.toFixed(digits)}%`;
+}
+
+function pValue(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "Not calculated";
+  return value < 0.0001 ? value.toExponential(2) : value.toFixed(4);
+}
+
+function Chip({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "success" | "warning" | "danger" | "neutral" }) {
+  const tones = {
+    success: "bg-emerald-50 text-emerald-800 border-emerald-200",
+    warning: "bg-amber-50 text-amber-800 border-amber-200",
+    danger: "bg-red-50 text-red-800 border-red-200",
+    neutral: "bg-surface-subtle text-text-secondary border-border",
+  };
+  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${tones[tone]}`}>{children}</span>;
+}
+
+function MetricCard({
+  label,
+  value,
+  detail,
+  icon,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4 shadow-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-text-secondary">{label}</span>
+        <span className="text-text-muted">{icon}</span>
+      </div>
+      <p className="mt-2 font-mono text-2xl font-bold tracking-tight text-text">{value}</p>
+      <p className="mt-1 text-[11px] leading-relaxed text-text-muted">{detail}</p>
+    </div>
+  );
+}
+
 export default function AnalyticsIntelligencePage() {
-  const [selectedFlag, setSelectedFlag] = useState<string>("checkout_experience");
+  const [selectedFlag, setSelectedFlag] = useState("checkout_experience");
   const [results, setResults] = useState<FlagsmithExperimentResults | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
 
-  // AI Analytics State
-  const [isGeneratingAI, setIsGeneratingAI] = useState<boolean>(false);
-  const [aiReport, setAiReport] = useState<{
-    executiveSummary: string;
-    bestPerformingVariant: string;
-    expectedLift: string;
-    strengthOfEvidence: string;
-    potentialRisks: string[];
-    importantObservations: string[];
-    recommendedNextAction: string;
-    decisionState: "Running" | "Collecting data" | "Insufficient evidence" | "Promising result" | "Winner identified" | "Completed";
-  }>({
-    executiveSummary:
-      "Variant A (Single-page checkout) demonstrates positive directional uplift (+20.2% relative lift, Bayesian win probability 93.3%). However, with a two-tailed p-value of 0.134, the test has not yet reached the α = 0.05 significance threshold. All operational guardrails remain healthy with payment failure rate at 1.10%.",
-    bestPerformingVariant: "Single-page checkout (Variant A)",
-    expectedLift: "+20.2% relative lift (from 4.08% to 4.91% CR)",
-    strengthOfEvidence: "Directional evidence (5,650 pairwise exposures, Bayes win prob = 93.3%, 95% CI [-0.25%, +1.91%], p = 0.134). Underpowered for definitive winner call.",
-    potentialRisks: [
-      "Mobile Safari layout must maintain single-page ergonomics on screens smaller than 375px.",
-      "Inline address validation should not cause premature input blocking.",
-    ],
-    importantObservations: [
-      "Variant A (Single-page checkout) experienced positive directional uplift (+20.2% relative lift).",
-      "Variant B (Express payment option) demonstrated +13.5% lift with 84.6% Bayesian win probability.",
-      "The guardrail metric 'payment_failed' stayed at 1.10%, well below the 1.50% safety boundary.",
-    ],
-    recommendedNextAction:
-      "Continue collecting traffic until sample size reaches ~7,000 exposures per variant to achieve p < 0.05 statistical significance before authorizing a full rollout.",
-    decisionState: "Collecting data",
-  });
-
-  // Report Modal / Print View State
-  const [reportModalOpen, setReportModalOpen] = useState<boolean>(false);
-
-  // Fetch Flagsmith Experiment Results
-  const fetchResults = async () => {
+  const fetchResults = useCallback(async () => {
     setIsRefreshing(true);
+    setLoadError(null);
+    setAiSummary(null);
+    setAiError(null);
     try {
-      const res = await fetch(`/api/flagsmith/experiment?flag=${selectedFlag}`);
-      if (res.ok) {
-        const data = await res.json();
-        setResults(data);
+      const response = await fetch(
+        `/api/flagsmith/experiment?flag=${encodeURIComponent(selectedFlag)}`,
+        { cache: "no-store" }
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          payload.message ||
+          payload.error ||
+          `Scorecard request failed with HTTP ${response.status}.`
+        );
       }
-    } catch (err) {
-      console.error("Error fetching analytics:", err);
+      if (!Array.isArray(payload.variations) || !payload.summary) {
+        throw new Error("The API response did not contain a valid persisted experiment scorecard.");
+      }
+      setResults(payload as FlagsmithExperimentResults);
+    } catch (error: any) {
+      setResults(null);
+      setLoadError(error?.message || "Persistent experiment telemetry is unavailable.");
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  };
-
-  useEffect(() => {
-    fetchResults();
   }, [selectedFlag]);
 
-  // Run AI Agent Analysis
-  const handleRunAIAnalysis = async () => {
+  useEffect(() => {
+    void fetchResults();
+  }, [fetchResults]);
+
+  const control = useMemo(
+    () => results?.variations.find((variant) => variant.isControl) ?? null,
+    [results]
+  );
+  const treatments = useMemo(
+    () => results?.variations.filter((variant) => !variant.isControl) ?? [],
+    [results]
+  );
+  const leadingTreatment = useMemo<ExperimentVariationResult | null>(() => {
+    if (!treatments.length) return null;
+    const leadingKey = results?.summary.leadingVariationKey;
+    return treatments.find((variant) => variant.variantKey === leadingKey)
+      || [...treatments].sort((a, b) => (b.chanceToWin ?? 0) - (a.chanceToWin ?? 0))[0];
+  }, [results, treatments]);
+
+  const totalExposures = results?.summary.totalExposures ?? 0;
+  const totalConversions = results?.summary.totalConversions ?? 0;
+  const aggregateConversionRate = totalExposures > 0 ? totalConversions / totalExposures : null;
+  const sampleTarget = results?.sampleSizeTarget ?? null;
+  const sampleSizeMet = sampleTarget !== null && totalExposures >= sampleTarget;
+  const significant = leadingTreatment?.pValue !== undefined && leadingTreatment.pValue < 0.05;
+  const bayesianReady = leadingTreatment?.chanceToWin !== undefined && leadingTreatment.chanceToWin >= 0.95;
+  const srmKnown = leadingTreatment?.sampleRatioPValue !== undefined;
+  const srmClear = srmKnown && (leadingTreatment?.sampleRatioPValue ?? 0) > 0.01;
+  const positiveLift = (leadingTreatment?.expectedLiftPercent ?? 0) > 0;
+  const statisticalEvidenceReady = Boolean(sampleSizeMet && significant && bayesianReady && srmClear && positiveLift);
+  const operationalGuardrailsVerified = false; // The scorecard API does not include measured guardrail values and thresholds.
+  const releaseReady = Boolean(statisticalEvidenceReady && operationalGuardrailsVerified);
+  const conversionChartData = (results?.variations ?? []).map((variant) => ({
+    name: variant.variantName.length > 22 ? `${variant.variantName.slice(0, 19)}…` : variant.variantName,
+    rate: Number((variant.conversionRate * 100).toFixed(3)),
+    control: variant.isControl,
+  }));
+
+  const runAIAnalysis = async () => {
+    if (!results) return;
     setIsGeneratingAI(true);
+    setAiSummary(null);
+    setAiError(null);
     try {
-      const res = await fetch("/api/agent/orchestrate", {
+      const response = await fetch("/api/agent/orchestrate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: "Analyse my checkout experiment and explain why variant B is performing better.",
-          context: {
-            experiment: results,
-          },
+          prompt: "Analyze this persisted experiment scorecard. Explain the observed effects, statistical uncertainty, sample adequacy and what evidence is still missing before release. Do not invent metric values or claim operational guardrails passed unless they are present in the data.",
+          context: { experiment: results },
         }),
       });
-      const data = await res.json();
-      if (data.status === "SUCCESS") {
-        setAiReport((prev) => ({
-          ...prev,
-          executiveSummary:
-            data.data?.executive_summary || prev.executiveSummary,
-          decisionState: results?.summary?.statisticalCertaintyReached
-            ? "Winner identified"
-            : "Collecting data",
-        }));
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.status !== "SUCCESS") {
+        throw new Error(payload.message || payload.error || `Analytics agent failed with HTTP ${response.status}.`);
       }
-    } catch (err) {
-      console.error("AI Analysis error:", err);
+      setAiSummary(
+        payload.data?.executive_summary ||
+        payload.data?.executiveSummary ||
+        "The analytics agent completed, but did not return an executive summary."
+      );
+    } catch (error: any) {
+      setAiError(error?.message || "AI analysis is unavailable.");
     } finally {
       setIsGeneratingAI(false);
     }
   };
 
-  // Helper calculation
-  const totalExposures = results?.summary.totalExposures || 8475;
-  const totalConversions = results?.summary.totalConversions || 385;
-  const aggregateCR = (totalConversions / Math.max(1, totalExposures)) * 100;
-
-  // Chart: Exposure Distribution Data
-  const exposureDistributionData = results?.variations.map((v) => ({
-    name: v.variantName.split(" ")[0] + "...",
-    fullName: v.variantName,
-    exposures: v.exposures,
-    isControl: v.isControl,
-  })) || [];
-
-  // Chart: Variant Comparison Data
-  const variantComparisonData = results?.variations.map((v) => ({
-    name: v.variantName.length > 20 ? v.variantName.slice(0, 18) + "..." : v.variantName,
-    conversionRate: Number((v.conversionRate * 100).toFixed(2)),
-    lift: v.expectedLiftPercent || 0,
-    isControl: v.isControl,
-  })) || [];
-
-  // Deterministic Statistical Calculations (Task 4: Zero-Hallucination Ground Truth)
-  const controlVariant = results?.variations.find((v) => v.isControl) || {
-    variantKey: "control",
-    variantName: "Original multi-step checkout",
-    isControl: true,
-    exposures: 2840,
-    conversions: 116,
-    conversionRate: 0.0408,
-  };
-
-  const leadingTreatment = results?.variations.find((v) => !v.isControl) || {
-    variantKey: "variant_single_page",
-    variantName: "Single-page checkout",
-    isControl: false,
-    exposures: 2810,
-    conversions: 138,
-    conversionRate: 0.0491,
-  };
-
-  const stats = compareVariants(
-    {
-      key: controlVariant.variantKey,
-      name: controlVariant.variantName,
-      isControl: true,
-      exposures: controlVariant.exposures,
-      conversions: controlVariant.conversions,
-    },
-    {
-      key: leadingTreatment.variantKey,
-      name: leadingTreatment.variantName,
-      isControl: false,
-      exposures: leadingTreatment.exposures,
-      conversions: leadingTreatment.conversions,
-    }
-  );
+  const certaintyTone = releaseReady
+    ? "success"
+    : statisticalEvidenceReady
+      ? "warning"
+      : "warning";
 
   return (
     <div className="space-y-8 animate-in fade-in duration-150 pb-16">
-      {/* Page Header */}
       <PageHeader
-        title="Analytics & Experiment Intelligence"
-        description="Convert raw Flagsmith experiment results into verifiable business intelligence. Real-time Bayesian scorecards, lift confidence, and automated AI analysis."
+        title="Experiment Analytics & Intelligence"
+        description="A deterministic scorecard built from authenticated, persisted, non-synthetic Flagsmith experiment telemetry. No seeded demo totals are substituted for missing evidence."
         badge={
-          <StatusBadge
-            status={aiReport.decisionState === "Winner identified" ? "completed" : "active"}
-            label={`STATUS: ${aiReport.decisionState.toUpperCase()}`}
-          />
+          <Chip tone={results ? "success" : "warning"}>
+            {results ? "PERSISTED SCORECARD" : "WAITING FOR PERSISTED DATA"}
+          </Chip>
         }
         actions={
           <div className="flex items-center gap-2">
             <button
-              onClick={fetchResults}
-              disabled={isRefreshing}
-              className="px-3 py-1.5 rounded bg-surface border border-border hover:bg-surface-subtle text-xs font-semibold text-text flex items-center gap-1.5 shadow-xs transition-colors"
+              onClick={() => window.print()}
+              disabled={!results}
+              className="px-3 py-1.5 rounded-md border border-border bg-surface text-xs font-semibold text-text-secondary hover:bg-surface-subtle disabled:opacity-40"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-primary" : "text-text-secondary"}`} />
-              Refresh Results
+              <span className="inline-flex items-center gap-1.5"><Download className="w-3.5 h-3.5" /> Print report</span>
             </button>
             <button
-              onClick={() => setReportModalOpen(true)}
-              className="px-3.5 py-1.5 rounded bg-primary hover:bg-primary-dark text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
+              onClick={() => void fetchResults()}
+              disabled={isRefreshing}
+              className="px-3 py-1.5 rounded-md border border-border bg-surface text-xs font-semibold text-text hover:bg-surface-subtle disabled:opacity-40"
             >
-              <FileText className="w-3.5 h-3.5" /> Generate Report / Export PDF
+              <span className="inline-flex items-center gap-1.5"><RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} /> Refresh</span>
             </button>
           </div>
         }
       />
 
-      {/* ===================================================================== */}
-      {/* SECTION 1: PERFORMANCE OVERVIEW (TOP KPI CARDS)                       */}
-      {/* ===================================================================== */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xs font-bold text-text uppercase tracking-wider">
-              Flagsmith Experiment Performance Overview
-            </h2>
-            <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-surface-muted text-text-secondary border border-border">
-              {results?.name || "Checkout Conversion Optimization"}
-            </span>
-          </div>
-          <span className="text-xs text-text-secondary font-mono">
-            Feature Flag: <strong className="text-primary">{selectedFlag}</strong>
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3.5">
-          <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
-            <span className="text-xs font-medium text-text-secondary">Total Exposures</span>
-            <div className="text-2xl font-bold text-text mt-1">
-              {totalExposures.toLocaleString()}
-            </div>
-            <span className="text-[11px] text-text-muted mt-1 block">Across 3 variations</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
-            <span className="text-xs font-medium text-text-secondary">Total Conversions</span>
-            <div className="text-2xl font-bold text-success mt-1">
-              {totalConversions.toLocaleString()}
-            </div>
-            <span className="text-[11px] text-text-muted mt-1 block font-mono">checkout_completed</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
-            <span className="text-xs font-medium text-text-secondary">Aggregate CR</span>
-            <div className="text-2xl font-bold text-text mt-1 font-mono">
-              {aggregateCR.toFixed(2)}%
-            </div>
-            <span className="text-[11px] text-success mt-1 block font-medium">+0.48% vs baseline</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
-            <span className="text-xs font-medium text-text-secondary">Expected Max Lift</span>
-            <div className="text-2xl font-bold text-success mt-1 font-mono">
-              +{stats.relativeUpliftPercent.toFixed(1)}%
-            </div>
-            <span className="text-[11px] text-text-muted mt-1 block">Treatment vs Control</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
-            <span className="text-xs font-medium text-text-secondary">Chance to Win</span>
-            <div className="text-2xl font-bold text-primary mt-1 font-mono">
-              {(stats.bayesianProbabilityToBeatControl * 100).toFixed(1)}%
-            </div>
-            <span className="text-[11px] text-text-muted mt-1 block">Bayesian certainty</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
-            <span className="text-xs font-medium text-text-secondary">Experiment Decision</span>
-            <div className="mt-1.5">
-              <StatusBadge
-                status={stats.isSignificant ? "completed" : "active"}
-                label={stats.isSignificant ? "WINNER IDENTIFIED" : "COLLECTING DATA"}
-              />
-            </div>
-            <span className="text-[11px] text-text-muted mt-1.5 block">
-              {stats.isSignificant ? "Statistical significance met" : "p > 0.05 (Underpowered)"}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* ===================================================================== */}
-      {/* TASK 4: DETERMINISTIC STATISTICAL EVIDENCE SCORECARD (ZERO-HALLUCINATION) */}
-      {/* ===================================================================== */}
-      <div className="rounded-lg border border-border bg-surface shadow-xs p-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-text flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                Deterministic Statistical Evidence Scorecard
-              </h3>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-100 text-violet-800 border border-violet-200">
-                Track 02 Mathematical Integrity
-              </span>
-            </div>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Strictly computed via pure TypeScript math engine (<code className="font-mono text-primary">stats.ts</code>). LLMs are never permitted to compute or guess p-values.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="px-2.5 py-1 rounded text-[11px] font-mono font-semibold bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
-              <Info className="w-3.5 h-3.5 text-amber-600" /> Interactive Demo Telemetry
-            </span>
-            <StatusBadge
-              status={stats.isSignificant ? "completed" : "active"}
-              label={stats.isSignificant ? "p < 0.05 SIGNIFICANT" : "COLLECTING DATA"}
-            />
-          </div>
-        </div>
-
-        {/* 11-Metric Comprehensive Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">Unique Exposures (Sample Sizes)</span>
-            <p className="font-mono font-bold text-text text-sm">
-              {stats.controlKey}: {controlVariant.exposures.toLocaleString()} vs {stats.treatmentKey}: {leadingTreatment.exposures.toLocaleString()}
-            </p>
-            <span className="text-[10px] text-text-muted">Total: {totalExposures.toLocaleString()} verified users</span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">Conversion Counts</span>
-            <p className="font-mono font-bold text-text text-sm">
-              {controlVariant.conversions.toLocaleString()} vs {leadingTreatment.conversions.toLocaleString()}
-            </p>
-            <span className="text-[10px] text-text-muted">Primary metric: checkout_completed</span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">Conversion Rates (CR)</span>
-            <p className="font-mono font-bold text-text text-sm">
-              {(stats.controlRate * 100).toFixed(2)}% &rarr; {(stats.treatmentRate * 100).toFixed(2)}%
-            </p>
-            <span className="text-[10px] text-emerald-700 font-semibold">Treatment leads</span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">Absolute & Relative Uplift</span>
-            <p className="font-mono font-bold text-emerald-700 text-sm">
-              +{(stats.absoluteDifference * 100).toFixed(2)}% abs (+{stats.relativeUpliftPercent.toFixed(1)}% rel)
-            </p>
-            <span className="text-[10px] text-text-muted">Relative to Control baseline</span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">95% Confidence Interval</span>
-            <p className="font-mono font-bold text-text text-sm">
-              [{(stats.confidenceInterval95[0] * 100).toFixed(2)}%, +{(stats.confidenceInterval95[1] * 100).toFixed(2)}%]
-            </p>
-            <span
-              className={`text-[10px] font-semibold ${
-                stats.confidenceInterval95[0] > 0 ? "text-emerald-700" : "text-amber-700"
-              }`}
-            >
-              {stats.confidenceInterval95[0] > 0
-                ? "Lower bound strictly > 0"
-                : "Spans zero (Underpowered sample size)"}
-            </span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">Frequentist P-Value (Z-test)</span>
-            <p className="font-mono font-bold text-violet-700 text-sm">
-              p = {stats.pValue.toFixed(4)} (Z = {stats.zScore.toFixed(2)})
-            </p>
-            <span
-              className={`text-[10px] font-semibold ${
-                stats.isSignificant ? "text-emerald-700" : "text-amber-700"
-              }`}
-            >
-              {stats.isSignificant
-                ? "α = 0.05 threshold met (Significant)"
-                : `p = ${stats.pValue.toFixed(3)} > 0.05 (Collecting data)`}
-            </span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">Bayesian Win Probability</span>
-            <p className="font-mono font-bold text-primary text-sm">
-              {(stats.bayesianProbabilityToBeatControl * 100).toFixed(1)}%
-            </p>
-            <span className="text-[10px] text-text-muted">Beta-Binomial conjugate posterior</span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-surface-subtle border border-border space-y-0.5">
-            <span className="text-[11px] text-text-secondary font-medium">Sample Ratio Mismatch (SRM)</span>
-            <p className="font-mono font-bold text-emerald-700 text-sm flex items-center gap-1">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> p = {stats.sampleRatioMismatch.pValue.toFixed(2)} (SRM Clear)
-            </p>
-            <span className="text-[10px] text-text-muted">Chi-Square test &bull; No traffic skew</span>
-          </div>
-        </div>
-
-        {/* Safety Guardrail Metric Status Banner */}
-        <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span className="text-slate-800">
-              <strong>Guardrail Metric (payment_failed):</strong> Current rate is <strong>1.10%</strong> vs configured safety ceiling of <strong>1.50%</strong>.
-            </span>
-          </div>
-          <span className="px-2 py-0.5 rounded font-mono font-bold bg-emerald-100 text-emerald-800 text-[10px]">
-            GUARDRAILS HEALTHY
-          </span>
-        </div>
-      </div>
-
-      {/* ===================================================================== */}
-      {/* SECTION 2: VARIANT COMPARISON SCORECARD                               */}
-      {/* ===================================================================== */}
-      <div className="rounded-lg border border-border bg-surface shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-border bg-surface-subtle flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-bold text-text flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-primary" /> Variant Performance Comparison Table
-            </h3>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Source of truth: Flagsmith managed warehouse Bayesian scorecards
-            </p>
-          </div>
-          <span className="text-xs text-text-secondary font-mono">
-            Split: 34% / 33% / 33% (100% Total)
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-border text-xs text-text-secondary uppercase tracking-wider bg-surface-subtle/50 font-medium">
-                <th className="py-3 px-4">Variant</th>
-                <th className="py-3 px-4">Traffic Allocation</th>
-                <th className="py-3 px-4">Exposures</th>
-                <th className="py-3 px-4">Conversions</th>
-                <th className="py-3 px-4">Conversion Rate</th>
-                <th className="py-3 px-4">Relative Lift</th>
-                <th className="py-3 px-4 text-right">Chance to Win (Bayes)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border text-xs">
-              {results?.variations.map((v) => (
-                <tr
-                  key={v.variantKey}
-                  className={`hover:bg-surface-subtle/60 transition-colors ${
-                    v.chanceToWin && v.chanceToWin >= 0.95 ? "bg-primary-light/10" : ""
-                  }`}
-                >
-                  <td className="py-3.5 px-4">
-                    <div className="flex items-center gap-2">
-                      {v.chanceToWin && v.chanceToWin >= 0.95 && (
-                        <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0" />
-                      )}
-                      <div>
-                        <span className="font-semibold text-text block">{v.variantName}</span>
-                        <span className="font-mono text-[10px] text-text-secondary">{v.variantKey}</span>
-                      </div>
-                    </div>
-                  </td>
-
-                  <td className="py-3.5 px-4 font-mono text-text">
-                    {v.isControl ? "34%" : "33%"}
-                  </td>
-
-                  <td className="py-3.5 px-4 font-mono text-text">
-                    {v.exposures.toLocaleString()}
-                  </td>
-
-                  <td className="py-3.5 px-4 font-mono text-text">
-                    {v.conversions.toLocaleString()}
-                  </td>
-
-                  <td className="py-3.5 px-4 font-mono font-bold text-text">
-                    {(v.conversionRate * 100).toFixed(2)}%
-                  </td>
-
-                  <td className="py-3.5 px-4 font-mono">
-                    {v.isControl ? (
-                      <span className="text-text-muted">Control Baseline</span>
-                    ) : v.expectedLiftPercent !== undefined ? (
-                      <span className="text-success font-bold">
-                        +{v.expectedLiftPercent}%
-                      </span>
-                    ) : (
-                      <span className="text-text-muted">--</span>
-                    )}
-                  </td>
-
-                  <td className="py-3.5 px-4 text-right font-mono">
-                    {v.isControl ? (
-                      <span className="text-text-muted">--</span>
-                    ) : v.chanceToWin !== undefined ? (
-                      <span
-                        className={`px-2 py-0.5 rounded font-bold ${
-                          v.chanceToWin >= 0.95
-                            ? "bg-success-light text-success border border-success/20"
-                            : "bg-surface-muted text-text-secondary"
-                        }`}
-                      >
-                        {(v.chanceToWin * 100).toFixed(1)}%
-                      </span>
-                    ) : (
-                      <span className="text-text-muted">Calculating...</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* ===================================================================== */}
-      {/* SECTION 3: PERFORMANCE CHARTS (5 INTERACTIVE CHARTS)                  */}
-      {/* ===================================================================== */}
-      <div className="space-y-6">
-        <div>
-          <h3 className="text-xs font-bold text-text uppercase tracking-wider mb-1">
-            Visual Experiment Telemetry & Trajectories
-          </h3>
-          <p className="text-xs text-text-secondary">
-            Charts generated directly from Flagsmith warehouse event records
-          </p>
-        </div>
-
-        {/* Top Row: Conversion Trend Chart & Variant Rate Comparison */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Chart 1: Conversion Rate Trend Over Time */}
-          <div className="p-5 rounded-lg border border-border bg-surface shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-semibold text-text">Conversion Rate Trajectory</h4>
-                <p className="text-[11px] text-text-secondary">Daily performance comparison across variations</p>
-              </div>
-              <div className="flex items-center gap-3 text-[11px] font-mono">
-                <span className="text-text-secondary">● Control (4.08%)</span>
-                <span className="text-primary font-bold">● Variant A (4.91%)</span>
-              </div>
-            </div>
-
-            <div className="h-[240px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={dailyTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E8EAF0" vertical={false} />
-                  <XAxis dataKey="day" stroke="#777D8D" fontSize={11} tickLine={false} />
-                  <YAxis stroke="#777D8D" fontSize={11} tickLine={false} tickFormatter={(val) => `${val}%`} domain={[3.8, 5.2]} />
-                  <Tooltip
-                    content={({ active, payload, label }) => {
-                      if (active && payload && payload.length) {
-                        return (
-                          <div className="p-2.5 bg-surface border border-border rounded shadow-md text-xs space-y-1">
-                            <span className="font-bold text-text">{label}</span>
-                            <div className="text-text-secondary flex justify-between gap-4">
-                              <span>Control:</span>
-                              <span className="font-mono">{payload[0]?.value}%</span>
-                            </div>
-                            <div className="text-primary font-bold flex justify-between gap-4">
-                              <span>Variant A:</span>
-                              <span className="font-mono">{payload[1]?.value}%</span>
-                            </div>
-                            <div className="text-success flex justify-between gap-4">
-                              <span>Variant B:</span>
-                              <span className="font-mono">{payload[2]?.value}%</span>
-                            </div>
-                          </div>
-                        );
-                      }
-                      return null;
-                    }}
-                  />
-                  <Line type="monotone" dataKey="controlCR" name="Control" stroke="#777D8D" strokeWidth={2} strokeDasharray="3 3" dot={false} />
-                  <Line type="monotone" dataKey="variantSinglePageCR" name="Variant A" stroke="#7565F5" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                  <Line type="monotone" dataKey="variantExpressCR" name="Variant B" stroke="#16A36A" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Chart 2: Variant Conversion Rate & Lift Comparison */}
-          <div className="p-5 rounded-lg border border-border bg-surface shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-semibold text-text">Conversion Rate by Variation</h4>
-                <p className="text-[11px] text-text-secondary">Final evaluated conversion rate percentage</p>
-              </div>
-              <span className="text-xs font-mono text-success font-semibold">+20.3% Max Lift</span>
-            </div>
-
-            <div className="h-[240px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={variantComparisonData} layout="vertical" margin={{ top: 10, right: 20, left: 20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E8EAF0" horizontal={false} />
-                  <XAxis type="number" stroke="#777D8D" fontSize={11} tickFormatter={(val) => `${val}%`} domain={[0, 6]} />
-                  <YAxis type="category" dataKey="name" stroke="#777D8D" fontSize={11} tickLine={false} width={100} />
-                  <Tooltip
-                    formatter={(value: any) => [`${value}% Conversion Rate`, "Performance"]}
-                  />
-                  <Bar dataKey="conversionRate" fill="#7565F5" radius={[0, 4, 4, 0]}>
-                    {variantComparisonData.map((entry, index) => (
-                      <Cell
-                        key={`cell-${index}`}
-                        fill={entry.isControl ? "#777D8D" : index === 1 ? "#7565F5" : "#16A36A"}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom Row: Exposure Distribution & Guardrail Metric Trends */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Chart 3: Exposure Distribution */}
-          <div className="p-5 rounded-lg border border-border bg-surface shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-semibold text-text">Exposure Distribution (Traffic Allocation)</h4>
-                <p className="text-[11px] text-text-secondary">Total unique visitors exposed per variation</p>
-              </div>
-              <span className="text-xs font-mono text-text font-semibold">8,475 Total</span>
-            </div>
-
-            <div className="h-[200px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={exposureDistributionData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E8EAF0" vertical={false} />
-                  <XAxis dataKey="name" stroke="#777D8D" fontSize={11} tickLine={false} />
-                  <YAxis stroke="#777D8D" fontSize={11} tickLine={false} />
-                  <Tooltip formatter={(value: any) => [Number(value).toLocaleString(), "Visitors"]} />
-                  <Bar dataKey="exposures" fill="#F0EDFF" radius={[4, 4, 0, 0]}>
-                    {exposureDistributionData.map((entry, index) => (
-                      <Cell key={`bar-${index}`} fill={index === 1 ? "#7565F5" : "#E8EAF0"} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Chart 4: Guardrail Metric Trend (Payment Failure Rate) */}
-          <div className="p-5 rounded-lg border border-border bg-surface shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-semibold text-text flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-success" /> Guardrail Stability: Payment Failures
-                </h4>
-                <p className="text-[11px] text-text-secondary">Monitored to prevent checkout gateway regressions</p>
-              </div>
-              <span className="text-xs font-mono text-success font-semibold">1.10% (Safe &lt; 2.0%)</span>
-            </div>
-
-            <div className="h-[200px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={dailyTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E8EAF0" vertical={false} />
-                  <XAxis dataKey="day" stroke="#777D8D" fontSize={11} tickLine={false} />
-                  <YAxis stroke="#777D8D" fontSize={11} tickLine={false} tickFormatter={(val) => `${val}%`} domain={[0.5, 2.5]} />
-                  <Tooltip formatter={(value: any) => [`${value}%`, "Failure Rate"]} />
-                  <Line type="monotone" dataKey="paymentFailureRate" name="Failure Rate" stroke="#16A36A" strokeWidth={2} dot={{ r: 2 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ===================================================================== */}
-      {/* SECTION 4 & 5: AI ANALYSIS & EXPERIMENT DECISION                      */}
-      {/* ===================================================================== */}
-      <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border">
-          <div>
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <h3 className="text-base font-bold text-text">AI Analytics Agent Strategic Assessment</h3>
-            </div>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Synthesis generated by the Analytics Agent from actual Flagsmith Bayesian metrics
-            </p>
-          </div>
-
-          <button
-            onClick={handleRunAIAnalysis}
-            disabled={isGeneratingAI}
-            className="px-3.5 py-1.5 rounded bg-surface border border-border hover:bg-surface-subtle text-xs font-semibold text-text flex items-center gap-1.5 shadow-xs transition-colors self-start sm:self-auto"
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 rounded-lg border border-border bg-surface p-4">
+        <div className="space-y-1">
+          <label htmlFor="experiment-select" className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+            Workspace experiment
+          </label>
+          <select
+            id="experiment-select"
+            value={selectedFlag}
+            onChange={(event) => setSelectedFlag(event.target.value)}
+            className="min-w-64 rounded-md border border-border bg-surface px-3 py-2 text-sm text-text"
           >
-            {isGeneratingAI ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" /> Synthesizing with Gemini...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-3.5 h-3.5 text-primary" /> Re-Analyze with Agent
-              </>
-            )}
-          </button>
+            {EXPERIMENT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label} ({option.value})</option>
+            ))}
+          </select>
         </div>
+        <p className="text-[11px] text-text-muted">
+          {results ? `Last refreshed ${new Date(results.lastRefreshedAt).toLocaleString()}` : "No verified scorecard is currently loaded"}
+        </p>
+      </div>
 
-        {/* Section 5: Decision State Callout Banner */}
-        <div className="p-4 rounded-lg bg-success-light/30 border border-success/30 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-3">
-            <CheckCircle2 className="w-5 h-5 text-success flex-shrink-0" />
+      {isLoading && (
+        <div className="rounded-lg border border-border bg-surface p-6 text-sm text-text-secondary">
+          Loading persisted exposure and conversion events…
+        </div>
+      )}
+
+      {!isLoading && loadError && (
+        <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-5 text-amber-950 space-y-2">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="h-4 w-4" /> Persisted experiment scorecard unavailable
+          </div>
+          <p className="text-sm leading-relaxed">{loadError}</p>
+          <p className="text-xs leading-relaxed">
+            No seeded exposure totals, conversion rates or guardrail values are being shown as live results. Configure the workspace database and record real Flagsmith-assigned exposures before evaluating this experiment.
+          </p>
+          <button onClick={() => void fetchResults()} className="text-xs font-semibold underline">Retry scorecard</button>
+        </div>
+      )}
+
+      {results && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <span className="font-bold text-text text-sm">
-                Experiment Decision: {aiReport.decisionState.toUpperCase()}
-              </span>
-              <p className="text-text-secondary mt-0.5">
-                Flagsmith Bayesian win probability is 98.2% and sample size target has been exceeded. Evidence is definitive.
+              <h2 className="text-base font-bold text-text">{results.name}</h2>
+              <p className="text-xs text-text-secondary mt-0.5">
+                Flag: <span className="font-mono">{results.featureFlagName}</span> · Primary metric: {results.primaryMetric.name}
               </p>
             </div>
-          </div>
-          <Link
-            href="/release-center"
-            className="px-3 py-1.5 rounded bg-success text-white font-semibold hover:bg-success-text transition-colors flex items-center gap-1"
-          >
-            Go to Rollout Queue <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
-        </div>
-
-        {/* 7 Core Elements of AI Analysis */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-2">
-            <span className="font-bold text-text block text-xs">1. Executive Summary</span>
-            <p className="text-text-secondary leading-relaxed">{aiReport.executiveSummary}</p>
+            <Chip tone={releaseReady ? "success" : certaintyTone}>
+              {releaseReady ? "RELEASE EVIDENCE COMPLETE" : statisticalEvidenceReady ? "STATISTICAL EVIDENCE ONLY" : "EVIDENCE INCOMPLETE"}
+            </Chip>
           </div>
 
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-2">
-            <span className="font-bold text-text block text-xs">2. Best-Performing Variant & Expected Lift</span>
-            <p className="text-text font-semibold text-sm text-primary">{aiReport.bestPerformingVariant}</p>
-            <p className="text-text-secondary font-mono">{aiReport.expectedLift}</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+            <MetricCard
+              label="Persisted exposures"
+              value={totalExposures.toLocaleString()}
+              detail={sampleTarget === null ? "Sample-size target not configured in this scorecard" : `Sample target: ${sampleTarget.toLocaleString()}`}
+              icon={<Users className="h-4 w-4" />}
+            />
+            <MetricCard
+              label="Unique conversions"
+              value={totalConversions.toLocaleString()}
+              detail={results.primaryMetric.key}
+              icon={<CheckCircle2 className="h-4 w-4" />}
+            />
+            <MetricCard
+              label="Observed conversion rate"
+              value={aggregateConversionRate === null ? "—" : percent(aggregateConversionRate)}
+              detail="Unique converted experiment identities / exposed identities"
+              icon={<Activity className="h-4 w-4" />}
+            />
+            <MetricCard
+              label="Sample target progress"
+              value={sampleTarget === null ? "—" : percent(Math.min(1, totalExposures / Math.max(1, sampleTarget)))}
+              detail={sampleTarget === null ? "No target supplied" : `${Math.min(totalExposures, sampleTarget).toLocaleString()} / ${sampleTarget.toLocaleString()} exposures`}
+              icon={<BarChart3 className="h-4 w-4" />}
+            />
           </div>
 
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-2">
-            <span className="font-bold text-text block text-xs">3. Strength of Evidence</span>
-            <p className="text-text-secondary leading-relaxed">{aiReport.strengthOfEvidence}</p>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-2">
-            <span className="font-bold text-text block text-xs">4. Recommended Next Action</span>
-            <p className="text-text font-semibold leading-relaxed text-success">
-              {aiReport.recommendedNextAction}
-            </p>
-          </div>
-        </div>
-
-        {/* Important Observations & Potential Risks */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs pt-1">
-          <div className="p-4 rounded-lg bg-surface border border-border space-y-2">
-            <span className="font-bold text-text flex items-center gap-1.5">
-              <Info className="w-4 h-4 text-primary" /> Important Observations
-            </span>
-            <ul className="space-y-1.5 text-text-secondary">
-              {aiReport.importantObservations.map((obs, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="text-primary">•</span> {obs}
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface border border-border space-y-2">
-            <span className="font-bold text-text flex items-center gap-1.5">
-              <AlertTriangle className="w-4 h-4 text-warning" /> Potential Risks & Mitigations
-            </span>
-            <ul className="space-y-1.5 text-text-secondary">
-              {aiReport.potentialRisks.map((risk, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="text-warning">•</span> {risk}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </div>
-
-      {/* ===================================================================== */}
-      {/* SECTION 6: REPORT GENERATION & PRINTABLE PDF EXPORT MODAL             */}
-      {/* ===================================================================== */}
-      {reportModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-text/40 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-xl bg-surface border border-border shadow-xl p-8 space-y-6 print:p-0 print:border-0 print:shadow-none"
-            id="printable-report"
-          >
-            {/* Header with Print / Close Actions */}
-            <div className="flex items-center justify-between pb-4 border-b border-border print:hidden">
-              <div className="flex items-center gap-2">
-                <FileText className="w-5 h-5 text-primary" />
-                <h3 className="text-base font-bold text-text">
-                  Executive Experiment Intelligence Report
-                </h3>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+            <section className="rounded-lg border border-border bg-surface p-5 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-bold text-text">Variant conversion comparison</h3>
+                <Chip>Observed data</Chip>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="px-4 py-2 bg-primary hover:bg-primary-dark text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-1.5 transition-colors"
-                >
-                  <Printer className="w-4 h-4" /> Export as PDF / Print
-                </button>
-                <button
-                  onClick={() => setReportModalOpen(false)}
-                  className="px-3 py-2 border border-border rounded-md text-xs font-semibold text-text-secondary hover:text-text transition-colors"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-
-            {/* Formal Executive Document Layout */}
-            <div className="space-y-6 text-text">
-              <div className="border-b border-border pb-4">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <span className="text-xs uppercase font-mono font-bold text-primary">
-                      PulsePilot AI Executive Brief
-                    </span>
-                    <h1 className="text-2xl font-bold mt-1">
-                      Checkout Conversion Optimization
-                    </h1>
-                    <span className="text-xs text-text-secondary">
-                      Flagsmith Feature: <code className="font-mono text-text font-bold">checkout_experience</code>
-                    </span>
-                  </div>
-                  <div className="text-right text-xs text-text-secondary">
-                    <span>Generated: {new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</span>
-                    <span className="block font-mono text-[11px] text-success font-semibold">
-                      Status: Winner Identified
-                    </span>
-                  </div>
+              {conversionChartData.length > 0 ? (
+                <div className="h-64 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={conversionChartData} layout="vertical" margin={{ top: 8, right: 14, left: 12, bottom: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                      <XAxis type="number" tickFormatter={(value) => `${value}%`} />
+                      <YAxis type="category" dataKey="name" width={120} />
+                      <Tooltip formatter={(value: number) => [`${value}%`, "Conversion rate"]} />
+                      <Bar dataKey="rate" radius={[0, 4, 4, 0]}>
+                        {conversionChartData.map((entry, index) => (
+                          <Cell key={`variant-${index}`} fill={entry.control ? "#777D8D" : "#7565F5"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
-              </div>
-
-              {/* Document Section: Objective & Hypothesis */}
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div className="p-3.5 rounded bg-surface-subtle border border-border">
-                  <strong className="block text-text mb-1 uppercase tracking-wider text-[10px]">
-                    1. Business Objective
-                  </strong>
-                  <p className="text-text-secondary">
-                    Reduce checkout friction and increase subscription completion across web and mobile visitors.
-                  </p>
-                </div>
-                <div className="p-3.5 rounded bg-surface-subtle border border-border">
-                  <strong className="block text-text mb-1 uppercase tracking-wider text-[10px]">
-                    2. Hypothesis Statement
-                  </strong>
-                  <p className="text-text-secondary">
-                    Replacing the multi-step checkout with a single-page layout will eliminate navigation hurdles and lift conversion by at least +12%.
-                  </p>
-                </div>
-              </div>
-
-              {/* Document Section: Results Summary Table */}
-              <div>
-                <h4 className="text-xs font-bold uppercase tracking-wider mb-2">
-                  3. Evaluated Performance Scorecard
-                </h4>
-                <table className="w-full text-left text-xs border border-border rounded overflow-hidden">
-                  <thead className="bg-surface-subtle text-text-secondary uppercase">
+              ) : (
+                <p className="text-sm text-text-muted">No variant exposure records are available.</p>
+              )}
+              <div className="overflow-x-auto border border-border rounded-md">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-surface-subtle text-text-secondary">
                     <tr>
                       <th className="p-2.5">Variant</th>
-                      <th className="p-2.5">Exposures</th>
-                      <th className="p-2.5">Conversions</th>
-                      <th className="p-2.5">Conversion Rate</th>
-                      <th className="p-2.5">Relative Lift</th>
-                      <th className="p-2.5 text-right">Chance to Win</th>
+                      <th className="p-2.5 text-right">Exposures</th>
+                      <th className="p-2.5 text-right">Conversions</th>
+                      <th className="p-2.5 text-right">Rate</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border">
-                    {results?.variations.map((v) => (
-                      <tr key={v.variantKey} className={v.chanceToWin && v.chanceToWin >= 0.95 ? "bg-primary-light/10 font-bold" : ""}>
-                        <td className="p-2.5">{v.variantName}</td>
-                        <td className="p-2.5 font-mono">{v.exposures.toLocaleString()}</td>
-                        <td className="p-2.5 font-mono">{v.conversions}</td>
-                        <td className="p-2.5 font-mono">{(v.conversionRate * 100).toFixed(2)}%</td>
-                        <td className="p-2.5 font-mono text-success">
-                          {v.isControl ? "Baseline" : `+${v.expectedLiftPercent}%`}
+                  <tbody>
+                    {results.variations.map((variant) => (
+                      <tr key={variant.variantKey} className="border-t border-border">
+                        <td className="p-2.5">
+                          <span className="font-medium text-text">{variant.variantName}</span>
+                          <span className="block text-[10px] text-text-muted">{variant.variantKey}{variant.isControl ? " · Control" : ""}</span>
                         </td>
-                        <td className="p-2.5 font-mono text-right text-primary">
-                          {v.isControl ? "--" : `${(Number(v.chanceToWin) * 100).toFixed(1)}%`}
-                        </td>
+                        <td className="p-2.5 text-right font-mono">{variant.exposures.toLocaleString()}</td>
+                        <td className="p-2.5 text-right font-mono">{variant.conversions.toLocaleString()}</td>
+                        <td className="p-2.5 text-right font-mono">{percent(variant.conversionRate)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+            </section>
 
-              {/* Document Section: AI Interpretation */}
-              <div className="p-4 rounded bg-surface-subtle border border-border space-y-2 text-xs">
-                <h4 className="font-bold text-text uppercase tracking-wider text-[10px]">
-                  4. AI Agent Interpretation & Methodology
-                </h4>
-                <p className="text-text-secondary leading-relaxed">
-                  {aiReport.executiveSummary}
-                </p>
-                <p className="text-text-secondary text-[11px] pt-1">
-                  <strong>Methodology:</strong> Evaluated using Flagsmith's native Bayesian statistics engine over a continuous 7-day period (8,475 total exposures). Credible intervals confirm that Variant A's performance advantage is statistically genuine.
-                </p>
+            <section className="rounded-lg border border-border bg-surface p-5 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-bold text-text">Deterministic statistical evidence</h3>
+                <Chip tone={statisticalEvidenceReady ? "success" : "warning"}>
+                  {statisticalEvidenceReady ? "Statistical gates met" : "Not yet conclusive"}
+                </Chip>
               </div>
 
-              {/* Document Section: Recommendations */}
-              <div className="p-4 rounded bg-success-light/20 border border-success/30 space-y-1 text-xs">
-                <h4 className="font-bold text-success uppercase tracking-wider text-[10px]">
-                  5. Final Recommendation
-                </h4>
-                <p className="text-text font-semibold">
-                  {aiReport.recommendedNextAction}
+              {control && leadingTreatment ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-md border border-border bg-surface-subtle p-3">
+                      <p className="text-[10px] uppercase font-semibold text-text-secondary">Leading treatment</p>
+                      <p className="mt-1 text-sm font-bold text-text">{leadingTreatment.variantName}</p>
+                      <p className="mt-1 font-mono text-lg font-bold text-primary">{signedPercent(leadingTreatment.expectedLiftPercent)}</p>
+                      <p className="text-[10px] text-text-muted">Relative uplift vs control</p>
+                    </div>
+                    <div className="rounded-md border border-border bg-surface-subtle p-3">
+                      <p className="text-[10px] uppercase font-semibold text-text-secondary">Bayesian win probability</p>
+                      <p className="mt-1 font-mono text-lg font-bold text-text">{percent(leadingTreatment.chanceToWin)}</p>
+                      <p className="text-[10px] text-text-muted">Required: 95%</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5 text-xs">
+                    <div className="flex justify-between gap-3 border-b border-border pb-2">
+                      <span className="text-text-secondary">Two-tailed Z-test p-value</span>
+                      <strong className="font-mono text-text">{pValue(leadingTreatment.pValue)}</strong>
+                    </div>
+                    <div className="flex justify-between gap-3 border-b border-border pb-2">
+                      <span className="text-text-secondary">95% confidence interval (absolute difference)</span>
+                      <strong className="font-mono text-text">
+                        {leadingTreatment.credibleInterval95
+                          ? `[${percent(leadingTreatment.credibleInterval95[0])}, ${percent(leadingTreatment.credibleInterval95[1])}]`
+                          : "Not calculated"}
+                      </strong>
+                    </div>
+                    <div className="flex justify-between gap-3 border-b border-border pb-2">
+                      <span className="text-text-secondary">Sample ratio mismatch p-value</span>
+                      <strong className="font-mono text-text">{pValue(leadingTreatment.sampleRatioPValue)}</strong>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-text-secondary">Configured traffic weight</span>
+                      <strong className="font-mono text-text">
+                        {leadingTreatment.configuredAllocationPercent === undefined
+                          ? "Not supplied"
+                          : `${leadingTreatment.configuredAllocationPercent}%`}
+                      </strong>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-text-muted">Both control and treatment exposure data are required for a statistical comparison.</p>
+              )}
+
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-950 space-y-1">
+                <div className="flex items-center gap-2 font-semibold text-xs">
+                  <AlertTriangle className="h-4 w-4" /> Operational guardrails not verified
+                </div>
+                <p className="text-xs leading-relaxed">
+                  This scorecard does not include measured payment-failure or application-error rates with configured safety thresholds. They must not be represented as healthy; the Release Guardian blocks rollout while this evidence is missing.
                 </p>
               </div>
-            </div>
+            </section>
           </div>
-        </div>
+
+          <section className="rounded-lg border border-border bg-surface p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-text flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4 text-primary" /> Release evidence assessment
+                </h3>
+                <p className="mt-1 text-xs text-text-secondary">
+                  Statistical evidence is necessary but not sufficient. Operational guardrails must also be verified.
+                </p>
+              </div>
+              <Chip tone={releaseReady ? "success" : "warning"}>{releaseReady ? "Eligible for human review" : "Rollout blocked"}</Chip>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 text-xs">
+              {[
+                { name: "Sample target", pass: sampleSizeMet, detail: sampleTarget === null ? "No target" : `${totalExposures}/${sampleTarget}` },
+                { name: "p-value", pass: significant, detail: pValue(leadingTreatment?.pValue) },
+                { name: "Bayesian", pass: bayesianReady, detail: percent(leadingTreatment?.chanceToWin) },
+                { name: "SRM", pass: srmClear, detail: pValue(leadingTreatment?.sampleRatioPValue) },
+                { name: "Guardrails", pass: operationalGuardrailsVerified, detail: "Not verified" },
+              ].map((item) => (
+                <div key={item.name} className="rounded-md border border-border p-3 space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    {item.pass
+                      ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      : <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />}
+                    <span className="font-semibold text-text">{item.name}</span>
+                  </div>
+                  <p className="font-mono text-[11px] text-text-muted">{item.detail}</p>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-text-secondary leading-relaxed">
+              {releaseReady
+                ? "The available scorecard meets statistical criteria. A workspace admin must still review and approve the release."
+                : "Continue collecting and validating evidence. Missing or unavailable telemetry is treated as a blocker, never as a healthy metric."}
+            </p>
+            <Link href="/release-center" className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary underline">
+              Open Release Guardian <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </section>
+
+          <section className="rounded-lg border border-border bg-surface p-5 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-text flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-primary" /> AI Analytics interpretation
+                </h3>
+                <p className="mt-1 text-xs text-text-secondary">Gemini may explain the observed evidence; all metric values above are computed by the deterministic engine.</p>
+              </div>
+              <button
+                onClick={() => void runAIAnalysis()}
+                disabled={isGeneratingAI}
+                className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-semibold text-text hover:bg-surface-subtle disabled:opacity-50"
+              >
+                {isGeneratingAI ? "Analyzing…" : "Analyze this scorecard"}
+              </button>
+            </div>
+            {aiSummary && <p className="rounded-md bg-surface-subtle p-3 text-sm leading-relaxed text-text">{aiSummary}</p>}
+            {aiError && <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">{aiError}</p>}
+            {!aiSummary && !aiError && <p className="text-xs text-text-muted">No AI interpretation has been generated for this scorecard yet.</p>}
+          </section>
+        </>
       )}
+
+      <div className="text-[11px] text-text-muted flex items-center gap-1.5">
+        <Clock3 className="h-3.5 w-3.5" />
+        {results ? `Persisted scorecard refreshed ${new Date(results.lastRefreshedAt).toLocaleString()}` : "No scorecard has been verified in this session"}
+      </div>
     </div>
   );
 }
