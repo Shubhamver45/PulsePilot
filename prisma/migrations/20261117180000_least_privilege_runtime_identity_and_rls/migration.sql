@@ -4,13 +4,10 @@
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 1. ROLE MEMBERSHIP & VERIFIED RUNTIME ROLE CONFIGURATION
+-- 1. RUNTIME ROLE DEFINITION & USAGE (pulsepilot_app)
 -- -----------------------------------------------------------------------------
--- Enable postgres to assume pulsepilot_app role safely
-GRANT pulsepilot_app TO postgres WITH SET TRUE, INHERIT TRUE;
-
--- Configure database session default: application connections automatically assume pulsepilot_app
-ALTER ROLE postgres IN DATABASE postgres SET role = pulsepilot_app;
+-- Note: Role provisioning and postgres membership are managed by cloud admin.
+-- Least-privilege runtime role switching is enforced via application transactions (SET LOCAL ROLE).
 
 -- -----------------------------------------------------------------------------
 -- 2. SCHEMA & TABLE PRIVILEGES FOR RUNTIME ROLE (pulsepilot_app)
