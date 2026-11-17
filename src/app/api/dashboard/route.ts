@@ -1,123 +1,101 @@
 import { NextResponse } from "next/server";
 import {
-  demoWorkspaceKPIs,
-  demoPerformanceData,
-  demoActiveExperiments,
-  demoAIRecommendations,
-  demoAgentActivities,
-  demoRecentActivities,
+  demoWorkspaceKPIs, demoPerformanceData, demoActiveExperiments,
+  demoAIRecommendations, demoAgentActivities, demoRecentActivities,
 } from "@/lib/db/repository";
-import { prisma } from "@/lib/db/prisma";
+import { getUserFromToken } from "@/lib/auth/auth-service";
+import { withTenantContext } from "@/lib/db/prisma";
+
+function getToken(request: Request): string | null {
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "");
+  const cookie = (request.headers.get("cookie") || "").split("; ").find((p) => p.startsWith("pulsepilot_session="))?.split("=")[1];
+  return bearer || cookie || null;
+}
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const range = searchParams.get("range") || "7D";
-
+    const range = new URL(request.url).searchParams.get("range") || "7D";
     const performance = demoPerformanceData[range] || demoPerformanceData["7D"];
+    const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock"));
 
-    let isDbConnected = false;
-    let realTelemetryCount = 0;
-    let realExposuresCount = 0;
-    let realConversionsCount = 0;
-    let realExperiments: any[] = [];
-    let realRecentActivities: any[] = [];
+    if (databaseConfigured) {
+      const token = getToken(request);
+      if (!token) return NextResponse.json({ success: false, error: "UNAUTHORIZED" }, { status: 401 });
+      const user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+      if (!user) return NextResponse.json({ success: false, error: "INVALID_SESSION" }, { status: 401 });
 
-    if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
-      try {
-        const [
-          totalEvents,
-          exposures,
-          conversions,
-          experiments,
-          auditLogs,
-        ] = await Promise.all([
-          prisma.telemetryEvent.count(),
-          prisma.telemetryEvent.count({ where: { eventType: "EXPOSURE" } }),
-          prisma.telemetryEvent.count({ where: { eventType: "CONVERSION" } }),
-          prisma.experiment.findMany({
-            include: { variants: true },
-            orderBy: { createdAt: "desc" },
-            take: 5,
-          }),
-          prisma.auditLog.findMany({
-            orderBy: { createdAt: "desc" },
-            take: 6,
-          }),
+      const data = await withTenantContext(user.organizationId, async (tx) => {
+        const [totalEvents, exposures, conversions, experiments, auditLogs] = await Promise.all([
+          tx.telemetryEvent.count(),
+          tx.telemetryEvent.count({ where: { eventType: "EXPOSURE" } }),
+          tx.telemetryEvent.count({ where: { eventType: "CONVERSION" } }),
+          tx.experiment.findMany({ include: { variants: true }, orderBy: { createdAt: "desc" }, take: 10 }),
+          tx.auditLog.findMany({ where: { organizationId: user.organizationId }, orderBy: { createdAt: "desc" }, take: 6 }),
         ]);
+        return { totalEvents, exposures, conversions, experiments, auditLogs };
+      });
 
-        isDbConnected = true;
-        realTelemetryCount = totalEvents;
-        realExposuresCount = exposures;
-        realConversionsCount = conversions;
-        realExperiments = experiments;
-
-        if (auditLogs.length > 0) {
-          realRecentActivities = auditLogs.map((log) => ({
-            id: log.id,
-            action: log.action.replace(/_/g, " "),
-            actor: log.actorName || "PulsePilot Operator",
-            details: log.details,
-            time: new Date(log.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            type: log.action.includes("ROLLOUT") || log.action.includes("KILL") ? "danger" : "info",
-          }));
-        }
-      } catch {
-        // Fall back gracefully to repository benchmarks
-      }
+      const conversionRate = data.exposures > 0 ? (data.conversions / data.exposures) * 100 : 0;
+      return NextResponse.json({
+        workspace: {
+          name: user.organizationName,
+          environment: process.env.VERCEL_ENV || "server",
+          isDemoData: false,
+          flagsmithConnected: Boolean(process.env.FLAGSMITH_SERVER_SIDE_API_KEY || process.env.FLAGSMITH_ENVIRONMENT_KEY),
+          projectId: process.env.FLAGSMITH_PROJECT_ID || null,
+          databaseConnected: true,
+          recordedTelemetryCount: data.totalEvents,
+          dataSource: "POSTGRESQL_TENANT_SCOPED",
+        },
+        kpis: {
+          totalVisitors: data.exposures.toLocaleString(),
+          conversionRate: conversionRate.toFixed(2) + "%",
+          activeExperiments: data.experiments.length,
+          avgLift: "—",
+          flagsEvaluated: data.totalEvents.toLocaleString(),
+          guardrailBreaches: null,
+        },
+        performance: { range, data: [] },
+        activeExperiments: data.experiments.map((exp) => ({
+          id: exp.id,
+          name: exp.title,
+          featureFlag: exp.flagsmithFeatureName,
+          status: exp.status,
+          variantsCount: exp.variants.length,
+          startDate: exp.createdAt.toISOString().slice(0, 10),
+        })),
+        aiRecommendations: [],
+        agentActivities: [],
+        recentActivities: data.auditLogs.map((log) => ({
+          id: log.id,
+          action: log.action.replace(/_/g, " "),
+          actor: log.actorName || "PulsePilot Operator",
+          details: log.details || "",
+          time: log.createdAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          type: log.action.includes("ROLLOUT") || log.action.includes("KILL") ? "danger" : "info",
+        })),
+      });
     }
 
-    const hasRealTelemetry = realTelemetryCount > 0;
-    const realCr = realExposuresCount > 0 ? (realConversionsCount / realExposuresCount) * 100 : 4.62;
-
-    const kpis = hasRealTelemetry
-      ? {
-          totalVisitors: realExposuresCount.toLocaleString(),
-          conversionRate: `${realCr.toFixed(2)}%`,
-          activeExperiments: Math.max(1, realExperiments.length),
-          avgLift: "+18.4%",
-          flagsEvaluated: (realExposuresCount * 2).toLocaleString(),
-          guardrailBreaches: 0,
-        }
-      : demoWorkspaceKPIs;
-
-    const activeExperiments = realExperiments.length > 0
-      ? realExperiments.map((exp) => ({
-          id: exp.id,
-          name: exp.name,
-          featureFlag: exp.flagsmithFeatureName || exp.featureName,
-          status: exp.status,
-          targetEnvironment: exp.targetEnvironment,
-          variantsCount: exp.variants.length,
-          startDate: exp.createdAt.toISOString().split("T")[0],
-        }))
-      : demoActiveExperiments;
-
+    // Explicit offline demo fixtures are used only when no database is configured.
     return NextResponse.json({
       workspace: {
-        name: "Acme Growth (Production)",
-        environment: "Development",
-        isDemoData: !hasRealTelemetry,
-        flagsmithConnected: true,
+        name: "PulsePilot Demo", environment: "Demo", isDemoData: true,
+        flagsmithConnected: Boolean(process.env.FLAGSMITH_SERVER_SIDE_API_KEY || process.env.FLAGSMITH_ENVIRONMENT_KEY),
         projectId: process.env.FLAGSMITH_PROJECT_ID || "53867",
-        databaseConnected: isDbConnected,
-        recordedTelemetryCount: realTelemetryCount,
-        dataSource: hasRealTelemetry ? "POSTGRESQL_TELEMETRY" : "BENCHMARK_BASELINE",
+        databaseConnected: false, recordedTelemetryCount: 0, dataSource: "DEMO_FIXTURE",
       },
-      kpis,
-      performance: {
-        range,
-        data: performance,
-      },
-      activeExperiments,
+      kpis: demoWorkspaceKPIs,
+      performance: { range, data: performance },
+      activeExperiments: demoActiveExperiments,
       aiRecommendations: demoAIRecommendations,
       agentActivities: demoAgentActivities,
-      recentActivities: realRecentActivities.length > 0 ? realRecentActivities : demoRecentActivities,
+      recentActivities: demoRecentActivities,
     });
   } catch (error: any) {
     return NextResponse.json(
       { error: "Failed to fetch dashboard data", message: error.message },
-      { status: 500 }
+      { status: error.message?.includes("PERSISTENT_REVOCATION_UNAVAILABLE") ? 503 : 500 }
     );
   }
 }

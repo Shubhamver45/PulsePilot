@@ -364,6 +364,39 @@ export async function getPersistedAuditLogs(): Promise<AuditRecord[]> {
   return [...auditLogsStore];
 }
 
+/**
+ * Fetch persisted audit records for one authenticated organization.
+ * Durable reads run through the restricted application role and tenant context.
+ */
+export async function getPersistedAuditLogsForOrganization(organizationId: string): Promise<AuditRecord[]> {
+  if (!organizationId) throw new Error("TENANT_CONTEXT_REQUIRED");
+  const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock"));
+  if (!databaseConfigured) return [...auditLogsStore];
+
+  const { withTenantContext } = await import("../db/prisma");
+  const rows = await withTenantContext(organizationId, (tx) =>
+    tx.auditLog.findMany({
+      where: { organizationId },
+      orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
+    })
+  );
+  return rows.map((log) => ({
+    id: log.id,
+    timestamp: log.createdAt.toISOString(),
+    action: log.action as any,
+    actor: { name: log.actorName || "system", type: (log.actorType as any) || "system" },
+    entityType: log.entityType as any,
+    entityId: log.entityId,
+    details: log.details || "",
+    signature: log.signature || undefined,
+    previousSignature: log.previousSignature || undefined,
+    sequenceNumber: log.sequenceNumber || undefined,
+    previousState: log.previousState,
+    newState: log.newState,
+    metadata: log.metadata as Record<string, any> | undefined,
+  }));
+}
+
 export interface AuditIntegrityReport {
   valid: boolean;
   verifiedCount: number;

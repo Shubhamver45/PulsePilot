@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { demoPerformanceData, PerformanceDataPoint } from "@/lib/db/repository";
-import { prisma } from "@/lib/db/prisma";
+import { getUserFromToken } from "@/lib/auth/auth-service";
+import { withTenantContext } from "@/lib/db/prisma";
+
+function getToken(request: Request): string | null {
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "");
+  const cookie = (request.headers.get("cookie") || "").split("; ").find((p) => p.startsWith("pulsepilot_session="))?.split("=")[1];
+  return bearer || cookie || null;
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -31,33 +38,32 @@ export async function GET(request: Request) {
     });
   }
 
-  // 2. Query real live telemetry from PostgreSQL if database is available
-  if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
+  // Persistent data is returned only to a verified member of the owning organization.
+  const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock"));
+  if (databaseConfigured) {
+    const token = getToken(request);
+    if (!token) return NextResponse.json({ success: false, error: "UNAUTHORIZED" }, { status: 401 });
+    const user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+    if (!user) return NextResponse.json({ success: false, error: "INVALID_SESSION" }, { status: 401 });
     try {
       const days = range === "30D" ? 30 : range === "90D" ? 90 : 7;
       const sinceDate = new Date();
       sinceDate.setDate(sinceDate.getDate() - days);
 
-      const events = await prisma.telemetryEvent.findMany({
-        where: {
-          timestamp: { gte: sinceDate },
-        },
-        select: {
-          eventType: true,
-          timestamp: true,
-          distinctUserId: true,
-          experimentId: true,
-          variant: {
-            select: {
-              id: true,
-              key: true,
-              isControl: true,
-            },
+      const events = await withTenantContext(user.organizationId, (tx) =>
+        tx.telemetryEvent.findMany({
+          where: { timestamp: { gte: sinceDate } },
+          select: {
+            eventType: true,
+            timestamp: true,
+            distinctUserId: true,
+            experimentId: true,
+            variant: { select: { id: true, key: true, isControl: true } },
+            properties: true,
           },
-          properties: true,
-        },
-        orderBy: { timestamp: "asc" },
-      });
+          orderBy: { timestamp: "asc" },
+        })
+      );
 
       // Filter out synthetic test simulator events from live metrics
       // Exclude events missing experimentId, distinctUserId, or variant
