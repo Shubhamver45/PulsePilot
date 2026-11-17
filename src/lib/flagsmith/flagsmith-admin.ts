@@ -84,7 +84,13 @@ function unwrapApiList(payload: any): any[] {
   return [];
 }
 
-function optionStringValue(option: any): string | undefined {
+function optionKey(option: any): string | undefined {
+  if (!option) return undefined;
+  if (typeof option === "string") return option;
+  return option.key ?? option.string_value ?? option.value;
+}
+
+function optionFeatureValue(option: any): string | undefined {
   if (!option) return undefined;
   if (typeof option === "string") return option;
   return option.string_value ?? option.value ?? option.key;
@@ -136,9 +142,8 @@ export async function getLiveRemoteFeatureState(
   try {
     const headers = { "Content-Type": "application/json", ...authHeaders };
 
-    // Resolve the human-managed environment API key to its numeric Management
-    // API environment ID first. Feature-state endpoints require that ID, not the
-    // non-secret environment key used by the Flags evaluation API.
+    // The Management API feature-state list endpoint is keyed by the environment
+    // API key. Keep the numeric environment ID for feature-version operations.
     const [environmentsResponse, featuresResponse] = await Promise.all([
       fetch(`${apiUrl}/environments/`, { headers, cache: "no-store" }),
       fetch(`${apiUrl}/projects/${projectId}/features/`, { headers, cache: "no-store" }),
@@ -175,7 +180,7 @@ export async function getLiveRemoteFeatureState(
     }
 
     const statesResponse = await fetch(
-      `${apiUrl}/environments/${environment.id}/featurestates/`,
+      `${apiUrl}/environments/${encodeURIComponent(environmentKey)}/featurestates/`,
       { headers, cache: "no-store" }
     );
     if (!statesResponse.ok) {
@@ -283,6 +288,9 @@ export async function createFlagsmithMultivariateFeature(
   }
 
   try {
+    // Create the multivariate parent feature first. Flagsmith requires each
+    // variation to be created separately so every option has a stable key;
+    // unkeyed inline variants are not sufficient for exposure tracking.
     const res = await fetch(`${apiUrl}/projects/${projectId}/features/`, {
       method: "POST",
       headers: {
@@ -295,19 +303,12 @@ export async function createFlagsmithMultivariateFeature(
         default_enabled: true,
         initial_value: input.initialValue,
         description: input.description,
-        multivariate_options: input.variants.map((v) => ({
-          type: "unicode",
-          string_value: v.value,
-          default_percentage_allocation: v.trafficAllocation,
-        })),
       }),
     });
 
     if (!res.ok) {
       const errText = await res.text();
-
-      // If already exists on project level (race condition or different environment)
-      if (errText.includes("already exists")) {
+      if (errText.toLowerCase().includes("already exists")) {
         const retryCheck = await getLiveRemoteFeatureState(input.name);
         if (retryCheck.success && retryCheck.state) {
           return {
@@ -319,7 +320,6 @@ export async function createFlagsmithMultivariateFeature(
           };
         }
       }
-
       return {
         success: false,
         error: `Flagsmith Management API Error (${res.status}): ${errText}`,
@@ -328,16 +328,62 @@ export async function createFlagsmithMultivariateFeature(
     }
 
     const json = await res.json();
-    const createdFeatureId = json.id;
+    const createdFeatureId = Number(json.id);
+    if (!createdFeatureId) {
+      return { success: false, error: "Flagsmith created the parent feature but returned no numeric feature ID.", remoteCreated: true };
+    }
 
-    // 3. Read-After-Write Verification: Verify the feature is now visible in the environment
+    // Add each keyed multivariate option using the documented mv-options endpoint.
+    for (const variant of input.variants) {
+      const optionResponse = await fetch(
+        `${apiUrl}/projects/${projectId}/features/${createdFeatureId}/mv-options/`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders,
+          },
+          body: JSON.stringify({
+            type: "unicode",
+            string_value: variant.value,
+            key: variant.key,
+            default_percentage_allocation: variant.trafficAllocation,
+          }),
+        }
+      );
+
+      if (!optionResponse.ok) {
+        const detail = await optionResponse.text();
+        return {
+          success: false,
+          featureId: createdFeatureId,
+          remoteCreated: true,
+          error: `Flagsmith created the feature but failed to add keyed variant '${variant.key}' (${optionResponse.status}): ${detail.slice(0, 500)}`,
+        };
+      }
+    }
+
+    // Read-after-write verification confirms that each keyed option is
+    // visible in this environment before returning success.
     const verification = await getLiveRemoteFeatureState(input.name);
-    if (!verification.success) {
+    if (!verification.success || !verification.state) {
       return {
-        success: true,
+        success: false,
         featureId: createdFeatureId,
         remoteCreated: true,
-        error: `Warning: Feature was created on Project, but not yet propagated to Environment: ${verification.error}`,
+        error: `Feature and keyed options were created, but environment verification failed: ${verification.error || "No environment state returned"}`,
+      };
+    }
+
+    const verifiedOptions = verification.state.multivariate_feature_state_values || [];
+    const configuredKeys = new Set(verifiedOptions.map((item: any) => optionKey(item.multivariate_feature_option)));
+    const missingKeys = input.variants.map((variant) => variant.key).filter((key) => !configuredKeys.has(key));
+    if (missingKeys.length) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        error: `Flagsmith environment verification is missing keyed options: ${missingKeys.join(", ")}.`,
       };
     }
 
@@ -562,7 +608,7 @@ export async function rolloutFlagsmithWinner(
   return mutateRemoteFeatureState(featureName, "rollout winner", (draft) => {
     const options = draft.multivariate_feature_state_values || [];
     const target = options.find((item: any) =>
-      optionStringValue(item.multivariate_feature_option) === winningVariantValue
+      optionFeatureValue(item.multivariate_feature_option) === winningVariantValue
     );
     if (!target) {
       throw new Error("The requested winning variant does not exist in the Flagsmith multivariate options.");
@@ -598,7 +644,7 @@ export async function updateFlagsmithCanaryStage(
     if (!options.length) throw new Error("Flagsmith returned no multivariate options for this feature.");
 
     const target = options.find((item: any) =>
-      optionStringValue(item.multivariate_feature_option) === winningVariantValue
+      optionFeatureValue(item.multivariate_feature_option) === winningVariantValue
     );
     if (!target) {
       throw new Error("The requested canary variant does not exist in the Flagsmith multivariate options.");
