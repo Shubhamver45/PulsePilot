@@ -12,6 +12,7 @@ import {
 import { recordAuditLog } from "@/lib/audit/audit-logger";
 import { checkProductionRolloutGuard } from "@/lib/flagsmith/production-guards";
 import { prisma } from "@/lib/db/prisma";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 const RolloutRequestSchema = z.object({
   flagsmithFeatureName: z.string().min(1),
@@ -24,6 +25,46 @@ const RolloutRequestSchema = z.object({
 
 function hasFlagsmithRemoteCredentials(): boolean {
   return Boolean(getManagementAuthHeader().Authorization);
+}
+
+function normaliseFeatureValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+async function syncExperimentAllocations(
+  featureName: string,
+  allocation: { variants: Array<{ value: string; percentageAllocation: number }>; defaultValue?: string | null },
+  finalStatus?: "CONCLUDED_ROLLED_OUT" | "CONCLUDED_ROLLED_BACK"
+) {
+  const experiment = await prisma.experiment.findUnique({
+    where: { flagsmithFeatureName: featureName },
+    include: { variants: true },
+  });
+  if (!experiment) return;
+
+  const defaultValue = allocation.defaultValue == null ? null : String(allocation.defaultValue);
+  await prisma.$transaction(async (tx) => {
+    for (const variant of experiment.variants) {
+      const configuredValue = normaliseFeatureValue(variant.featureValue);
+      const matchingOption = allocation.variants.find((item) => item.value === configuredValue);
+      const isDefault = defaultValue !== null && (
+        defaultValue === configuredValue ||
+        (variant.isControl && allocation.defaultValue === "control")
+      );
+      const percentage = matchingOption?.percentageAllocation ?? (isDefault ? 100 : 0);
+      await tx.experimentVariant.update({
+        where: { id: variant.id },
+        data: { trafficAllocation: Math.max(0, Math.min(100, Math.round(percentage))) },
+      });
+    }
+    if (finalStatus) {
+      await tx.experiment.update({
+        where: { id: experiment.id },
+        data: { status: finalStatus },
+      });
+    }
+  });
 }
 
 function optionValue(item: any): string {
@@ -93,6 +134,11 @@ async function resolveControlValue(featureName: string, state: any): Promise<str
 
 export async function GET(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ success: false, error: "Authentication required." }, { status: 401 });
+    }
+
     const { searchParams } = new URL(request.url);
     const featureName = searchParams.get("featureName") || "exp_checkout_layout_v2";
 
@@ -118,6 +164,14 @@ export async function GET(request: Request) {
         source: "flagsmith_remote_api",
         error: remote.error || "Unable to retrieve live Flagsmith feature state.",
       }, { status: 502 });
+    }
+
+    if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+      return NextResponse.json({
+        success: false,
+        source: "flagsmith_management_api",
+        error: "Remote Flagsmith Management API credentials are not configured for this deployment. Local mock data is not accepted as live state.",
+      }, { status: 503 });
     }
 
     const flag = flagsmithMockStore.getFlag(featureName);
@@ -146,8 +200,23 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ success: false, error: "Authentication required." }, { status: 401 });
+    }
+    if (user.role !== "ADMIN") {
+      return NextResponse.json({ success: false, error: "Only workspace administrators can authorize remote flag mutations." }, { status: 403 });
+    }
+
     const req = RolloutRequestSchema.parse(await request.json());
     const isRemoteConfigured = hasFlagsmithRemoteCredentials();
+    if (!isRemoteConfigured) {
+      return NextResponse.json({
+        success: false,
+        error: "Flagsmith Management API credentials are not configured. No local mock mutation will be reported as a remote release.",
+        code: "FLAGSMITH_MANAGEMENT_NOT_CONFIGURED",
+      }, { status: 503 });
+    }
     const guard = checkProductionRolloutGuard(isRemoteConfigured);
 
     if (!guard.allowed) {
@@ -159,7 +228,7 @@ export async function POST(request: Request) {
       }, { status: guard.statusCode || 503 });
     }
 
-    const actorName = req.authorizer || "Authenticated operator";
+    const actorName = user.fullName || user.email;
     const current = isRemoteConfigured
       ? await getLiveRemoteFeatureState(req.flagsmithFeatureName)
       : { success: false as const, error: "Remote Flagsmith is not configured." };
@@ -244,6 +313,24 @@ export async function POST(request: Request) {
         }, { status: 502 });
       }
 
+      try {
+        await syncExperimentAllocations(
+          req.flagsmithFeatureName,
+          after,
+          req.action === "ROLLOUT_WINNER" ? "CONCLUDED_ROLLED_OUT" : undefined
+        );
+      } catch (syncError: any) {
+        console.error("[Flagsmith] Remote rollout succeeded but PostgreSQL allocation sync failed:", syncError?.message || syncError);
+        return NextResponse.json({
+          success: false,
+          remoteActuation: true,
+          remoteVerified: true,
+          error: "Flagsmith accepted and verified the remote rollout, but the experiment allocation record could not be synchronized. Do not retry blindly; inspect the live flag first.",
+          details: syncError?.message,
+          trafficAllocation: after,
+        }, { status: 503 });
+      }
+
       const action = req.action === "ROLLOUT_WINNER" ? "ROLLOUT_APPROVED_EXECUTED" : "GRADUAL_STAGE_UPDATED";
       await recordAuditLog({
         action,
@@ -299,6 +386,20 @@ export async function POST(request: Request) {
         ? allocationSnapshot(result.verifiedState)
         : { variants: [{ value: "control", percentageAllocation: 100 }] };
 
+      try {
+        await syncExperimentAllocations(req.flagsmithFeatureName, after, "CONCLUDED_ROLLED_BACK");
+      } catch (syncError: any) {
+        console.error("[Flagsmith] Remote rollback succeeded but PostgreSQL allocation sync failed:", syncError?.message || syncError);
+        return NextResponse.json({
+          success: false,
+          remoteActuation: true,
+          remoteVerified: true,
+          error: "Flagsmith rollback was verified, but the experiment allocation record could not be synchronized. Inspect the remote flag before retrying.",
+          details: syncError?.message,
+          trafficAllocation: after,
+        }, { status: 503 });
+      }
+
       await recordAuditLog({
         action: "ROLLBACK_EXECUTED",
         actor: { name: actorName, type: "human" },
@@ -345,6 +446,8 @@ export async function POST(request: Request) {
         flagsmithMockStore.toggleKillSwitch(req.flagsmithFeatureName, false);
       }
 
+      // The kill switch disables the flag but does not mark the experiment complete:
+      // the operator may re-enable it after the incident has been resolved.
       await recordAuditLog({
         action: "KILL_SWITCH_TRIGGERED",
         actor: { name: actorName, type: "human" },
