@@ -11,7 +11,7 @@ export const VariantSchema = z.object({
   description: z.string().describe("Description of what this variant does"),
   isControl: z.boolean().default(false),
   trafficAllocation: z.number().min(0).max(100).describe("Percentage of traffic, sum must equal 100"),
-  featureValue: z.record(z.any()).describe("JSON payload delivered via Flagsmith feature state"),
+  featureValue: z.record(z.string(), z.any()).describe("JSON payload delivered via Flagsmith feature state"),
   whyWorthTesting: z.string().describe("Behavioral psychology or product reasoning for this variant"),
 });
 
