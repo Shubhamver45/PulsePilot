@@ -20,32 +20,7 @@ import { cn } from "@/lib/utils";
 import { CommandPalette } from "../ui/CommandPalette";
 import { NotificationPanel, NotificationItem } from "../ui/NotificationPanel";
 
-const initialNotifications: NotificationItem[] = [
-  {
-    id: "notif-1",
-    title: "Winner Detected (+18.4% Uplift)",
-    message: "Statistical significance reached on 'exp_checkout_social_proof'. 97.2% confidence.",
-    timestamp: "10m ago",
-    read: false,
-    type: "ai_insight",
-  },
-  {
-    id: "notif-2",
-    title: "Flagsmith Sync Complete",
-    message: "Multivariate splits active across 3 variants in Production environment.",
-    timestamp: "45m ago",
-    read: false,
-    type: "flag_update",
-  },
-  {
-    id: "notif-3",
-    title: "Rollout Approval Required",
-    message: "Gemini Rollout Strategist proposed 100% rollout for Variant B. HITL authorization required.",
-    timestamp: "2h ago",
-    read: true,
-    type: "rollout_pending",
-  },
-];
+const initialNotifications: NotificationItem[] = [];
 
 export function TopNavigation({
   onMobileMenuToggle,
