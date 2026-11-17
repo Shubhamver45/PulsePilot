@@ -8,14 +8,13 @@ import {
   Lock,
   Mail,
   ArrowRight,
-  ShieldCheck,
-  CheckCircle2,
   AlertTriangle,
-  UserCheck,
 } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
+  const registered = searchParams.get("registered") === "1";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -26,8 +25,8 @@ export default function LoginPage() {
     setError(null);
     setIsLoading(true);
 
-    const loginEmail = customCreds ? customCreds.email : email;
-    const loginPass = customCreds ? customCreds.pass : password;
+    const loginEmail = email;
+    const loginPass = password;
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -41,7 +40,8 @@ export default function LoginPage() {
         throw new Error(data.error || "Login failed");
       }
 
-      router.push("/dashboard");
+      const destination = searchParams.get("next");
+      router.push(destination && destination.startsWith("/") && !destination.startsWith("//") ? destination : "/dashboard");
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -118,45 +118,14 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Quick 1-Click Demo Accounts for Judges & QA */}
-          <div className="pt-4 border-t border-border space-y-2">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted block text-center">
-              Quick 1-Click Demo Accounts (Judges & QA)
-            </span>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() =>
-                  handleLogin(undefined, {
-                    email: "sarah@pulsepilot.ai",
-                    pass: "pulsepilot2026",
-                  })
-                }
-                className="p-2.5 rounded-lg border border-border bg-surface-subtle hover:bg-violet-50 hover:border-violet-300 text-left transition-colors"
-              >
-                <div className="flex items-center gap-1.5 font-bold text-text">
-                  <UserCheck className="w-3.5 h-3.5 text-primary" /> Sarah Lin
-                </div>
-                <span className="text-[10px] text-text-secondary block mt-0.5">Product Lead (Admin)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  handleLogin(undefined, {
-                    email: "alex@pulsepilot.ai",
-                    pass: "pulsepilot2026",
-                  })
-                }
-                className="p-2.5 rounded-lg border border-border bg-surface-subtle hover:bg-emerald-50 hover:border-emerald-300 text-left transition-colors"
-              >
-                <div className="flex items-center gap-1.5 font-bold text-text">
-                  <UserCheck className="w-3.5 h-3.5 text-emerald-600" /> Alex Rivera
-                </div>
-                <span className="text-[10px] text-text-secondary block mt-0.5">Growth Eng (Editor)</span>
-              </button>
+          {registered && (
+            <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+              Account created. Sign in with your email and password to open your workspace.
             </div>
-          </div>
+          )}
+          <p className="text-[11px] text-text-muted text-center">
+            Sign in uses your verified PulsePilot account. Workspace permissions are loaded from the database.
+          </p>
         </div>
 
         {/* Footer Link */}
