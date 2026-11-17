@@ -51,6 +51,7 @@ export interface ExperimentVariationResult {
   pValue?: number;
   sampleRatioPValue?: number;
   featureValue?: unknown;
+  configuredAllocationPercent?: number;
 }
 
 export interface FlagsmithExperimentResults {
@@ -469,7 +470,8 @@ export async function getFlagsmithExperimentResults(
             if (!isControl && expCount > 0 && controlExposures > 0) {
               const comp = compareVariants(
                 { key: controlVariant.key, name: controlVariant.name, isControl: true, exposures: controlExposures, conversions: controlUniqueConverted },
-                { key: v.key, name: v.name, isControl: false, exposures: expCount, conversions: uniqueConverted }
+                { key: v.key, name: v.name, isControl: false, exposures: expCount, conversions: uniqueConverted },
+                [Number(controlVariant.trafficAllocation || 0), Number(v.trafficAllocation || 0)]
               );
               expectedLiftPercent = Number(comp.relativeUpliftPercent.toFixed(1));
               chanceToWin = Number(comp.bayesianProbabilityToBeatControl.toFixed(3));
@@ -491,6 +493,7 @@ export async function getFlagsmithExperimentResults(
               pValue: !isControl ? pValue : undefined,
               sampleRatioPValue: !isControl ? sampleRatioPValue : undefined,
               featureValue: v.featureValue,
+              configuredAllocationPercent: Number(v.trafficAllocation || 0),
             };
           });
 
@@ -515,7 +518,14 @@ export async function getFlagsmithExperimentResults(
               totalExposures: totalDbExposures,
               totalConversions: totalUniqueConvertedUsers,
               leadingVariationKey: leadingVar?.variantKey || null,
-              statisticalCertaintyReached: (leadingVar?.chanceToWin || 0) >= 0.95 && totalDbExposures >= experiment.sampleSizeTarget,
+              statisticalCertaintyReached: Boolean(
+                leadingVar &&
+                (leadingVar.chanceToWin || 0) >= 0.95 &&
+                (leadingVar.pValue ?? 1) <= 0.05 &&
+                (leadingVar.sampleRatioPValue ?? 0) > 0.01 &&
+                (leadingVar.expectedLiftPercent || 0) > 0 &&
+                totalDbExposures >= experiment.sampleSizeTarget
+              ),
             },
           };
         }
