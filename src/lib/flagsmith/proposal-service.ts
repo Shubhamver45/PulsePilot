@@ -442,8 +442,8 @@ export async function rejectProposal(
   proposalId: string,
   user: AuthUser,
   reason: string = "Rejected by reviewer"
-): Promise<{
-  const db = tenantScopedPrisma(user.organizationId); success: boolean; message: string }> {
+): Promise<{ success: boolean; message: string }> {
+  const db = tenantScopedPrisma(user.organizationId);
   // Guest and Viewer role cannot reject proposals
   if (user.role === "VIEWER" || user.id === "usr_guest") {
     const error: any = new Error(
@@ -512,7 +512,6 @@ export async function approveProposal(
   submittedHash: string,
   approvingUser: AuthUser
 ): Promise<{
-  const db = tenantScopedPrisma(approvingUser.organizationId);
   success: boolean;
   proposalId: string;
   status: "APPROVED";
@@ -521,6 +520,7 @@ export async function approveProposal(
   configurationHash: string;
   message: string;
 }> {
+  const db = tenantScopedPrisma(approvingUser.organizationId);
   // 1. RBAC Verification: Only authenticated ADMIN and EDITOR can authorize proposals
   if (approvingUser.role !== "ADMIN" && approvingUser.role !== "EDITOR") {
     const error: any = new Error(
@@ -705,7 +705,6 @@ export async function executeApprovedProposal(
   submittedHash: string,
   executingUser: AuthUser,
   options?: {
-  const db = tenantScopedPrisma(executingUser.organizationId);
     idempotencyKey?: string;
     confirmedProductionTarget?: boolean;
   }
@@ -732,6 +731,7 @@ export async function executeApprovedProposal(
     verifiedState: any;
   };
 }> {
+  const db = tenantScopedPrisma(executingUser.organizationId);
   // 1. RBAC Verification
   if (executingUser.role !== "ADMIN" && executingUser.role !== "EDITOR") {
     const error: any = new Error(
