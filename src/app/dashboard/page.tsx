@@ -49,6 +49,7 @@ import {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const isPreviewDemo = process.env.NEXT_PUBLIC_APP_ENV === "preview";
 
   // ---------------------------------------------------------------------------
   // Time & Greeting Logic
@@ -140,7 +141,7 @@ export default function DashboardPage() {
               Workspace Overview
             </span>
             <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-surface-muted text-text-secondary border border-border">
-              Interactive Demo Workspace
+              {isPreviewDemo ? "Preview Demo · Sample Data" : "Interactive Demo Workspace"}
             </span>
           </div>
 
@@ -149,7 +150,7 @@ export default function DashboardPage() {
           </h1>
 
           <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-text-secondary">
-            <span className="font-semibold text-text">Acme Growth (Production)</span>
+            <span className="font-semibold text-text">{isPreviewDemo ? "PulsePilot Preview Demo" : "Acme Growth (Production)"}</span>
             <span>•</span>
             <span className="flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-text-muted" />
@@ -158,7 +159,7 @@ export default function DashboardPage() {
             <span>•</span>
             <span className="text-success font-medium flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              Flagsmith Sync Healthy
+              {isPreviewDemo ? "Flagsmith Read-Only Connected" : "Flagsmith Sync Healthy"}
             </span>
           </div>
         </div>
@@ -192,7 +193,7 @@ export default function DashboardPage() {
               Core Experimentation Metrics
             </h2>
             <span className="text-[10px] text-text-secondary font-mono">
-              (Sample Workspace Telemetry)
+              (Illustrative Sample Telemetry)
             </span>
           </div>
           <span className="text-xs text-text-secondary">Updated real-time from Flagsmith SDK</span>

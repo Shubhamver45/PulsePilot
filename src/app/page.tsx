@@ -31,11 +31,11 @@ export default function OverviewPage() {
       {/* Page Header */}
       <PageHeader
         title="Experimentation & Growth Overview"
-        description="Autonomous experimentation co-pilot powered by Flagsmith and Google Gemini."
+        description="Autonomous experimentation co-pilot powered by Flagsmith and Google Gemini. Metrics shown here are illustrative demo fixtures, not customer production telemetry."
         badge={
           <StatusBadge
             status="active"
-            label="FLAGSMITH SYNCED"
+            label="DEMO FIXTURES"
             className="hidden sm:inline-flex"
           />
         }
@@ -59,7 +59,7 @@ export default function OverviewPage() {
           change="+1 this week"
           changeType="positive"
           icon={<FlaskConical className="w-4 h-4" />}
-          badge="Live Flagsmith"
+          badge="Sample Flagsmith"
         />
         <MetricCard
           title="Aggregate Lift"
@@ -79,10 +79,10 @@ export default function OverviewPage() {
         <MetricCard
           title="Flagsmith Flags"
           value="12"
-          change="100% healthy"
+          change="Read-only connection"
           changeType="neutral"
           icon={<Flag className="w-4 h-4" />}
-          badge="Production"
+          badge="Illustrative Demo"
         />
       </div>
 

@@ -33,11 +33,12 @@ interface NavItem {
 
 export function Sidebar({ className }: { className?: string }) {
   const pathname = usePathname();
-  const [workspace, setWorkspace] = useState("Acme Growth (Production)");
-  const [workspacesList, setWorkspacesList] = useState([
-    "Acme Growth (Production)",
-    "Acme Growth (Staging)",
-  ]);
+  const isPreviewDemo = process.env.NEXT_PUBLIC_APP_ENV === "preview";
+  const initialWorkspace = isPreviewDemo ? "PulsePilot Preview Demo (Sample Data)" : "Acme Growth (Production)";
+  const [workspace, setWorkspace] = useState(initialWorkspace);
+  const [workspacesList, setWorkspacesList] = useState(
+    isPreviewDemo ? [initialWorkspace] : ["Acme Growth (Production)", "Acme Growth (Staging)"]
+  );
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [newWorkspaceModalOpen, setNewWorkspaceModalOpen] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");

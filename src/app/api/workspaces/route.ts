@@ -44,7 +44,15 @@ export async function GET(request: Request) {
     }
     const organizationId = user?.organizationId || "org_acme_growth";
     const workspaces = await listWorkspaces(organizationId);
-    return NextResponse.json({ success: true, total: workspaces.length, workspaces });
+    const previewWorkspaces = databaseConfigured || process.env.NEXT_PUBLIC_APP_ENV !== "preview"
+      ? workspaces
+      : workspaces.slice(0, 1).map((workspace) => ({
+          ...workspace,
+          name: "PulsePilot Preview Demo (Sample Data)",
+          slug: "pulsepilot-preview-demo",
+          description: "Preview fixtures only. No staging database is connected.",
+        }));
+    return NextResponse.json({ success: true, total: previewWorkspaces.length, workspaces: previewWorkspaces });
   } catch {
     return NextResponse.json({ success: false, error: "SESSION_VALIDATION_FAILED" }, { status: 401 });
   }
