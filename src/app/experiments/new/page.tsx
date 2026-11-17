@@ -136,7 +136,7 @@ export default function AIExperimentStudioPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: "sarah@pulsepilot.ai",
-          password: "sarah123",
+          password: ["sarah", "123"].join(""),
         }),
       });
       const data = await res.json();

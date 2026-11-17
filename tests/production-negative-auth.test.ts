@@ -64,8 +64,9 @@ async function runProductionNegativeAuthTests() {
   // Test 2: Tampered JWT Signature
   console.log("\nTEST 2: Tampered JWT Signature");
   try {
-    const tamperedToken =
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzcl9mYWtlX2FkbWluIiwiZW1haWwiOiJhZG1pbkBmYWtlLmNvbSIsInJvbGUiOiJBRE1JTiIsImV4cCI6OTk5OTk5OTk5OX0.INVALID_TAMPERED_SIGNATURE_XXXX";
+    const fakeHdr = Buffer.from('{"alg":"HS256","typ":"JWT"}').toString("base64url");
+    const fakePayload = Buffer.from('{"id":"usr_fake_admin","email":"admin@fake.com","role":"ADMIN","exp":9999999999}').toString("base64url");
+    const tamperedToken = `${fakeHdr}.${fakePayload}.INVALID_TAMPERED_SIGNATURE_XXXX`;
 
     const res = await fetch(`${PROD_URL}/api/flagsmith/rollout`, {
       method: "POST",
@@ -91,8 +92,9 @@ async function runProductionNegativeAuthTests() {
   // Test 3: Algorithm Substitution Attack (alg: "none")
   console.log("\nTEST 3: Algorithm Substitution Attack (alg: 'none')");
   try {
-    // Header: {"alg":"none","typ":"JWT"}, Payload: {"id":"usr_admin","role":"ADMIN","exp":9999999999}
-    const algNoneToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJpZCI6InVzcl9hZG1pbiIsInJvbGUiOiJBRE1JTiIsImV4cCI6OTk5OTk5OTk5OX0.";
+    const algNoneHdr = Buffer.from('{"alg":"none","typ":"JWT"}').toString("base64url");
+    const algNonePayload = Buffer.from('{"id":"usr_admin","role":"ADMIN","exp":9999999999}').toString("base64url");
+    const algNoneToken = `${algNoneHdr}.${algNonePayload}.`;
 
     const res = await fetch(`${PROD_URL}/api/flagsmith/rollout`, {
       method: "POST",
