@@ -1,42 +1,17 @@
 import { NextResponse } from "next/server";
-import {
-  demoWorkspaceKPIs,
-  demoPerformanceData,
-  demoActiveExperiments,
-  demoAIRecommendations,
-  demoAgentActivities,
-  demoRecentActivities,
-} from "@/lib/db/repository";
+import { getProductionDashboardData } from "@/lib/analytics/dashboard-data";
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7D";
-
-    const performance = demoPerformanceData[range] || demoPerformanceData["7D"];
-
-    return NextResponse.json({
-      workspace: {
-        name: "Acme Growth (Production)",
-        environment: "production",
-        isDemoData: true,
-        flagsmithConnected: true,
-      },
-      kpis: demoWorkspaceKPIs,
-      performance: {
-        range,
-        data: performance,
-      },
-      activeExperiments: demoActiveExperiments,
-      aiRecommendations: demoAIRecommendations,
-      agentActivities: demoAgentActivities,
-      recentActivities: demoRecentActivities,
-    });
+    const dashboard = await getProductionDashboardData(range);
+    return NextResponse.json(dashboard);
   } catch (error: any) {
-    return NextResponse.json(
-      { error: "Failed to fetch dashboard data", message: error.message },
-      { status: 500 }
-    );
+    console.error("[Dashboard] Failed to read persisted experiment telemetry:", error?.message || error);
+    return NextResponse.json({
+      error: "PERSISTENT_DASHBOARD_UNAVAILABLE",
+      message: "The live dashboard could not read persisted experiment telemetry. No sample metrics were substituted.",
+    }, { status: 503 });
   }
 }
-
