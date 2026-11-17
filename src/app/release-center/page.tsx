@@ -138,6 +138,9 @@ export default function ReleaseCenterPage() {
       if (!flagResponse.ok || !flagPayload.success) {
         throw new Error(flagPayload.error || "Live Flagsmith allocation state could not be loaded.");
       }
+      if (flagPayload.source !== "flagsmith_remote_api") {
+        throw new Error("A live Flagsmith Management API state could not be verified. Local demo state is not accepted for release authorization.");
+      }
 
       const evidence = experimentPayload as ExperimentEvidence;
       setExperimentEvidence(evidence);
@@ -451,18 +454,12 @@ export default function ReleaseCenterPage() {
               onChange={(e) => {
                 const val = e.target.value;
                 setSelectedFlag(val);
-                if (val === "exp_checkout_layout_v2") {
-                  setWinningVariant("treatment");
-                } else if (val === "exp_checkout_social_proof") {
-                  setWinningVariant("variant_social_proof");
-                }
+                setWinningVariant("treatment");
               }}
               className="text-xs font-mono font-bold bg-surface-subtle border border-border rounded px-2.5 py-1.5 mt-0.5 text-text focus:outline-hidden focus:ring-1 focus:ring-primary"
             >
-              <option value="exp_checkout_layout_v2">exp_checkout_layout_v2 (Checkout Experience - Live)</option>
-              <option value="exp_checkout_social_proof">exp_checkout_social_proof (Checkout Flow)</option>
-              <option value="exp_pricing_annual_default">exp_pricing_annual_default (Pricing Toggle)</option>
-              <option value="exp_mobile_sticky_cta">exp_mobile_sticky_cta (Mobile Navigation)</option>
+              <option value="exp_checkout_layout_v2">exp_checkout_layout_v2 (Checkout Layout)</option>
+              <option value="checkout_experience">checkout_experience (Checkout Funnel)</option>
             </select>
           </div>
         </div>
@@ -639,10 +636,27 @@ export default function ReleaseCenterPage() {
               </div>
               <p className="text-xs text-emerald-800 leading-relaxed">
                 Variant B ({winningVariant}) outperformed control with a verified{" "}
-                <strong>+{currentLift}% relative lift</strong> ($p = {currentPValue}$, Bayes:{" "}
-                {currentBayes}%). All operational guardrails are stable. Safe for progressive canary
-                or full 100% rollout.
+                <strong>+{currentLift}% relative lift</strong> (p = {currentPValue}, Bayesian probability ={" "}
+                {currentBayes}%). All required live evidence gates passed. An administrator can authorize a progressive rollout.
               </p>
+            </div>
+          ) : scenario === "LIVE_DATA" ? (
+            <div className="p-4 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 space-y-2">
+              <div className="flex items-center gap-2">
+                <Info className="w-5 h-5 text-amber-600" />
+                <h4 className="text-sm font-bold uppercase tracking-wide">
+                  Live evidence does not currently authorize rollout
+                </h4>
+              </div>
+              <p className="text-xs text-amber-800 leading-relaxed">
+                {liveEvidenceError
+                  ? `Live verification is unavailable: ${liveEvidenceError}`
+                  : `Persisted experiment evidence contains ${currentExposures.toLocaleString()} exposures. The evidence floor is ${effectiveSampleTarget.toLocaleString()}, and rollout also requires statistical significance, a clear sample-ratio check and verified operational guardrails.`}
+                {" "}Missing payment-failure and application-error telemetry is unknown, not healthy. No production mutation is allowed.
+              </p>
+              <button onClick={() => fetchLiveEvidence()} className="text-xs font-semibold underline">
+                Refresh live evidence
+              </button>
             </div>
           ) : scenario === "INSUFFICIENT_DATA" ? (
             <div className="p-4 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 space-y-2">
@@ -668,9 +682,7 @@ export default function ReleaseCenterPage() {
                 </h4>
               </div>
               <p className="text-xs text-red-800 leading-relaxed">
-                Rollout is blocked due to guardrail breach (Payment failure rate surged to{" "}
-                {currentPaymentFailureRate}%, delta +126%). AI Guardian recommends immediate
-                rollback to 100% Control to prevent revenue attrition.
+                Simulated guardrail breach: sample payment failure rate is {currentPaymentFailureRate ?? "unavailable"}%. This is an illustrative scenario, not a live incident. The simulated recommendation is to block rollout and rehearse a rollback.
               </p>
             </div>
           )}
