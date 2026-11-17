@@ -382,6 +382,7 @@ export async function getFlagsmithExperimentResults(
           where: { experimentId: experiment.id, eventType: "EXPOSURE" },
           select: { distinctUserId: true, variantId: true, properties: true },
           distinct: ["distinctUserId"],
+          orderBy: { timestamp: "asc" },
         });
         const exposureEvents = exposureRows.filter((event: any) =>
           !((event.properties as any)?.isSynthetic === true)
