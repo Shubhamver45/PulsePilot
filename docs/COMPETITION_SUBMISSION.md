@@ -1,104 +1,121 @@
-# 🏆 PulsePilot AI — Hackathon Submission Package
+# PulsePilot AI — Track 2 Competition Submission
+
 **Competition:** WeMakeDevs × Flagsmith Toggle Wars  
-**Track:** Track 02 — AI Agents & Feature Flags ($1,000 Cash Prize)  
-**Live URL:** [https://pulse-pilot-two.vercel.app/](https://pulse-pilot-two.vercel.app/)  
-**Preview URL:** [https://pulse-pilot-two-git-staging-shubhamver45s-projects.vercel.app/](https://pulse-pilot-two-git-staging-shubhamver45s-projects.vercel.app/)  
-**GitHub Repository:** [https://github.com/Shubhamver45/PulsePilot](https://github.com/Shubhamver45/PulsePilot)  
-**Branch:** `main`
+**Track:** Track 02 — AI Agents and Feature Flags  
+**Live application:** https://pulse-pilot-two.vercel.app/  
+**Repository:** https://github.com/Shubhamver45/PulsePilot  
+**Interactive routes:** `/experiments/new`, `/demo-store`, `/integrations/flagsmith`, `/analytics`, `/release-center`
 
 ---
 
-## 📋 Quick Form Fields (Ready to Copy & Paste)
+## Project title
 
-### 1. Project Title
-```text
-PulsePilot AI — Autonomous Experimentation & Product Growth Platform Powered by Flagsmith
-```
+**PulsePilot AI — Prompt-to-Flagsmith Experiment Agent**
 
-### 2. Tagline (Under 100 characters)
-```text
-Autonomous AI experimentation & growth engine powered by Google Gemini and Flagsmith Cloud.
-```
+## Tagline
 
-### 3. Track Selection
-```text
-Track 02 — AI Agents & Feature Flags
-```
+**Turn a product hypothesis into a validated, human-approved Flagsmith experiment.**
 
-### 4. Links
-- **Live Demo Application:** `https://pulse-pilot-two.vercel.app/`
-- **GitHub Repository:** `https://github.com/Shubhamver45/PulsePilot`
-- **Demo Video:** `[INSERT YOUR YOUTUBE OR LOOM URL HERE]`
-- **Flagsmith Showcase Route:** `https://pulse-pilot-two.vercel.app/integrations/flagsmith`
-- **Interactive Storefront Route:** `https://pulse-pilot-two.vercel.app/demo-store`
-- **Analytics Scorecard Route:** `https://pulse-pilot-two.vercel.app/analytics`
+## The problem
 
----
+Product and growth teams move between several disconnected tasks to run an experiment: translate an idea into a testable hypothesis, choose a metric and guardrails, model variants, configure feature flags, instrument exposure and conversion events, interpret results, and safely release a winner. Configuration mistakes and weak statistical evidence can make an experiment unsafe or misleading.
 
-## 🌟 Detailed Project Story (For Devpost / Form Fields)
+## The solution
 
-### 💡 Inspiration
-Running product experiments today is fragmented, slow, and risky. Growth engineers and product managers spend 2–4 weeks per experiment manually writing code, configuring feature flags, debating statistical significance, and hesitating to roll out winning features for fear of breaking production. Meanwhile, typical generative AI tools often hallucinate conversion rates or rush into false-positive releases.
+PulsePilot is an agent-assisted workflow built around Flagsmith as the feature-flag and remote-configuration control plane. A product manager describes an experiment in natural language. PulsePilot turns that prompt into a structured experiment plan, validates it, reviews the design, and—when the required credentials and persistent workspace are configured—provisions keyed multivariate options in Flagsmith.
 
-We asked: **What if an autonomous AI agent swarm could handle the entire experimentation lifecycle—from natural language growth ideas to remote Flagsmith flag provisioning, rigorous zero-hallucination math, and human-approved canary rollouts?**
+The workflow is designed to distinguish planning from execution. A generated plan is not represented as a live feature until the Flagsmith Management API has returned the feature state and the actual environment allocations have been read back and verified.
 
-That vision is **PulsePilot AI**.
+## The Track 2 judge journey
 
----
+1. **Describe the experiment.** Open the AI Experiment Studio and enter a prompt such as:  
+   `Test a single-page checkout against the current multi-step checkout. Use a 50/50 split, optimize checkout completion, and monitor payment failures.`
 
-### 🚀 What It Does
-PulsePilot AI bridges the gap between natural language product intent and live production feature flags:
+2. **Generate the experiment plan.** The strategy agent returns the hypothesis, feature key, control/treatment configurations, traffic allocation, primary metric, secondary metrics, guardrails, and required instrumentation. The UI identifies whether the strategy came from Gemini or the deterministic offline planner.
 
-1. **Natural Language to Flagsmith Provisioning:** In the Experiment Studio, teams describe a business problem (e.g., *"Streamline checkout flow from 3-step wizard to 1-page express to reduce 35% cart abandonment"*). Google Gemini 2.5 Flash autonomously formulates hypotheses, chooses primary metrics and safety guardrails, and structures multivariate Flagsmith flags.
-2. **Strict Human-in-the-Loop (HITL) Policy:** Autonomous agents are strictly gated. No production flag can be created, mutated, or rolled out without an authenticated human signature.
-3. **Real Remote Flagsmith Actuation:** Flags are provisioned and mutated directly on Flagsmith Cloud using official **v2 Feature Versioning** (`POST /versions/` $\to$ `PUT /featurestates/` $\to$ `POST /publish/`) with sub-160ms edge latency and read-after-write verification.
-4. **Live Storefront with Deterministic Identity Bucketing:** In the PulsePilot Demo Store, different user identities deterministically receive different experiences (e.g., Elena gets a 3-Step Wizard; Alex gets a 1-Page Express Checkout) with zero UI flicker and live attribution.
-5. **Zero-Hallucination Statistical Integrity:** An LLM is NEVER allowed to compute statistics. A pure TypeScript math engine executes two-proportion Z-tests ($Z = 1.50, p = 0.134$), normal CDF approximations, Beta-Binomial Bayesian win probabilities ($93.3\%$), and Sample Ratio Mismatch (SRM) Chi-Square tests ($\chi^2 = 0.1593, p = 0.690$). The AI ingests these pre-computed numbers as factual ground truth.
-6. **Release Guardian & Safe Rollback:** Evaluates a 5-point release readiness matrix, manages gradual canary progressions (5% $\to$ 50% $\to$ 100%), and provides instant $<50$ms 1-click safe rollbacks if guardrail metrics degrade.
-7. **Tamper-Evident Distributed Audit Trail:** Every flag creation, mutation, and rollout is permanently recorded with SHA-256 hash chaining under PostgreSQL transaction-scoped advisory locks, guaranteeing gapless sequence numbers and verifiable immutability across distributed serverless runtimes.
+3. **Validate before execution.** Zod schema checks and deterministic business rules reject invalid feature keys, duplicate variant keys or remote values, invalid percentages, allocations that do not sum to 100%, missing primary-metric events, and guardrails without matching instrumentation events.
+
+4. **Run the readiness review.** The reviewer checks the hypothesis, measurable metrics, event plan, variant differences, guardrails, allocation and implementation feasibility. Its provider is identified as Gemini or deterministic fallback. A failed review cannot proceed to approval.
+
+5. **Approve and provision.** An authenticated ADMIN or EDITOR submits the experiment. The server revalidates the plan and runs the readiness review again; it does not trust a client-supplied approver name or approval flag. The canonical provisioning endpoint creates or retrieves a Flagsmith multivariate feature and keyed options, reads the environment state back, and verifies the requested allocation. PostgreSQL persistence and an audit record follow the verified remote operation.
+
+6. **Evaluate real identities.** The Demo Store requests the evaluated feature value from the Flagsmith Edge/identity API using a stable identity. It renders the returned remote configuration rather than inventing a local assignment. Different identities must be tested against a configured remote split before claiming that an A/B test is active.
+
+7. **Record and analyze evidence.** The storefront records a first-touch exposure and a conversion for the same identity and variant. The scorecard derives counts and statistical results from persisted, non-synthetic telemetry. Insufficient samples, sample-ratio mismatch, or missing evidence must not be presented as a winner.
+
+8. **Govern the release.** The Release Guardian checks the persisted experiment evidence and operational guardrails. An authenticated workspace administrator approves a canary, winner rollout, rollback, or kill-switch action. The server verifies the actual Flagsmith post-mutation state before reporting success.
 
 ---
 
-### 🚩 How We Used Flagsmith (Track 02 Core Criteria)
-PulsePilot is built deeply around Flagsmith Cloud:
-- **Target Project:** Project ID `53867`
-- **Environment:** `Development` (Environment ID `115953`)
-- **Active Experiment Flag:** `exp_checkout_layout_v2` (Feature ID `291896`)
-- **Multivariate Payload Delivery:** We store structured JSON configurations inside Flagsmith feature values (`{"layout": "multi_step"}` vs `{"layout": "single_page"}`) enabling zero-downtime UI updates without redeploying frontend code.
-- **Flagsmith v2 Feature Versioning:** We implement the official Flagsmith v2 draft-and-publish versioning lifecycle for atomic, conflict-free production updates.
-- **Identity Traits & Server-Side Trait Persistence:** Genuine server-side Flagsmith trait management via `POST /api/v1/identities/` with server key (`plan`, `beta_tester`, `device`) for distinct personas.
-- **Live Project Segment Targeting:** Created and verified Flagsmith project segment **Beta Testers** (ID `1197309`, rule `beta_tester EQUAL true`) with real-time membership calculation.
-- **Deterministic Identity Evaluation:** Flagsmith’s edge identities API guarantees that visitors consistently see the exact same variation across visits.
-- **Architectural Rationale (Direct REST vs CLI/MCP):** PulsePilot operates as a serverless agent orchestrator on Vercel. Spawning shell CLI/MCP subprocesses adds cold-starts and lacks typed return validation. Direct HTTPS REST integration with v2 Feature Versioning provides deterministic, type-safe execution under 160ms.
+## How Flagsmith is central
+
+Flagsmith is not a decorative integration. It is the feature evaluation and remote configuration system used by the experiment workflow.
+
+- **Edge evaluation:** The environment key is used for per-identity flag evaluation. This key is not treated as an administrative credential.
+- **Multivariate experiments:** A feature has a default/control remote value and keyed multivariate options for treatment configurations.
+- **Management operations:** A scoped Flagsmith Organisation API token is required for project feature creation and remote feature-state/version mutations.
+- **Identity consistency:** The same stable identity should receive a consistent result for a given remote configuration. A live A/B split is only claimed after different test identities are observed receiving the configured options.
+- **Allocation verification:** After provisioning or mutation, the Management API state is read back. The feature default, configured variant keys, per-variant allocation and 100% traffic invariant are checked.
+- **Lifecycle control:** Flagsmith remains the source of truth for canary allocation, winner promotion, rollback and emergency disablement.
+
+PulsePilot uses Flagsmith's multivariate feature/identity APIs and its own persisted analytics for this self-managed workflow. It does not depend on Flagsmith's separate managed Experimentation product.
 
 ---
 
-### 🛠️ How We Built It
-- **Frontend:** Next.js 14 App Router, React 18, Strict TypeScript, Tailwind CSS (Executive Light Theme with Lavender/Violet accents), Recharts.
-- **AI Planning Layer:** Google Gemini 2.5 Flash with strict Zod structured output schemas.
-- **Feature Flags Engine:** Flagsmith Cloud REST API (v2 Feature Versioning, Flags endpoint, Identities endpoint).
-- **Database & ORM:** Supabase Managed PostgreSQL, Prisma ORM 6 with 12 relational models.
-- **Deterministic Math Engine:** Pure TypeScript implementation of standard normal distributions, two-tailed Z-tests, and Beta-Binomial conjugate integration (`src/lib/analytics/stats.ts`).
-- **Security & Integrity:** Input sanitization interceptor with zero secret leakage enforcement, SHA-256 cryptographic audit chaining with PostgreSQL transaction advisory locking, and production-versus-mock isolation guards.
+## Technical architecture
 
----
+| Layer | Implementation |
+|---|---|
+| Web application | Next.js App Router, React, TypeScript, Tailwind CSS |
+| Prompt-to-plan | Gemini structured JSON output, Zod schema validation, deterministic offline fallback |
+| Agent review | Gemini readiness reviewer with a deterministic fallback and provider disclosure |
+| Feature flags | Flagsmith Edge/identity evaluation and Organisation Management API |
+| Data | Supabase PostgreSQL, Prisma ORM |
+| Telemetry | First-touch exposure attribution, conversion deduplication, synthetic-event separation |
+| Statistics | TypeScript conversion calculations, two-proportion Z-test, Bayesian Beta-Binomial estimate and SRM check |
+| Governance | Authenticated workspace roles, server-side release gates, audit history and remote read-after-write verification |
+| Hosting | Vercel |
 
-### 🧗 Challenges We Overcame
-1. **Serverless Flagsmith v2 Versioning:** Flagsmith environments with versioning enabled reject direct PATCH calls. We implemented the complete 3-step draft $\to$ mutate $\to$ publish lifecycle with automated exponential backoff retries.
-2. **Preventing LLM Math Hallucinations:** Large language models notoriously invent plausible-sounding p-values and confidence intervals. We created a strict architectural boundary where stats are pre-computed in pure TypeScript before any AI prompt is constructed.
-3. **Distributed Cryptographic Audit Concurrency:** On multi-instance serverless platforms like Vercel, concurrent requests can fork audit signatures. We implemented PostgreSQL transaction-scoped advisory locks (`pg_advisory_xact_lock`) and recursive canonical JSON serialization to guarantee linear sequence numbers and deterministic hash verification.
-4. **Production vs. Mock Isolation:** To prevent silent fallbacks during high-stakes rollouts, we implemented production guards that immediately return HTTP 503/502 if production credentials fail, strictly reserving mock adapters for offline test environments.
+## What is automated and what remains human-controlled
 
----
+The agents formulate and review the experiment plan. Deterministic validation protects the plan from malformed output. The authenticated user is still responsible for approval. Production mutations are not delegated to a model, and no UI simulation can override the server-side release gate.
 
-### 🏅 Accomplishments & Testing Verification
-- **100% Test Suite Green Across All Systems:**
-  - **23 / 23 Flagsmith Integration Tests Passed:** Live remote feature provisioning, deterministic identity stability, identity traits (`plan`, `beta_tester`, `device`), project segment targeting (Beta Testers ID `1197309`), multivariate canary allocation, 100% winner rollout, safe rollback to Control, emergency kill switch, and strict production-versus-mock isolation guards.
-  - **Distributed Concurrency Verified (100 & 500 Concurrent Appends):** PostgreSQL transaction-level advisory locks (`pg_advisory_xact_lock`) guarantee linear SHA-256 hash chaining with unique, gapless sequence numbers across multiple independent serverless instances.
-  - **Database Engine-Level Immutability:** Installed PostgreSQL trigger `trg_audit_log_immutable` blocking direct SQL `UPDATE` and `DELETE` operations at the engine level (`P0001`).
-  - **Telemetry Deduplication & Ground Truth Attribution:** Mathematical first-touch attribution with conversion rates strictly bounded in $[0, 1]$, preventing repeat-purchase rate inflation.
-  - **36 / 36 Comprehensive QA & Security Audit Tests Passed:** High-precision Normal CDF approximation, two-tailed p-value calculation, Bayesian win probability, SRM Chi-Square detection, prompt injection neutralization, and zero-secret-leakage verification.
-  - **16 / 16 Staging Smoke Tests Passed:** Verified end-to-end operational flows across the live staging environment.
-- **Live Cloud Actuation:** Verified sub-160ms remote mutations directly in Flagsmith Cloud.
-- **Executive Polish:** High-contrast, responsive light theme adhering to modern design standards (Linear + Stripe + Vercel aesthetic).
+## Validation evidence
 
+The remediation branch is tested in an isolated Node/Next.js environment.
+
+- TypeScript check: passed.
+- Prompt-plan and Flagsmith allocation regression tests: 12/12 passed.
+- Flagsmith integration and offline lifecycle tests: 21/21 passed.
+- QA/security tests: 36/36 passed.
+- Standard statistics, analytics-agent, telemetry persistence and audit persistence suites: passed.
+- Optimized Next.js production build: passed; 44 application routes generated.
+
+The automated Flagsmith suite tests credential guards, deterministic mock evaluation, canary/winner/rollback/kill-switch logic, and secret handling. It skips live Management API calls when an Organisation token is not present. These offline tests are not evidence of a remote production mutation.
+
+## Live environment status and prerequisites
+
+The following state was checked against the connected deployment and Flagsmith environment on **18 November 2026**:
+
+- Flagsmith Edge evaluation is reachable and returns two flags.
+- Two different test identities queried for `exp_checkout_layout_v2` both returned `treatment`. This demonstrates an Edge response, **not** a proven control/treatment allocation.
+- The Flagsmith Organisation Management API token is not configured in Vercel. Keyed feature provisioning and remote rollout have therefore not been verified live.
+- Vercel does not have a hosted `DATABASE_URL`/`DIRECT_URL` configured for the application's Prisma runtime. Persistent registration, experiment creation and scorecard operations cannot be signed off end-to-end.
+- A hosted `GEMINI_API_KEY` is not configured. The application will identify its deterministic planner/reviewer fallback rather than claim that the hosted request was generated by Gemini.
+- The latest Vercel preview build is subject to the project's deployment build-rate limit. The latest source passed the isolated TypeScript, test and production-build checks; the last ready preview is on an earlier branch commit.
+
+To complete the live demonstration, configure a scoped Flagsmith Organisation API token, an appropriately isolated PostgreSQL connection for the hosted app, and a Gemini API key. Then verify the new feature and allocations in Flagsmith, evaluate distinct identities, persist real exposures/conversions, and capture the resulting scorecard. Do not copy a production Management token or database credential into an untrusted preview.
+
+## Impact statement
+
+PulsePilot is intended to reduce the manual coordination required to design, configure and govern a product experiment. Its value proposition is the connected prompt-to-flag workflow and the checks around it—not a claimed conversion lift. No production business uplift or time-saved figure is asserted until a real customer cohort has generated sufficient persisted evidence.
+
+## Submission links
+
+- **Application:** https://pulse-pilot-two.vercel.app/
+- **Repository:** https://github.com/Shubhamver45/PulsePilot
+- **Experiment Studio:** https://pulse-pilot-two.vercel.app/experiments/new
+- **Flagsmith status:** https://pulse-pilot-two.vercel.app/integrations/flagsmith
+- **Interactive storefront:** https://pulse-pilot-two.vercel.app/demo-store
+- **Analytics:** https://pulse-pilot-two.vercel.app/analytics
+- **Release Guardian:** https://pulse-pilot-two.vercel.app/release-center
