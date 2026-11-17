@@ -24,7 +24,7 @@ Hosted deployments require Supabase Auth, a persistent PostgreSQL connection, a 
 
 ### Live verification snapshot — 17 November 2026
 
-- **Vercel Preview:** latest remediation commit builds and deploys successfully; the public landing page and Flagsmith health endpoint return HTTP 200.
+- **Vercel Preview:** the last ready preview is on an earlier remediation commit. The latest branch passed isolated TypeScript, test and production-build checks, but Vercel rate-limited a subsequent preview build. The public landing page and health route on the earlier preview returned HTTP 200.
 - **Flagsmith Edge:** connected; the environment returns two flags. Two distinct test identities evaluated for `exp_checkout_layout_v2` both currently receive `treatment`. This confirms live evaluation, **not** a valid control/treatment traffic split.
 - **Flagsmith Management API:** not configured in Vercel because an Organisation API token is absent. Keyed multivariate provisioning and remote rollout therefore remain unavailable.
 - **PostgreSQL:** the Supabase project is active, but Vercel has no configured `DATABASE_URL`/`DIRECT_URL` for the hosted app. Database-backed registration, scorecards, and persistent telemetry cannot be signed off end-to-end.
@@ -46,8 +46,8 @@ Traditional product experimentation is manual, sluggish, and risky:
 
 ### The Solution: PulsePilot AI
 PulsePilot AI turns natural language product intent into verified, live A/B and multivariate experiments actuated through **Flagsmith Cloud**:
-1. **Google Gemini 2.5 Flash Planning Plane:** Autonomous multi-agent pipeline translates growth goals into structured experiment specifications, primary metrics, and safety guardrails.
-2. **Flagsmith Remote Actuation Plane:** Real remote feature flag provisioning, multivariate traffic allocation, and v2 Feature Versioning (`draft -> publish`) on Flagsmith Cloud.
+1. **Prompt-to-Experiment Planning:** Gemini 2.5 Flash generates structured plans when `GEMINI_API_KEY` is configured. The application identifies its deterministic offline planner when Gemini is unavailable; it never labels that fallback as a Gemini response.
+2. **Flagsmith Remote Actuation Plane:** The canonical provisioning and release code creates keyed multivariate options and verifies the environment's actual allocations through the Management API. Live writes require a scoped Organisation API token; missing credentials fail closed.
 3. **Zero-Hallucination Math Engine:** Strict mathematical integrity: an LLM NEVER computes statistics. Two-tailed Z-tests, p-values ($p < 0.05$), relative uplift, and Bayesian win probabilities are calculated by a pure TypeScript engine (`stats.ts`).
 4. **Strict Human-in-the-Loop (HITL) Governance:** The Release Guardian recommends winners, but production mutations require authenticated human approval before Flagsmith API execution.
 
@@ -86,7 +86,7 @@ flowchart TD
       GuardianCheck -->|"p < 0.05 & Guardrails Clear"| Rec["AI Rollout Recommendation"]
       Rec --> HITL{"Human-in-the-Loop Gate"}
       HITL -->|"Human Signature Approved"| FS_Mutate["Flagsmith v2 Feature Versioning"]
-      FS_Mutate -->|"Read-After-Write Verified (< 200ms)"| FS_Edge
+      FS_Mutate -->|"Management API state verified"| FS_Edge
       FS_Mutate -->|"Cryptographic Record"| Audit[(Tamper-Evident Audit Log)]
     end
 ```
@@ -135,7 +135,7 @@ PulsePilot interacts directly with live Flagsmith Cloud resources on **Project I
 
 | Timestamp | Screen | Narrative & Demonstration |
 | :--- | :--- | :--- |
-| **0:00 – 0:35** | [`/studio`](https://pulse-pilot-two.vercel.app/studio) | **Act 1: Gemini AI Strategy Formulation.** Input: *"Test single-page versus multi-step checkout. Use a 50/50 traffic split. Optimize checkout completion. Monitor payment failure rate."* Gemini autonomously synthesizes the hypothesis, primary metric (`checkout_completed`), guardrails, and provisions `exp_checkout_layout_v2` in Flagsmith. |
+| **0:00 – 0:35** | [`/studio`](https://pulse-pilot-two.vercel.app/studio) | **Act 1: Prompt-to-Experiment Planning.** Enter a checkout hypothesis, inspect the generated plan, source badge (Gemini or deterministic fallback), control/treatment variants, traffic allocation, metrics and required events. Remote provisioning is demonstrated only after the Management API credential is configured. |
 | **0:35 – 1:20** | [`/demo-store`](https://pulse-pilot-two.vercel.app/demo-store?flag=exp_checkout_layout_v2) | **Act 2: Live Flagsmith Multivariate Bucketing.** Demonstrate two distinct identities receiving different values only after the remote feature has verified keyed Control and Treatment options with a non-zero allocation split. The current environment has not passed this check yet. |
 | **1:20 – 1:55** | [`/analytics`](https://pulse-pilot-two.vercel.app/analytics) | **Act 3: Telemetry & Anti-Hallucination Analytics.** Record a persisted exposure and conversion, then show the actual sample size, conversion rates, deterministic Z-test, Bayesian probability and SRM result. Do not use seeded or synthetic figures as customer evidence. |
 | **1:55 – 2:40** | [`/release-center`](https://pulse-pilot-two.vercel.app/release-center) | **Act 4: Human-in-the-Loop Rollout.** Show the live evidence gate. Proceed only if the server confirms real sample size, significance, Bayesian probability, SRM and configured guardrails. The server rejects simulated readiness and blocks mutations until a Management API token is available. |
@@ -150,8 +150,8 @@ PulsePilot interacts directly with live Flagsmith Cloud resources on **Project I
 | **Frontend Framework** | Next.js 14 (App Router) | React 18, Strict TypeScript, Tailwind CSS |
 | **UI Design System** | Executive Light Theme | Custom Zinc/Slate + Soft Lavender (`#7C3AED`), Lucide Icons |
 | **Data Visualizations** | Recharts | Smooth trajectory charts, confidence intervals, tooltips |
-| **Feature Flags Engine** | Flagsmith Cloud | REST API v2, Feature Versioning, Identities API |
-| **AI Agent Model** | Google Gemini | `gemini-2.5-flash` with Zod Structured Output Schemas |
+| **Feature Flags Engine** | Flagsmith Cloud | Edge identity evaluation, keyed multivariate options, Management API versioning and read-back verification |
+| **AI Agent Model** | Google Gemini (when configured) | `gemini-2.5-flash`, Zod structured output, deterministic offline fallback with provenance |
 | **Database & ORM** | Supabase Managed PostgreSQL | Prisma ORM 6 (12 relational models, audit logs) |
 | **Math Engine** | Pure TypeScript (`stats.ts`) | Abramowitz-Stegun Normal CDF, Two-tailed Z-tests, Beta-Binomial Bayes |
 
@@ -165,17 +165,24 @@ All functional, security, and Flagsmith integration test suites run automaticall
 # 1. TypeScript Strict Type-Check (0 Errors)
 npx tsc --noEmit
 
-# 2. Flagsmith integration and offline lifecycle suite (21/21 Passed)
+# 2. Prompt-plan validation and remote allocation proof tests (12/12 Passed)
+npm run test:experiment-plan
+
+# 3. Flagsmith integration and offline lifecycle suite (21/21 Passed)
 npm run test:flagsmith
 
-# 3. Comprehensive QA, Math Integrity & Security Audit (36/36 Passed)
+# 4. Comprehensive QA, Math Integrity & Security Audit (36/36 Passed)
 npm run test:audit
 
-# 4. Production Next.js Build (44/44 Pages Compiled)
+# 5. Standard statistical, analytics, telemetry and audit suites
+npm test
+
+# 6. Production Next.js Build (44/44 Pages Compiled)
 npm run build
 ```
 
 ### Test Suite Summary:
+- **12 / 12 prompt-plan and allocation verification tests passed:** Invalid plans, duplicate keys/values, missing guardrail instrumentation, mismatched default values, allocation drift and unconfigured remote options are rejected.
 - **21 / 21 Flagsmith integration checks passed in the isolated test environment:** Credential validation, deterministic identity behavior, offline canary/winner/rollback/kill-switch lifecycle, production-vs-mock guards, segment/trait checks, and secret-leakage checks. The suite explicitly skips live Management API calls when the Organisation token is unavailable; it is not evidence of a live remote rollout.
 - **36 / 36 Comprehensive Audit Tests Passed:** High-precision Normal CDF approximation, two-tailed p-value calculation, Bayesian win probability, SRM Chi-Square detection, prompt injection neutralization, and zero-secret-leakage verification.
 
