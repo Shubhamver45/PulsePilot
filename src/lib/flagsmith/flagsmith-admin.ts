@@ -109,6 +109,97 @@ function normaliseFlagValue(value: any): string | undefined {
   try { return JSON.stringify(value); } catch { return String(value); }
 }
 
+export interface FlagsmithAllocationVerification {
+  verified: boolean;
+  controlPercent: number | null;
+  treatmentPercent: number | null;
+  totalPercent: number | null;
+  variants: Array<{ key: string; expectedPercent: number; actualPercent: number | null }>;
+  errors: string[];
+}
+
+/**
+ * Verifies the actual environment feature-state allocations returned by the
+ * Flagsmith Management API. Project-level option existence alone is not proof
+ * that a live environment has the requested experiment distribution.
+ */
+export function verifyFlagsmithAllocationState(
+  state: any,
+  input: CreateFlagInput
+): FlagsmithAllocationVerification {
+  const errors: string[] = [];
+  const expectedTreatmentTotal = input.variants.reduce(
+    (sum, variant) => sum + Number(variant.trafficAllocation),
+    0
+  );
+  const expectedControlPercent = 100 - expectedTreatmentTotal;
+  const remoteOptions = Array.isArray(state?.multivariate_feature_state_values)
+    ? state.multivariate_feature_state_values
+    : [];
+  const verifiedVariants: FlagsmithAllocationVerification["variants"] = [];
+  let actualTreatmentTotal = 0;
+
+  const controlValue = normaliseFlagValue(state?.feature_state_value);
+  if (controlValue !== input.initialValue) {
+    errors.push("The remote Flagsmith default/control value does not match the requested experiment control configuration.");
+  }
+
+  for (const expected of input.variants) {
+    const match = remoteOptions.find((item: any) =>
+      optionKey(item?.multivariate_feature_option) === expected.key
+    );
+    const actual = match && Number.isFinite(Number(match.percentage_allocation))
+      ? Number(match.percentage_allocation)
+      : null;
+
+    verifiedVariants.push({
+      key: expected.key,
+      expectedPercent: Number(expected.trafficAllocation),
+      actualPercent: actual,
+    });
+
+    if (actual === null) {
+      errors.push(`Flagsmith environment state does not expose an allocation for variant '${expected.key}'.`);
+      continue;
+    }
+
+    actualTreatmentTotal += actual;
+    if (Math.abs(actual - Number(expected.trafficAllocation)) > 0.01) {
+      errors.push(`Variant '${expected.key}' allocation mismatch: expected ${expected.trafficAllocation}%, received ${actual}%.`);
+    }
+  }
+
+  // Any option outside this strategy must not consume traffic silently.
+  for (const remote of remoteOptions) {
+    const remoteKey = optionKey(remote?.multivariate_feature_option);
+    const expected = input.variants.find((variant) => variant.key === remoteKey);
+    const allocation = Number(remote?.percentage_allocation ?? 0);
+    if (!expected && Number.isFinite(allocation) && allocation > 0.01) {
+      errors.push(`Unconfigured Flagsmith option '${remoteKey || "unknown"}' still receives ${allocation}% traffic.`);
+    }
+  }
+
+  const actualControlPercent = 100 - actualTreatmentTotal;
+  if (Math.abs(actualControlPercent - expectedControlPercent) > 0.01) {
+    errors.push(`Default/control allocation mismatch: expected ${expectedControlPercent}%, received ${actualControlPercent}%.`);
+  }
+
+  const treatmentTotalMatches = Math.abs(actualTreatmentTotal - expectedTreatmentTotal) <= 0.01;
+  const actualTotal = actualTreatmentTotal + actualControlPercent;
+  if (!treatmentTotalMatches || Math.abs(actualTotal - 100) > 0.01) {
+    errors.push(`The verified Flagsmith allocation invariant failed: received ${actualTotal}% total.`);
+  }
+
+  return {
+    verified: errors.length === 0,
+    controlPercent: remoteOptions.length ? actualControlPercent : null,
+    treatmentPercent: remoteOptions.length ? actualTreatmentTotal : null,
+    totalPercent: remoteOptions.length ? actualTotal : null,
+    variants: verifiedVariants,
+    errors,
+  };
+}
+
 /**
  * Reads the authoritative environment feature state from the Flagsmith
  * Management API. The public Flags API is intentionally used only for
@@ -396,12 +487,39 @@ export async function createFlagsmithMultivariateFeature(
         };
       }
 
+      const allocationVerification = verifyFlagsmithAllocationState(verification.state, input);
+      if (!allocationVerification.verified) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          state: verification.state,
+          allocationVerification,
+          error: `Flagsmith variant options exist, but live allocations did not verify: ${allocationVerification.errors.join(" ")}`,
+        };
+      }
+
       return {
         success: true,
         featureId,
         isExisting: true,
         remoteCreated: false,
         state: verification.state,
+        allocationVerification,
+      };
+    }
+
+    const allocationVerification = verifyFlagsmithAllocationState(existingState, input);
+    if (!allocationVerification.verified) {
+      return {
+        success: false,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: existingState,
+        allocationVerification,
+        error: `Existing Flagsmith feature does not match the requested live allocation: ${allocationVerification.errors.join(" ")}`,
       };
     }
 
@@ -411,6 +529,7 @@ export async function createFlagsmithMultivariateFeature(
       isExisting: true,
       remoteCreated: false,
       state: existingState,
+      allocationVerification,
     };
   }
 
@@ -520,7 +639,20 @@ export async function createFlagsmithMultivariateFeature(
         success: false,
         featureId: createdFeatureId,
         remoteCreated: true,
+        state: verification.state,
         error: `Flagsmith environment verification is missing keyed options: ${missingKeys.join(", ")}.`,
+      };
+    }
+
+    const allocationVerification = verifyFlagsmithAllocationState(verification.state, input);
+    if (!allocationVerification.verified) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        state: verification.state,
+        allocationVerification,
+        error: `Flagsmith feature exists but the live environment allocation did not verify: ${allocationVerification.errors.join(" ")}`,
       };
     }
 
@@ -529,6 +661,7 @@ export async function createFlagsmithMultivariateFeature(
       featureId: createdFeatureId,
       remoteCreated: true,
       state: verification.state,
+      allocationVerification,
     };
   } catch (err: any) {
     return {
