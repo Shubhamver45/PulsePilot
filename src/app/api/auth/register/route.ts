@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { RegisterInputSchema } from "@/lib/auth/auth-service";
 import { getSupabasePublicClient } from "@/lib/auth/server-auth";
@@ -105,7 +106,21 @@ export async function POST(request: Request) {
           where: { id: authUserId! },
           include: { organization: true },
         });
-        if (existing?.organization) return existing;
+        if (existing?.organization) {
+          const existingProject = await tx.project.findFirst({
+            where: { organizationId: existing.organizationId },
+          });
+          if (!existingProject) {
+            await tx.project.create({
+              data: {
+                name: `${existing.organization.name} Main Project`,
+                organizationId: existing.organizationId,
+                flagsmithProjectId: process.env.FLAGSMITH_PROJECT_ID || undefined,
+              },
+            });
+          }
+          return existing;
+        }
 
         const slugBase = input.organizationName
           .toLowerCase()
@@ -115,7 +130,15 @@ export async function POST(request: Request) {
         const organization = await tx.organization.create({
           data: {
             name: input.organizationName.trim(),
-            slug: `${slugBase}-${crypto.randomUUID().slice(0, 8)}`,
+            slug: `${slugBase}-${randomUUID().slice(0, 8)}`,
+          },
+        });
+
+        await tx.project.create({
+          data: {
+            name: `${input.organizationName.trim()} Main Project`,
+            organizationId: organization.id,
+            flagsmithProjectId: process.env.FLAGSMITH_PROJECT_ID || undefined,
           },
         });
 
