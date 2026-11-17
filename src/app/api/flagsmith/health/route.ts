@@ -199,8 +199,10 @@ export async function GET(request: Request) {
       measuredLatencyMs: dbLatencyMs,
       error: dbError,
     },
-    experimentationDataAvailable: telemetryEventCount > 0,
-    recordedTelemetryEventsCount: telemetryEventCount,
+    // Public health intentionally omits tenant-specific counts.
+    experimentationDataAvailable: null,
+    telemetryCountRequiresAuthenticatedTenant: true,
+    recordedTelemetryEventsCount: null,
     measuredLatencyMs: isEnvironmentConnected && measuredLatencyMs !== null ? measuredLatencyMs : null,
     liveFlagsCount: liveFlags.length,
     diagnostics: {
