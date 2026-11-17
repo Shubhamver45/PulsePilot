@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { use, useState, useEffect } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -38,8 +38,9 @@ const initialChartData: ChartDataPoint[] = [
 export default function ExperimentDetailPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
+  const { id } = use(params);
   const [flagName, setFlagName] = useState("exp_checkout_social_proof");
   const [experimentStatus, setExperimentStatus] = useState<string>("active");
   const [variants, setVariants] = useState<VariantData[]>([
@@ -90,7 +91,7 @@ export default function ExperimentDetailPage({
         body: JSON.stringify({
           prompt: `Analyse my checkout experiment and explain the statistical confidence of variant B.`,
           context: {
-            experimentId: params.id,
+            experimentId: id,
             experimentName: "Checkout Social Proof vs Control",
             flagsmithFeature: flagName,
             control: variants[0],

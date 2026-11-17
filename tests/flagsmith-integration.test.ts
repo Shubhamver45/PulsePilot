@@ -47,8 +47,12 @@ async function runFlagsmithIntegrationTests() {
   // Test Missing FLAGSMITH_ORG_API_TOKEN
   const originalOrgToken = process.env.FLAGSMITH_ORG_API_TOKEN;
   const originalMgmtKey = process.env.FLAGSMITH_MANAGEMENT_KEY;
+  const originalAdminToken = process.env.FLAGSMITH_ADMIN_TOKEN;
+  const originalProjectId = process.env.FLAGSMITH_PROJECT_ID;
+  process.env.FLAGSMITH_PROJECT_ID = process.env.FLAGSMITH_PROJECT_ID || "53867";
   delete process.env.FLAGSMITH_ORG_API_TOKEN;
   delete process.env.FLAGSMITH_MANAGEMENT_KEY;
+  delete process.env.FLAGSMITH_ADMIN_TOKEN;
 
   const missingTokenResult = await createFlagsmithMultivariateFeature({
     name: "exp_test_missing_token",
@@ -64,7 +68,6 @@ async function runFlagsmithIntegrationTests() {
   );
 
   // Test Missing FLAGSMITH_PROJECT_ID
-  const originalProjectId = process.env.FLAGSMITH_PROJECT_ID;
   delete process.env.FLAGSMITH_PROJECT_ID;
   process.env.FLAGSMITH_ORG_API_TOKEN = "test_mock_org_token_xyz";
 

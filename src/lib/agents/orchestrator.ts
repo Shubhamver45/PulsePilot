@@ -162,6 +162,7 @@ export async function orchestrateAgentRequest(
     };
 
     await recordAuditLog({
+      organizationId: typeof context?.organizationId === "string" ? context.organizationId : undefined,
       action: actionByRole[agentRole] || "EXPERIMENT_CREATED",
       actor: { name: AGENT_FRIENDLY_NAMES[agentRole], type: "agent" },
       entityType: "EXPERIMENT",
@@ -185,6 +186,7 @@ export async function orchestrateAgentRequest(
 
     // Log failure event to audit trail honestly
     await recordAuditLog({
+      organizationId: typeof context?.organizationId === "string" ? context.organizationId : undefined,
       action: "OPERATION_FAILED",
       actor: { name: "Orchestrator Error Handler", type: "system" },
       entityType: "EXPERIMENT",

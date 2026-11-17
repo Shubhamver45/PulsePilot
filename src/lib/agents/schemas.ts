@@ -33,7 +33,7 @@ export const StrategyAgentOutputSchema = z.object({
       description: z.string(),
       isControl: z.boolean(),
       trafficAllocation: z.number().min(0).max(100),
-      featureValue: z.record(z.any()),
+      featureValue: z.record(z.string(), z.any()),
       whyWorthTesting: z.string(),
     })
   ).min(2),
@@ -165,7 +165,7 @@ export const ReleaseGuardianOutputSchema = z.object({
     flagsmithActionPayload: z.object({
       featureName: z.string(),
       enabledState: z.boolean(),
-      proposedAllocation: z.record(z.number()),
+      proposedAllocation: z.record(z.string(), z.number()),
     }),
   }),
   safety_handshake: z.object({
@@ -242,7 +242,7 @@ export const OrchestratorResponseSchema = z.object({
     AnalyticsAgentOutputSchema,
     ReleaseGuardianOutputSchema,
     GrowthAdvisorOutputSchema,
-    z.record(z.any()),
+    z.record(z.string(), z.any()),
   ]),
 });
 

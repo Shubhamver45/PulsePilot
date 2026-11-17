@@ -232,7 +232,7 @@ model AuditLog {
   details           String?       @db.Text
   signature         String?       @unique
   previousSignature String?
-  sequenceNumber    Int?          @unique
+  sequenceNumber    Int?
   previousState     Json?
   newState          Json?
   metadata          Json?
@@ -240,5 +240,59 @@ model AuditLog {
 
   @@index([organizationId, createdAt])
   @@map("audit_logs")
+  @@unique([organizationId, sequenceNumber])
+}
+
+model RevokedToken {
+  jti       String   @id @db.VarChar(64)
+  userId    String   @map("user_id") @db.VarChar(64)
+  revokedAt DateTime @default(now()) @map("revoked_at") @db.Timestamptz
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  reason    String?  @default("USER_LOGOUT") @db.VarChar(255)
+
+  @@index([expiresAt])
+  @@index([userId])
+  @@map("revoked_tokens")
+}
+
+enum ProposalStatus {
+  PENDING_APPROVAL
+  APPROVED
+  EXECUTING
+  EXECUTED
+  REJECTED
+  EXPIRED
+}
+
+model ExperimentProposal {
+  id                   String         @id
+  configurationHash    String         @map("configuration_hash")
+  status               ProposalStatus @default(PENDING_APPROVAL)
+  targetEnvironment    String         @default("development") @map("target_environment")
+  flagsmithFeatureName String         @map("flagsmith_feature_name")
+  organizationId       String         @map("organization_id")
+  strategy             Json
+  duplicateCheck       Json           @map("duplicate_check")
+  validation           Json
+  instrumentationPlan  Json           @map("instrumentation_plan")
+  proposedBy           String         @map("proposed_by")
+  proposedAt           DateTime       @default(now()) @map("proposed_at")
+  expiresAt            DateTime       @map("expires_at")
+  approvedBy           String?        @map("approved_by")
+  approvedAt           DateTime?      @map("approved_at")
+  executedBy           String?        @map("executed_by")
+  executedAt           DateTime?      @map("executed_at")
+  executionResult      Json?          @map("execution_result")
+  idempotencyKey       String?        @map("idempotency_key")
+  leaseExpiresAt       DateTime?      @map("lease_expires_at")
+  remoteFeatureId      Int?           @map("remote_feature_id")
+  executionStep        String?        @map("execution_step")
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+
+  @@index([status, expiresAt])
+  @@index([idempotencyKey])
+  @@index([flagsmithFeatureName])
+  @@map("experiment_proposals")
 }
 

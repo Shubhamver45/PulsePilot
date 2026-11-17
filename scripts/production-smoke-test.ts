@@ -286,16 +286,42 @@ async function runProductionSmokeTest() {
   // ---------------------------------------------------------------------------
   console.log(`\nSTEP 13: Testing Release Guardian remote actuation via /api/flagsmith/rollout...`);
 
+  // 13.0 Verify unauthenticated call is rejected (SEC-03 protection)
+  const unauthRes = await fetch(`${PROD_URL}/api/flagsmith/rollout`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      flagsmithFeatureName: testFeatureName,
+      action: 'EMERGENCY_KILL_SWITCH',
+      rationale: 'Unauthenticated attack simulation',
+    }),
+  });
+  console.log(`- SEC-03 Guard: Unauthenticated POST rejected with status=${unauthRes.status} (Expected: 401)`);
+  assert(unauthRes.status === 401, 'Unauthenticated rollout POST strictly rejected with 401 Unauthorized');
+
+  // Authenticate as Sarah Lin (Admin) to obtain session token
+  const loginRes = await fetch(`${PROD_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'sarah@pulsepilot.ai', password: 'pulsepilot2026' }),
+  });
+  const loginData = await loginRes.json();
+  const adminToken = loginData.token;
+  assert(Boolean(adminToken), 'Successfully obtained Admin authentication token');
+  const authHeaders = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${adminToken}`,
+  };
+
   // 13a. Canary Rollout
   const canaryRes = await fetch(`${PROD_URL}/api/flagsmith/rollout`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders,
     body: JSON.stringify({
       flagsmithFeatureName: testFeatureName,
       action: 'GRADUAL_STAGE',
       winningVariantKey: 'treatment',
       stagePercentage: 75,
-      authorizer: 'Vercel Smoke Auditor',
       rationale: 'Testing gradual canary stage',
     }),
   });
@@ -305,12 +331,11 @@ async function runProductionSmokeTest() {
   // 13b. Winner Rollout
   const winRes = await fetch(`${PROD_URL}/api/flagsmith/rollout`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders,
     body: JSON.stringify({
       flagsmithFeatureName: testFeatureName,
       action: 'ROLLOUT_WINNER',
       winningVariantKey: 'treatment',
-      authorizer: 'Vercel Smoke Auditor',
       rationale: 'Testing winner rollout',
     }),
   });
@@ -320,11 +345,10 @@ async function runProductionSmokeTest() {
   // 13c. Emergency Kill-Switch
   const killRes = await fetch(`${PROD_URL}/api/flagsmith/rollout`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders,
     body: JSON.stringify({
       flagsmithFeatureName: testFeatureName,
       action: 'EMERGENCY_KILL_SWITCH',
-      authorizer: 'Vercel Smoke Auditor',
       rationale: 'Testing emergency kill-switch',
     }),
   });
@@ -334,11 +358,10 @@ async function runProductionSmokeTest() {
   // 13d. Safe Rollback
   const rollRes = await fetch(`${PROD_URL}/api/flagsmith/rollout`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders,
     body: JSON.stringify({
       flagsmithFeatureName: testFeatureName,
       action: 'ROLLBACK_TO_CONTROL',
-      authorizer: 'Vercel Smoke Auditor',
       rationale: 'Testing safe rollback to control',
     }),
   });

@@ -214,6 +214,7 @@ async function runLiveAcceptance() {
   });
 
   await recordAuditLog({
+    organizationId: process.env.PULSEPILOT_ORGANIZATION_ID,
     action: "EXPERIMENT_CREATED",
     actor: { name: "Live QA Auditor", type: "human" },
     entityType: "EXPERIMENT",

@@ -132,6 +132,76 @@ export async function getLiveRemoteFeatureState(
         };
       }
 
+      // If multivariate_feature_state_values is missing (client /flags/ endpoint omits it),
+      // enrich from project feature definition and environment live version using Management API
+      if (!matched.multivariate_feature_state_values || matched.multivariate_feature_state_values.length === 0) {
+        const featureId = matched.feature?.id || matched.id;
+        const envId = matched.environment;
+        const projectId = process.env.FLAGSMITH_PROJECT_ID;
+        const authHeaders = getManagementAuthHeader();
+        if (projectId && authHeaders.Authorization && featureId) {
+          try {
+            // 1. Fetch feature options metadata
+            const featRes = await fetch(`${apiUrl}/projects/${projectId}/features/${featureId}/`, {
+              headers: { ...authHeaders, "Content-Type": "application/json" },
+              cache: "no-store",
+            });
+            const optionsMap = new Map<number, any>();
+            if (featRes.ok) {
+              const featData = await featRes.json();
+              if (Array.isArray(featData.multivariate_options)) {
+                for (const opt of featData.multivariate_options) {
+                  optionsMap.set(opt.id, opt);
+                }
+              }
+            }
+
+            // 2. Fetch live published version's actual percentage_allocation for this environment
+            let liveMvs: any[] = [];
+            if (envId) {
+              const verRes = await fetch(`${apiUrl}/environments/${envId}/features/${featureId}/versions/`, {
+                headers: { ...authHeaders, "Content-Type": "application/json" },
+                cache: "no-store",
+              });
+              if (verRes.ok) {
+                const verData = await verRes.json();
+                const versions = verData.results || verData;
+                const liveVer = Array.isArray(versions) ? versions.find((v: any) => v.is_live) : null;
+                if (liveVer) {
+                  const fsRes = await fetch(
+                    `${apiUrl}/environments/${envId}/features/${featureId}/versions/${liveVer.uuid}/featurestates/`,
+                    { headers: { ...authHeaders, "Content-Type": "application/json" }, cache: "no-store" }
+                  );
+                  if (fsRes.ok) {
+                    const fsData = await fsRes.json();
+                    const liveFs = Array.isArray(fsData) ? fsData[0] : fsData;
+                    if (Array.isArray(liveFs?.multivariate_feature_state_values)) {
+                      liveMvs = liveFs.multivariate_feature_state_values;
+                    }
+                  }
+                }
+              }
+            }
+
+            // 3. Map into matched state
+            if (optionsMap.size > 0) {
+              matched.multivariate_feature_state_values = Array.from(optionsMap.values()).map((opt: any) => {
+                const liveMatch = liveMvs.find(
+                  (lm: any) => lm.multivariate_feature_option === opt.id || lm.id === opt.id
+                );
+                return {
+                  id: opt.id,
+                  multivariate_feature_option: opt,
+                  percentage_allocation: liveMatch ? liveMatch.percentage_allocation : opt.default_percentage_allocation,
+                };
+              });
+            }
+          } catch {
+            // Fail open: return matched state as-is
+          }
+        }
+      }
+
       return {
         success: true,
         state: matched,
@@ -163,6 +233,8 @@ export async function createFlagsmithMultivariateFeature(
   error?: string;
   remoteCreated?: boolean;
   isExisting?: boolean;
+  verified?: boolean;
+  status?: "VERIFIED" | "PENDING_PROPAGATION" | "VERIFICATION_MISMATCH" | "ERROR";
   state?: any;
 }> {
   const projectId = process.env.FLAGSMITH_PROJECT_ID;
@@ -172,6 +244,7 @@ export async function createFlagsmithMultivariateFeature(
   if (!projectId) {
     return {
       success: false,
+      status: "ERROR",
       error: "FLAGSMITH_PROJECT_ID is not configured in .env.",
     };
   }
@@ -185,6 +258,8 @@ export async function createFlagsmithMultivariateFeature(
       featureId,
       isExisting: true,
       remoteCreated: false,
+      verified: true,
+      status: "VERIFIED",
       state: existingCheck.state,
     };
   }
@@ -193,6 +268,7 @@ export async function createFlagsmithMultivariateFeature(
   if (!authHeaders.Authorization) {
     return {
       success: false,
+      status: "ERROR",
       error:
         "FLAGSMITH_ORG_API_TOKEN is not configured. Project-level multivariate feature creation requires a Flagsmith Organisation API Token (Settings -> API Keys in Flagsmith).",
       remoteCreated: false,
@@ -232,6 +308,8 @@ export async function createFlagsmithMultivariateFeature(
             featureId: retryCheck.state.feature?.id || retryCheck.state.id,
             isExisting: true,
             remoteCreated: false,
+            verified: true,
+            status: "VERIFIED",
             state: retryCheck.state,
           };
         }
@@ -239,6 +317,7 @@ export async function createFlagsmithMultivariateFeature(
 
       return {
         success: false,
+        status: "ERROR",
         error: `Flagsmith Management API Error (${res.status}): ${errText}`,
         remoteCreated: false,
       };
@@ -249,12 +328,40 @@ export async function createFlagsmithMultivariateFeature(
 
     // 3. Read-After-Write Verification: Verify the feature is now visible in the environment
     const verification = await getLiveRemoteFeatureState(input.name);
-    if (!verification.success) {
+    if (!verification.success || !verification.state) {
       return {
-        success: true,
+        success: false,
         featureId: createdFeatureId,
         remoteCreated: true,
-        error: `Warning: Feature was created on Project, but not yet propagated to Environment: ${verification.error}`,
+        verified: false,
+        status: "PENDING_PROPAGATION",
+        error: `Feature created on project (ID: ${createdFeatureId}), but read-after-write verification failed: ${verification.error || "Feature not found in environment"}`,
+      };
+    }
+
+    // Verify feature identity matches
+    const remoteFeatureId = verification.state.feature?.id || verification.state.id;
+    if (createdFeatureId && remoteFeatureId && remoteFeatureId !== createdFeatureId) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        verified: false,
+        status: "VERIFICATION_MISMATCH",
+        error: `Feature ID mismatch: Project created ${createdFeatureId}, but environment returned ${remoteFeatureId}.`,
+      };
+    }
+
+    // Verify multivariate option presence
+    const remoteMvs = verification.state.multivariate_feature_state_values || [];
+    if (input.variants.length > 0 && remoteMvs.length === 0) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        verified: false,
+        status: "VERIFICATION_MISMATCH",
+        error: `Multivariate option mismatch: Requested ${input.variants.length} variants, but environment returned 0 multivariate options.`,
       };
     }
 
@@ -262,15 +369,69 @@ export async function createFlagsmithMultivariateFeature(
       success: true,
       featureId: createdFeatureId,
       remoteCreated: true,
+      verified: true,
+      status: "VERIFIED",
       state: verification.state,
     };
   } catch (err: any) {
     return {
       success: false,
+      status: "ERROR",
       error: `Network error connecting to Flagsmith Management API: ${err.message}`,
       remoteCreated: false,
     };
   }
+}
+
+/**
+ * Matches a variant key to an option in Flagsmith's multivariate_feature_state_values.
+ * Matches by:
+ * 1. Option ID or state value ID
+ * 2. string_value exact match (case-insensitive)
+ * 3. JSON parsed payload key, name, or layout
+ * 4. Substring containment
+ */
+export function matchVariantOptionIndex(mvs: any[], variantKey: string): number {
+  if (!mvs || !Array.isArray(mvs) || mvs.length === 0 || !variantKey) return -1;
+  const lowerKey = variantKey.trim().toLowerCase();
+
+  // Pass 1: exact match on string_value or ID
+  const exactIdx = mvs.findIndex((mv) => {
+    const opt = mv.multivariate_feature_option || {};
+    if (String(opt.id) === variantKey || String(mv.id) === variantKey) return true;
+    const strVal = typeof opt.string_value === "string" ? opt.string_value.trim().toLowerCase() : "";
+    return strVal === lowerKey;
+  });
+  if (exactIdx !== -1) return exactIdx;
+
+  // Pass 2: JSON payload match
+  const jsonIdx = mvs.findIndex((mv) => {
+    const opt = mv.multivariate_feature_option || {};
+    const strVal = typeof opt.string_value === "string" ? opt.string_value : "";
+    try {
+      const parsed = JSON.parse(strVal);
+      if (parsed.key && String(parsed.key).trim().toLowerCase() === lowerKey) return true;
+      if (parsed.name && String(parsed.name).trim().toLowerCase() === lowerKey) return true;
+      if (parsed.layout && String(parsed.layout).trim().toLowerCase() === lowerKey) return true;
+    } catch {}
+    return false;
+  });
+  if (jsonIdx !== -1) return jsonIdx;
+
+  // Pass 3: substring containment
+  const subIdx = mvs.findIndex((mv) => {
+    const opt = mv.multivariate_feature_option || {};
+    const strVal = typeof opt.string_value === "string" ? opt.string_value.toLowerCase() : "";
+    return strVal.includes(lowerKey);
+  });
+  if (subIdx !== -1) return subIdx;
+
+  // Pass 4: If single treatment variant in binary multivariate experiment
+  if (mvs.length === 1 && (lowerKey === "treatment" || lowerKey === "single_page" || lowerKey === "variant_single_page" || lowerKey === "variant_1")) {
+    return 0;
+  }
+
+  return -1;
 }
 
 /**
@@ -285,8 +446,9 @@ async function mutateRemoteFeatureState(
     enabled?: boolean;
     feature_state_value?: any;
     multivariate_feature_state_values?: any[];
-  }
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
+  },
+  validateVerifiedStateFn?: (verifiedState: any) => { valid: boolean; error?: string }
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
   const authHeaders = getManagementAuthHeader();
   const apiUrl = getApiUrl();
 
@@ -296,6 +458,7 @@ async function mutateRemoteFeatureState(
       success: false,
       error: `Cannot ${mutationDescription}: ${remoteLookup.error}`,
       liveUpdated: false,
+      verified: false,
     };
   }
 
@@ -309,6 +472,7 @@ async function mutateRemoteFeatureState(
       success: false,
       error: `FLAGSMITH_ORG_API_TOKEN is required for remote ${mutationDescription}. Please provide a valid Organisation API token in .env.`,
       liveUpdated: false,
+      verified: false,
     };
   }
 
@@ -344,6 +508,7 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Failed to fetch draft feature state in v2 version (${draftFsRes.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
 
@@ -351,12 +516,43 @@ async function mutateRemoteFeatureState(
       const draftFs = Array.isArray(draftFsList) ? draftFsList[0] : draftFsList;
       const draftFsId = draftFs.id;
 
+      // In v2 draft, multivariate_feature_state_values has multivariate_feature_option as an integer ID.
+      // Enrich with option metadata from `state.multivariate_feature_state_values` so matchVariantOptionIndex works accurately
+      if (Array.isArray(draftFs.multivariate_feature_state_values) && Array.isArray(state.multivariate_feature_state_values)) {
+        draftFs.multivariate_feature_state_values = draftFs.multivariate_feature_state_values.map((dmv: any) => {
+          const matched = state.multivariate_feature_state_values.find(
+            (smv: any) =>
+              smv.multivariate_feature_option?.id === dmv.multivariate_feature_option ||
+              smv.id === dmv.multivariate_feature_option ||
+              smv.id === dmv.id
+          );
+          if (matched && typeof dmv.multivariate_feature_option === "number") {
+            return {
+              ...dmv,
+              multivariate_feature_option: matched.multivariate_feature_option,
+            };
+          }
+          return dmv;
+        });
+      }
+
       // Compute mutations
       const mutations = mutatePayloadFn(draftFs);
       const updatedPayload = {
         ...draftFs,
         ...mutations,
       };
+
+      // Flagsmith v2 versioning PUT endpoint strictly expects multivariate_feature_option as an integer PK
+      if (Array.isArray(updatedPayload.multivariate_feature_state_values)) {
+        updatedPayload.multivariate_feature_state_values = updatedPayload.multivariate_feature_state_values.map((mv: any) => ({
+          ...mv,
+          multivariate_feature_option:
+            typeof mv.multivariate_feature_option === "object" && mv.multivariate_feature_option !== null
+              ? mv.multivariate_feature_option.id
+              : mv.multivariate_feature_option,
+        }));
+      }
 
       // PUT updated draft feature state
       const updateDraftRes = await fetch(
@@ -377,6 +573,7 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Failed to update draft feature state in v2 version (${updateDraftRes.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
 
@@ -399,6 +596,7 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Failed to publish v2 feature version (${publishRes.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
     } else {
@@ -420,16 +618,40 @@ async function mutateRemoteFeatureState(
           success: false,
           error: `Flagsmith ${mutationDescription} Error (${res.status}): ${errText}`,
           liveUpdated: false,
+          verified: false,
         };
       }
     }
 
     // 3. Read-After-Write Verification
     const verified = await getLiveRemoteFeatureState(featureName);
+    if (!verified.success || !verified.state) {
+      return {
+        success: false,
+        error: `Verification failed after ${mutationDescription}: Feature '${featureName}' state could not be verified on remote edge (${verified.error || "Not found"}).`,
+        liveUpdated: false,
+        verified: false,
+      };
+    }
+
+    // Custom verification check
+    if (validateVerifiedStateFn) {
+      const check = validateVerifiedStateFn(verified.state);
+      if (!check.valid) {
+        return {
+          success: false,
+          error: `Verification mismatch after ${mutationDescription}: ${check.error || "Remote state did not match requested changes."}`,
+          liveUpdated: false,
+          verified: false,
+          verifiedState: verified.state,
+        };
+      }
+    }
 
     return {
       success: true,
       liveUpdated: true,
+      verified: true,
       verifiedState: verified.state,
     };
   } catch (err: any) {
@@ -437,6 +659,7 @@ async function mutateRemoteFeatureState(
       success: false,
       error: `Network error during Flagsmith ${mutationDescription}: ${err.message}`,
       liveUpdated: false,
+      verified: false,
     };
   }
 }
@@ -448,18 +671,54 @@ async function mutateRemoteFeatureState(
 export async function rolloutFlagsmithWinner(
   featureName: string,
   winningVariantValue: string
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "rollout winner", (draft) => ({
-    enabled: true,
-    feature_state_value:
-      typeof winningVariantValue === "string"
-        ? { type: "unicode", string_value: winningVariantValue }
-        : winningVariantValue,
-    multivariate_feature_state_values: (draft.multivariate_feature_state_values || []).map((mv: any) => ({
-      ...mv,
-      percentage_allocation: 0,
-    })),
-  }));
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  return mutateRemoteFeatureState(
+    featureName,
+    `rollout winner (${winningVariantValue})`,
+    (draft) => {
+      const currentMvs = draft.multivariate_feature_state_values || [];
+      const winnerIdx = matchVariantOptionIndex(currentMvs, winningVariantValue);
+
+      // Extract value to set on baseline
+      let finalValue = winningVariantValue;
+      if (winnerIdx !== -1) {
+        const opt = currentMvs[winnerIdx].multivariate_feature_option;
+        if (opt?.string_value) {
+          finalValue = opt.string_value;
+        }
+      }
+
+      const isTypedObject =
+        typeof draft.feature_state_value === "object" &&
+        draft.feature_state_value !== null &&
+        "type" in draft.feature_state_value;
+
+      return {
+        enabled: true,
+        feature_state_value: isTypedObject
+          ? { type: "unicode", string_value: finalValue }
+          : finalValue,
+        multivariate_feature_state_values: currentMvs.map((mv: any) => ({
+          ...mv,
+          percentage_allocation: 0,
+        })),
+      };
+    },
+    (verifiedState) => {
+      if (!verifiedState.enabled) {
+        return { valid: false, error: "Feature flag is disabled after 100% rollout." };
+      }
+      const verifiedMvs: any[] = verifiedState.multivariate_feature_state_values || [];
+      const nonZeroMvs = verifiedMvs.filter((mv: any) => (mv.percentage_allocation || 0) > 0);
+      if (nonZeroMvs.length > 0) {
+        return {
+          valid: false,
+          error: `Multivariate allocations not reset to 0% after 100% baseline rollout. Residual: ${nonZeroMvs.length} variants active.`,
+        };
+      }
+      return { valid: true };
+    }
+  );
 }
 
 /**
@@ -470,17 +729,110 @@ export async function updateFlagsmithCanaryStage(
   featureName: string,
   winningVariantKey: string,
   stagePercentage: number
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "canary update", (draft) => {
-    const currentMvs = draft.multivariate_feature_state_values || [];
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  // 1. Strict mathematical parameter validation
+  if (typeof stagePercentage !== "number" || isNaN(stagePercentage) || stagePercentage < 0 || stagePercentage > 100) {
     return {
-      enabled: true,
-      multivariate_feature_state_values: currentMvs.map((mv: any) => ({
-        ...mv,
-        percentage_allocation: stagePercentage,
-      })),
+      success: false,
+      error: `Invalid stage percentage: must be a number between 0 and 100. Received: ${stagePercentage}`,
     };
-  });
+  }
+
+  if (!winningVariantKey || typeof winningVariantKey !== "string" || !winningVariantKey.trim()) {
+    return {
+      success: false,
+      error: "winningVariantKey is required for canary stage allocation.",
+    };
+  }
+
+  const targetPercentage = Math.round(stagePercentage);
+
+  return mutateRemoteFeatureState(
+    featureName,
+    `canary update (${winningVariantKey} -> ${targetPercentage}%)`,
+    (draft) => {
+      const currentMvs: any[] = draft.multivariate_feature_state_values || [];
+
+      // Check if winningVariantKey is control
+      const isControlWinner = winningVariantKey.trim().toLowerCase() === "control";
+
+      if (isControlWinner) {
+        const controlIdx = matchVariantOptionIndex(currentMvs, "control");
+        if (controlIdx !== -1) {
+          // Explicit control option exists
+          return {
+            enabled: true,
+            multivariate_feature_state_values: currentMvs.map((mv, idx) => ({
+              ...mv,
+              percentage_allocation: idx === controlIdx ? targetPercentage : 0,
+            })),
+          };
+        } else {
+          // Control is baseline feature_state_value: baseline gets 100 - sum(treatments)
+          return {
+            enabled: true,
+            multivariate_feature_state_values: currentMvs.map((mv) => ({
+              ...mv,
+              percentage_allocation: 0,
+            })),
+          };
+        }
+      }
+
+      // Treatment variant winning
+      const winnerIdx = matchVariantOptionIndex(currentMvs, winningVariantKey);
+      if (winnerIdx === -1) {
+        const available = currentMvs
+          .map((m: any) => m.multivariate_feature_option?.string_value || m.id)
+          .join(", ");
+        throw new Error(
+          `Variant '${winningVariantKey}' not found among multivariate options for feature '${featureName}'. Configured options: [${available}]`
+        );
+      }
+
+      const controlIdx = matchVariantOptionIndex(currentMvs, "control");
+      if (controlIdx !== -1 && controlIdx !== winnerIdx) {
+        // Explicit control option exists: Winner + Control + Others = 100%
+        return {
+          enabled: true,
+          multivariate_feature_state_values: currentMvs.map((mv, idx) => {
+            if (idx === winnerIdx) return { ...mv, percentage_allocation: targetPercentage };
+            if (idx === controlIdx) return { ...mv, percentage_allocation: 100 - targetPercentage };
+            return { ...mv, percentage_allocation: 0 };
+          }),
+        };
+      }
+
+      // Control is baseline feature_state_value:
+      // Winner gets targetPercentage, all other treatment options get 0%, baseline implicitly receives 100 - targetPercentage.
+      return {
+        enabled: true,
+        multivariate_feature_state_values: currentMvs.map((mv, idx) => {
+          if (idx === winnerIdx) return { ...mv, percentage_allocation: targetPercentage };
+          return { ...mv, percentage_allocation: 0 };
+        }),
+      };
+    },
+    (verifiedState) => {
+      if (!verifiedState.enabled) {
+        return { valid: false, error: "Feature flag is disabled on remote environment after canary update." };
+      }
+      const verifiedMvs: any[] = verifiedState.multivariate_feature_state_values || [];
+      if (winningVariantKey.trim().toLowerCase() !== "control") {
+        const vWinnerIdx = matchVariantOptionIndex(verifiedMvs, winningVariantKey);
+        if (vWinnerIdx !== -1) {
+          const actualPct = verifiedMvs[vWinnerIdx].percentage_allocation;
+          if (actualPct !== targetPercentage) {
+            return {
+              valid: false,
+              error: `Allocation mismatch: requested ${targetPercentage}%, but remote edge reflects ${actualPct}%.`,
+            };
+          }
+        }
+      }
+      return { valid: true };
+    }
+  );
 }
 
 /**
@@ -489,10 +841,20 @@ export async function updateFlagsmithCanaryStage(
  */
 export async function triggerFlagsmithKillSwitch(
   featureName: string
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "kill-switch", () => ({
-    enabled: false,
-  }));
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  return mutateRemoteFeatureState(
+    featureName,
+    "kill-switch",
+    () => ({
+      enabled: false,
+    }),
+    (verifiedState) => {
+      if (verifiedState.enabled !== false) {
+        return { valid: false, error: "Feature flag remains enabled after kill-switch execution." };
+      }
+      return { valid: true };
+    }
+  );
 }
 
 /**
@@ -501,7 +863,7 @@ export async function triggerFlagsmithKillSwitch(
 export async function rollbackFlagsmithToControl(
   featureName: string,
   controlValue: string = "control"
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
   return rolloutFlagsmithWinner(featureName, controlValue);
 }
 
@@ -736,3 +1098,153 @@ export function evaluateBetaTesterSegment(traits: { trait_key: string; trait_val
       (t.trait_value === true || t.trait_value === "true" || t.trait_value === 1)
   );
 }
+
+/**
+ * Enables or disables a feature flag in the live remote Flagsmith environment.
+ * Performs read-after-write verification against the remote API.
+ */
+export async function toggleFlagsmithFeatureState(
+  featureName: string,
+  enabled: boolean
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verified?: boolean; verifiedState?: any }> {
+  return mutateRemoteFeatureState(
+    featureName,
+    enabled ? "enable-flag" : "disable-flag",
+    () => ({
+      enabled,
+    }),
+    (verifiedState) => {
+      if (verifiedState.enabled !== enabled) {
+        return { valid: false, error: `Feature flag enabled state is ${verifiedState.enabled}, expected ${enabled}.` };
+      }
+      return { valid: true };
+    }
+  );
+}
+
+/**
+ * Fetches all live feature flags from Flagsmith via the Flags endpoint,
+ * enriching multivariate options from the project definition when available.
+ */
+export async function listFlagsmithFeatures(): Promise<{
+  success: boolean;
+  flags: any[];
+  error?: string;
+  source: "flagsmith_remote_api" | "flagsmith_mock_store";
+}> {
+  const apiUrl = getApiUrl();
+  const envKey =
+    process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
+    process.env.FLAGSMITH_ENVIRONMENT_KEY;
+  const projectId = process.env.FLAGSMITH_PROJECT_ID;
+  const managementAuth = getManagementAuthHeader();
+
+  if (!envKey || envKey === "mock") {
+    const { flagsmithMockStore } = await import("./flagsmith-mock");
+    return {
+      success: true,
+      flags: flagsmithMockStore.getAllFlags(),
+      source: "flagsmith_mock_store",
+    };
+  }
+
+  try {
+    const res = await fetch(`${apiUrl}/flags/`, {
+      method: "GET",
+      headers: {
+        "X-Environment-Key": envKey,
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return {
+        success: false,
+        flags: [],
+        error: `Flagsmith API Error (${res.status}): ${errText}`,
+        source: "flagsmith_remote_api",
+      };
+    }
+
+    const liveFlags = await res.json();
+    if (!Array.isArray(liveFlags)) {
+      return {
+        success: false,
+        flags: [],
+        error: "Malformed response from Flagsmith flags API.",
+        source: "flagsmith_remote_api",
+      };
+    }
+
+    // Attempt to fetch project features for full multivariate option enrichment
+    let projectFeaturesMap = new Map<string, any>();
+    if (projectId && managementAuth.Authorization) {
+      try {
+        const projRes = await fetch(`${apiUrl}/projects/${projectId}/features/`, {
+          headers: { ...managementAuth, "Content-Type": "application/json" },
+          cache: "no-store",
+        });
+        if (projRes.ok) {
+          const projJson = await projRes.json();
+          const results = Array.isArray(projJson) ? projJson : projJson.results;
+          if (Array.isArray(results)) {
+            for (const f of results) {
+              projectFeaturesMap.set(f.name, f);
+            }
+          }
+        }
+      } catch {
+        // Fall open: continue with environment flag data
+      }
+    }
+
+    const mappedFlags = liveFlags.map((f: any) => {
+      const featureName = f.feature?.name || f.name;
+      const projFeat = projectFeaturesMap.get(featureName);
+      const isMultivariate = f.feature?.type === "MULTIVARIATE" || projFeat?.type === "MULTIVARIATE";
+
+      let variants: Array<{ key: string; trafficAllocation: number; value: string }> = [];
+
+      if (Array.isArray(f.multivariate_feature_state_values) && f.multivariate_feature_state_values.length > 0) {
+        variants = f.multivariate_feature_state_values.map((mv: any) => ({
+          key: mv.multivariate_feature_option?.string_value || `variant_${mv.id}`,
+          trafficAllocation: mv.percentage_allocation,
+          value: mv.multivariate_feature_option?.string_value || "",
+        }));
+      } else if (projFeat && Array.isArray(projFeat.multivariate_options)) {
+        variants = projFeat.multivariate_options.map((opt: any) => ({
+          key: opt.string_value || `opt_${opt.id}`,
+          trafficAllocation: opt.default_percentage_allocation,
+          value: opt.string_value || "",
+        }));
+      }
+
+      return {
+        name: featureName,
+        featureId: f.feature?.id || f.id || projFeat?.id,
+        description: projFeat?.description || (featureName === "exp_checkout_layout_v2" ? "Checkout Experience Optimization (Multi-step vs Single-page)" : "Flagsmith Remote Feature"),
+        enabled: f.enabled ?? true,
+        type: isMultivariate ? "MULTIVARIATE" : "BOOLEAN",
+        initialValue: f.feature_state_value,
+        variants,
+        environment: f.environment,
+      };
+    });
+
+    return {
+      success: true,
+      flags: mappedFlags,
+      source: "flagsmith_remote_api",
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      flags: [],
+      error: `Network error connecting to Flagsmith: ${err.message}`,
+      source: "flagsmith_remote_api",
+    };
+  }
+}
+

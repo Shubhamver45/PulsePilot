@@ -3,7 +3,7 @@
  * Judge-Mandated Remediation: Objective 2
  */
 
-import { getFlagsmithExperimentResults } from "../src/lib/flagsmith/experimentation-service.ts";
+import { getFlagsmithExperimentResults, seedDemoExperimentFixture } from "../src/lib/flagsmith/experimentation-service.ts";
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -17,6 +17,9 @@ async function runTests() {
   console.log("=====================================================================");
   console.log("   PULSEPILOT AI — TELEMETRY PERSISTENCE & AGGREGATION TEST SUITE    ");
   console.log("=====================================================================\n");
+
+  // Explicitly seed the benchmark demo experiment fixture for isolated offline evaluation
+  seedDemoExperimentFixture();
 
   console.log("SECTION 1: EXPERIMENT RESULTS RETRIEVAL & MODEL CONTRACT");
   {

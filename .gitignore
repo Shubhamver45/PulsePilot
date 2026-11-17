@@ -27,7 +27,11 @@ yarn-error.log*
 # Environment variables
 .env
 .env*.local
+.env.staging
+.env*.staging
+.env.staging.*
 !.env.example
+!.env.staging.example
 
 # OS files
 .DS_Store

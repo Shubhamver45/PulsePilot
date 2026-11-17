@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
-import { getLiveRemoteFeatureState } from "@/lib/flagsmith/flagsmith-admin";
+import { getLiveRemoteFeatureState, getManagementAuthHeader } from "@/lib/flagsmith/flagsmith-admin";
+import { withRestrictedAppRole } from "@/lib/db/prisma";
 
 const getApiUrl = () =>
   (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
 const getEventsUrl = () =>
   (process.env.FLAGSMITH_EVENTS_URL || "https://events.flagsmith.com/api/v1").replace(/\/$/, "");
 
-export async function GET() {
-  const startTime = Date.now();
+export type FlagsmithHealthStatus =
+  | "CONNECTED"
+  | "PARTIALLY_CONFIGURED"
+  | "UNAVAILABLE"
+  | "NOT_VERIFIED";
+
+export async function GET(request: Request) {
   const apiUrl = getApiUrl();
   const eventsUrl = getEventsUrl();
   const projectId = process.env.FLAGSMITH_PROJECT_ID || "53867";
@@ -16,12 +22,29 @@ export async function GET() {
     process.env.FLAGSMITH_ENVIRONMENT_KEY ||
     "";
 
-  let measuredLatencyMs = 0;
+  const managementAuth = getManagementAuthHeader();
+  const hasManagementKey = Boolean(managementAuth.Authorization);
+
+  let requestedFeatureName: string | null = null;
+  if (request?.url) {
+    try {
+      const { searchParams } = new URL(request.url);
+      requestedFeatureName = searchParams.get("featureName") || searchParams.get("flag");
+    } catch {
+      // Ignore URL parsing errors
+    }
+  }
+
+  let measuredLatencyMs: number | null = null;
   let liveFlags: any[] = [];
-  let isConnected = false;
+  let isEnvironmentConnected = false;
+  let isManagementConnected = false;
   let activeFeatureState: any = null;
   let environmentNumericId: number | null = null;
+  let managementApiError: string | null = null;
+  let environmentApiError: string | null = null;
 
+  // 1. Verify Environment Key Connectivity via /flags/
   if (envKey && envKey !== "mock") {
     try {
       const pingStart = Date.now();
@@ -38,104 +61,187 @@ export async function GET() {
 
       if (res.ok) {
         liveFlags = await res.json();
-        isConnected = true;
-        const matched = Array.isArray(liveFlags)
-          ? liveFlags.find((f: any) => f.feature?.name === "exp_checkout_layout_v2")
-          : null;
-        if (matched) {
-          activeFeatureState = matched;
-          environmentNumericId = matched.environment || null;
+        isEnvironmentConnected = true;
+
+        if (Array.isArray(liveFlags) && liveFlags.length > 0) {
+          const matched = requestedFeatureName
+            ? liveFlags.find((f: any) => f.feature?.name === requestedFeatureName)
+            : liveFlags.find((f: any) => f.feature?.type === "MULTIVARIATE" || f.feature?.name?.startsWith("exp_")) || liveFlags[0];
+
+          if (matched) {
+            activeFeatureState = matched;
+            environmentNumericId = matched.environment || null;
+          }
         }
+      } else {
+        const errText = await res.text();
+        environmentApiError = `Flagsmith Environment API returned HTTP ${res.status}: ${errText.slice(0, 100)}`;
       }
-    } catch (err) {
-      console.warn("Flagsmith live ping error:", err);
+    } catch (err: any) {
+      environmentApiError = `Network error connecting to Flagsmith Environment API: ${err.message}`;
+    }
+  } else {
+    environmentApiError = "No valid environment key configured (FLAGSMITH_SERVER_SIDE_API_KEY / FLAGSMITH_ENVIRONMENT_KEY).";
+  }
+
+  // 2. Verify Management API Access (Organisation Token)
+  if (hasManagementKey && projectId) {
+    try {
+      const mgmtRes = await fetch(`${apiUrl}/projects/${projectId}/features/`, {
+        method: "GET",
+        headers: {
+          ...managementAuth,
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+      });
+
+      if (mgmtRes.ok) {
+        isManagementConnected = true;
+      } else {
+        const errText = await mgmtRes.text();
+        managementApiError = `Management API returned HTTP ${mgmtRes.status}: ${errText.slice(0, 100)}`;
+      }
+    } catch (err: any) {
+      managementApiError = `Network error connecting to Management API: ${err.message}`;
+    }
+  } else {
+    managementApiError = "FLAGSMITH_ORG_API_TOKEN is not configured. Project-level mutation operations unavailable.";
+  }
+
+  // 3. Explicit lookup if specific feature name was requested and not found in /flags/ list
+  if (!activeFeatureState && isEnvironmentConnected && requestedFeatureName) {
+    try {
+      const remote = await getLiveRemoteFeatureState(requestedFeatureName);
+      if (remote.success && remote.state) {
+        activeFeatureState = remote.state;
+        environmentNumericId = remote.state.environment || null;
+      }
+    } catch {
+      // Lookup error handled gracefully
     }
   }
 
-  // Fallback to local check if remote was unavailable
-  if (!activeFeatureState) {
-    const remote = await getLiveRemoteFeatureState("exp_checkout_layout_v2");
-    if (remote.success && remote.state) {
-      activeFeatureState = remote.state;
-      isConnected = true;
-      environmentNumericId = remote.state.environment || null;
+  // 4. Determine Explicit Health Status
+  let status: FlagsmithHealthStatus = "UNAVAILABLE";
+  if (isEnvironmentConnected && isManagementConnected) {
+    status = "CONNECTED";
+  } else if (isEnvironmentConnected && !isManagementConnected) {
+    status = "PARTIALLY_CONFIGURED";
+  } else if (!envKey) {
+    status = "NOT_VERIFIED";
+  } else {
+    status = "UNAVAILABLE";
+  }
+
+  // 5. Active Query Ping for Database & Warehouse Status Verification
+  let isDatabaseConnected = false;
+  let dbLatencyMs: number | null = null;
+  let dbError: string | null = null;
+  let telemetryEventCount = 0;
+
+  if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
+    try {
+      const dbPingStart = Date.now();
+      await withRestrictedAppRole((tx) => tx.$queryRaw`SELECT 1`);
+      dbLatencyMs = Date.now() - dbPingStart;
+      isDatabaseConnected = true;
+      // Public health cannot count tenant telemetry without an authenticated organization context.
+      telemetryEventCount = 0;
+    } catch (dbErr: any) {
+      isDatabaseConnected = false;
+      dbError = dbErr.message;
     }
   }
 
-  // Key prefix for sanitized display
   const sanitizedEnvKey =
     envKey.length > 8
       ? `${envKey.slice(0, 6)}...${envKey.slice(-4)}`
-      : "Configured";
+      : envKey
+      ? "Configured"
+      : "Not Configured";
+
+  const resolvedWarehouseStatus:
+    | "LOCAL_POSTGRESQL_TELEMETRY"
+    | "EXTERNAL_WAREHOUSE_CONNECTED"
+    | "DATABASE_UNAVAILABLE"
+    | "NOT_CONFIGURED" =
+    process.env.SNOWFLAKE_ACCOUNT || process.env.BIGQUERY_PROJECT
+      ? "EXTERNAL_WAREHOUSE_CONNECTED"
+      : isDatabaseConnected
+      ? "LOCAL_POSTGRESQL_TELEMETRY"
+      : process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")
+      ? "DATABASE_UNAVAILABLE"
+      : "NOT_CONFIGURED";
 
   const responsePayload = {
-    connected: isConnected,
-    apiKeyConfigured: Boolean(envKey && envKey !== "mock"),
+    status, // Explicit enum: CONNECTED | PARTIALLY_CONFIGURED | UNAVAILABLE | NOT_VERIFIED
+    connected: isEnvironmentConnected,
     environmentKeyConfigured: Boolean(envKey && envKey !== "mock"),
-    environmentName: "Development",
-    environmentId: environmentNumericId || 115953,
+    environmentKeyVerified: isEnvironmentConnected,
+    managementApiKeyConfigured: hasManagementKey,
+    managementApiKeyVerified: isManagementConnected,
+    environmentName: isEnvironmentConnected ? "Development" : "Disconnected",
+    environmentId: environmentNumericId,
     environmentKeyPrefix: sanitizedEnvKey,
     projectId,
     apiBaseUrl: apiUrl,
     eventsBaseUrl: eventsUrl,
-    sdkStatus: isConnected ? "READY" : "CONNECTING",
-    experimentationReadiness: "READY",
-    warehouseStatus: "MANAGED_WAREHOUSE_CONNECTED",
-    measuredLatencyMs: measuredLatencyMs > 0 ? measuredLatencyMs : 142,
-    lastSynchronizedAt: new Date().toISOString(),
-    liveFlagsCount: liveFlags.length > 0 ? liveFlags.length : 2,
-
-    // Real Remote Flagsmith Details (Task 1)
-    activeExperimentFlag: {
-      featureId: activeFeatureState?.feature?.id || 291896,
-      stateId: activeFeatureState?.id || 1826064,
-      name: activeFeatureState?.feature?.name || "exp_checkout_layout_v2",
-      type: activeFeatureState?.feature?.type || "MULTIVARIATE",
-      enabled: activeFeatureState?.enabled ?? true,
-      initialValue: activeFeatureState?.feature_state_value || '{"layout":"multi_step"}',
-      variants: [
-        {
-          key: "control",
-          name: "Multi-Step Checkout",
-          layout: "multi_step",
-          allocationPercent: 50,
-        },
-        {
-          key: "variant_single_page",
-          name: "Single-Page Streamlined Checkout",
-          layout: "single_page",
-          allocationPercent: 50,
-        },
-      ],
-      readAfterWriteVerification: {
-        status: "VERIFIED_AT_EDGE",
-        verifiedAt: new Date().toISOString(),
-        endpoint: `${apiUrl}/flags/`,
-        latencyMs: measuredLatencyMs > 0 ? measuredLatencyMs : 142,
-      },
-      lastEvaluation: {
-        identity: "user_alex_dev",
-        evaluatedVariant: "single_page",
-        method: "GET /api/v1/identities/?identifier=user_alex_dev",
-        status: "200_OK",
-        timestamp: new Date().toISOString(),
-      },
-      lastRemoteMutation: {
-        action: "MUTATE_MULTIVARIATE_STAGE",
-        protocol: "Flagsmith v2 Feature Versioning (POST /versions/ -> PUT /featurestates/ -> POST /publish/)",
-        environmentId: environmentNumericId || 115953,
-        status: "PUBLISHED_TO_EDGE",
-        timestamp: new Date().toISOString(),
-      },
+    sdkStatus: isEnvironmentConnected ? "READY" : "CONNECTING",
+    experimentationReadiness: isEnvironmentConnected
+      ? isManagementConnected
+        ? "READY"
+        : "READ_ONLY_EVALUATIONS"
+      : "UNCONFIGURED",
+    warehouseStatus: resolvedWarehouseStatus,
+    database: {
+      isDatabaseConnected,
+      measuredLatencyMs: dbLatencyMs,
+      error: dbError,
+    },
+    // Public health intentionally omits tenant-specific counts.
+    experimentationDataAvailable: null,
+    telemetryCountRequiresAuthenticatedTenant: true,
+    recordedTelemetryEventsCount: null,
+    measuredLatencyMs: isEnvironmentConnected && measuredLatencyMs !== null ? measuredLatencyMs : null,
+    liveFlagsCount: liveFlags.length,
+    diagnostics: {
+      managementApiError,
+      environmentApiError,
+      databaseError: dbError,
     },
 
-    // Flagsmith CLI and MCP Architectural Evaluation (Task 1)
-    cliAndMcpEvaluation: {
-      cliSupport: "Documented & Available (flagsmith-cli)",
-      mcpSupport: "Available (@flagsmith/mcp for IDEs)",
-      runtimeArchitecture: "DIRECT_REST_API_V2_VERSIONING",
+    // Real Remote Flagsmith Details (Independently Verified from Live Flagsmith Call)
+    activeExperimentFlag: activeFeatureState
+      ? {
+          featureId: activeFeatureState.feature?.id || activeFeatureState.id,
+          stateId: activeFeatureState.id,
+          name: activeFeatureState.feature?.name || activeFeatureState.name,
+          type: activeFeatureState.feature?.type || "MULTIVARIATE",
+          enabled: activeFeatureState.enabled ?? true,
+          initialValue: activeFeatureState.feature_state_value,
+          variants: (activeFeatureState.multivariate_feature_state_values || []).map((mv: any) => ({
+            id: mv.id,
+            optionId: mv.multivariate_feature_option?.id,
+            value: mv.multivariate_feature_option?.string_value,
+            allocationPercent: mv.percentage_allocation,
+          })),
+        }
+      : null,
+
+    // Flagsmith Integration Architecture
+    integrationArchitecture: {
+      clientProtocol: "HTTPS REST API v2 Feature Versioning",
+      endpointsUsed: [
+        "GET /api/v1/flags/ (Edge feature evaluations)",
+        "POST /api/v1/projects/{projectId}/features/ (Multivariate feature provisioning)",
+        "POST /api/v1/environments/{envId}/features/{featureId}/versions/ (v2 Version draft creation)",
+        "PUT /api/v1/environments/{envId}/features/{featureId}/versions/{versionUuid}/featurestates/{fsId}/ (Draft mutation)",
+        "POST /api/v1/environments/{envId}/features/{featureId}/versions/{versionUuid}/publish/ (Atomic publish to edge)",
+        "POST /api/v1/identities/ (Identity traits and segment evaluation)",
+      ],
       architecturalRationale:
-        "PulsePilot operates as an autonomous agent orchestrator running inside Next.js/Vercel serverless environments. Spawning external CLI/MCP subprocesses in serverless lambdas adds container cold-starts, lacks typed return validation, and adds unneeded binary dependencies. PulsePilot's direct HTTPS REST integration with Flagsmith v2 Feature Versioning provides deterministic, type-safe, sub-200ms mutations with immediate read-after-write verification.",
+        "Direct HTTPS REST integration with Flagsmith v2 Feature Versioning provides direct serverless typed mutations, eliminates container cold-starts inherent to CLI subprocesses, and guarantees strict read-after-write verification.",
     },
   };
 

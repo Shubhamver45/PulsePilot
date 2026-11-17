@@ -1,204 +1,178 @@
 import { NextResponse } from "next/server";
-import { ExperimentStrategySchema } from "@/lib/ai/schemas";
-import { createFlagsmithMultivariateFeature } from "@/lib/flagsmith/flagsmith-admin";
-import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
-import { prisma } from "@/lib/db/prisma";
-import { recordAuditLog } from "@/lib/audit/audit-logger";
+import { getUserFromToken } from "@/lib/auth/auth-service";
+import { approveAndExecuteProposal } from "@/lib/flagsmith/proposal-service";
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const strategy = ExperimentStrategySchema.parse(body.strategy);
-    const approvedBy = body.approvedBy || "Sarah Lin (Product Lead)";
+    // 1. Session Token Extraction
+    const authHeader = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+    const cookieHeader = request.headers.get("cookie") || "";
+    const cookieToken = cookieHeader
+      .split("; ")
+      .find((c) => c.startsWith("pulsepilot_session="))
+      ?.split("=")[1];
 
-    const allVariants = [
-      strategy.control_variant,
-      ...strategy.treatment_variants,
-    ];
+    const isCookieAuth = Boolean(!authHeader && cookieToken);
+    const token = authHeader || cookieToken;
 
-    const flagsmithPayload = {
-      name: strategy.flagsmith_feature_name,
-      description: `${strategy.experiment_name} | Hypothesis: ${strategy.hypothesis.slice(0, 100)}...`,
-      initialValue: JSON.stringify(strategy.control_variant.featureValue),
-      variants: strategy.treatment_variants.map((v) => ({
-        key: v.key,
-        trafficAllocation: v.trafficAllocation,
-        value: JSON.stringify(v.featureValue),
-      })),
-    };
-
-    // 1. Provision Feature Flag remotely in Flagsmith Management API
-    const fsResult = await createFlagsmithMultivariateFeature(flagsmithPayload);
-
-    // CRITICAL: Reject false success if remote Flagsmith operation failed
-    if (!fsResult.success) {
-      await recordAuditLog({
-        action: "OPERATION_FAILED",
-        actor: { name: approvedBy, type: "human" },
-        entityType: "EXPERIMENT",
-        entityId: strategy.flagsmith_feature_name,
-        details: `Flagsmith remote provisioning failed: ${fsResult.error}`,
-        metadata: {
-          error: fsResult.error,
-          featureName: strategy.flagsmith_feature_name,
-          status: "FAILED_REMOTE_ACTUATION",
-        },
-      });
-
+    if (!token) {
       return NextResponse.json(
         {
           success: false,
-          error: fsResult.error || "Failed to provision feature flag in Flagsmith.",
-          flagsmithFeatureName: strategy.flagsmith_feature_name,
-          isConfigError: fsResult.error?.includes("FLAGSMITH_ORG_API_TOKEN"),
+          error: "UNAUTHORIZED",
+          message:
+            "Authentication required to create experiments. Please provide a valid session cookie or Bearer token.",
         },
-        { status: 502 }
+        { status: 401 }
       );
     }
 
-    const featureId = fsResult.featureId!;
+    // 2. CSRF Protection for Cookie-Authenticated Requests
+    if (isCookieAuth) {
+      const origin = request.headers.get("origin");
+      const referer = request.headers.get("referer");
+      const host = request.headers.get("host");
 
-    // 2. Database Persistence via Prisma
-    let experimentDbId = `exp_${Date.now()}`;
-
-    if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
-      try {
-        // Ensure Organization exists
-        let org = await prisma.organization.findFirst();
-        if (!org) {
-          org = await prisma.organization.create({
-            data: {
-              name: "Acme Growth Inc.",
-              slug: `acme-growth-${Date.now().toString(36).slice(-4)}`,
-            },
-          });
-        }
-
-        // Ensure Project exists
-        let project = await prisma.project.findFirst({
-          where: { organizationId: org.id },
-        });
-        if (!project) {
-          project = await prisma.project.create({
-            data: {
-              name: "PulsePilot Main Project",
-              organizationId: org.id,
-              flagsmithProjectId: process.env.FLAGSMITH_PROJECT_ID || "53867",
-              flagsmithEnvironmentKey: process.env.FLAGSMITH_ENVIRONMENT_KEY || "4Y72D2n57QaWFq7TU4sNsz",
-            },
-          });
-        }
-
-        // Upsert Experiment record
-        const experiment = await prisma.experiment.upsert({
-          where: { flagsmithFeatureName: strategy.flagsmith_feature_name },
-          update: {
-            title: strategy.experiment_name,
-            hypothesis: strategy.hypothesis,
-            flagsmithFeatureId: featureId,
-            status: "ACTIVE",
-            primaryMetric: strategy.primary_metric.key,
-            guardrailMetrics: strategy.guardrail_metrics?.map((m) => m.key) || [],
-            sampleSizeTarget: 5000,
+      if (!origin && !referer) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "CSRF_DETECTED",
+            message: "Missing Origin or Referer header on cookie-authenticated request.",
           },
-          create: {
-            projectId: project.id,
-            title: strategy.experiment_name,
-            hypothesis: strategy.hypothesis,
-            flagsmithFeatureId: featureId,
-            flagsmithFeatureName: strategy.flagsmith_feature_name,
-            status: "ACTIVE",
-            primaryMetric: strategy.primary_metric.key,
-            guardrailMetrics: strategy.guardrail_metrics?.map((m) => m.key) || [],
-            targetAudience: strategy.target_audience?.segmentName || "All Visitors",
-            sampleSizeTarget: 5000,
-          },
-        });
+          { status: 403 }
+        );
+      }
 
-        experimentDbId = experiment.id;
+      const source = origin || referer || "";
+      if (source && host) {
+        try {
+          const sourceUrl = new URL(source.startsWith("http") ? source : `https://${source}`);
+          const sourceHost = sourceUrl.host;
+          const isLocal = (h: string) => h.startsWith("localhost") || h.startsWith("127.0.0.1");
 
-        // Upsert Variants
-        await prisma.experimentVariant.deleteMany({
-          where: { experimentId: experiment.id },
-        });
-
-        await prisma.experimentVariant.createMany({
-          data: [
+          if (sourceHost !== host && !(isLocal(sourceHost) && isLocal(host))) {
+            return NextResponse.json(
+              {
+                success: false,
+                error: "CSRF_DETECTED",
+                message: "Cross-site request forgery protection triggered: origin mismatch.",
+              },
+              { status: 403 }
+            );
+          }
+        } catch {
+          return NextResponse.json(
             {
-              experimentId: experiment.id,
-              key: strategy.control_variant.key,
-              name: strategy.control_variant.name,
-              isControl: true,
-              trafficAllocation: strategy.control_variant.trafficAllocation,
-              featureValue: strategy.control_variant.featureValue as any,
+              success: false,
+              error: "CSRF_DETECTED",
+              message: "Invalid Origin or Referer header format.",
             },
-            ...strategy.treatment_variants.map((v) => ({
-              experimentId: experiment.id,
-              key: v.key,
-              name: v.name,
-              isControl: false,
-              trafficAllocation: v.trafficAllocation,
-              featureValue: v.featureValue as any,
-            })),
-          ],
-        });
-      } catch (dbErr: any) {
-        console.warn("[Prisma Persistence Warning]:", dbErr.message);
+            { status: 403 }
+          );
+        }
       }
     }
 
-    // 3. Mirror to local fallback store for offline tests
-    flagsmithMockStore.setFlag({
-      name: strategy.flagsmith_feature_name,
-      enabled: true,
-      type: "MULTIVARIATE",
-      value: JSON.stringify(strategy.control_variant.featureValue),
-      multivariateOptions: allVariants.map((v) => ({
-        key: v.key,
-        trafficAllocation: v.trafficAllocation,
-        value: JSON.stringify(v.featureValue),
-      })),
-    });
+    // 3. Authenticate User & Validate Revocation (Fail-Closed)
+    let user;
+    try {
+      user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+    } catch (err: any) {
+      if (err.message?.includes("PERSISTENT_REVOCATION_UNAVAILABLE")) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "AUTH_PERSISTENCE_ERROR",
+            message:
+              "Experiment creation blocked: session revocation status cannot be verified against persistent storage.",
+          },
+          { status: 500 }
+        );
+      }
+      throw err;
+    }
 
-    // 4. Record Governance Audit Trail
-    await recordAuditLog({
-      action: "EXPERIMENT_CREATED",
-      actor: { name: approvedBy, type: "human" },
-      entityType: "EXPERIMENT",
-      entityId: strategy.flagsmith_feature_name,
-      details: `Experiment '${strategy.experiment_name}' successfully provisioned in Flagsmith (Feature ID: ${featureId}) with ${allVariants.length} variants.`,
-      metadata: {
-        featureId,
-        flagsmithFeatureName: strategy.flagsmith_feature_name,
-        remoteCreated: fsResult.remoteCreated,
-        isExisting: fsResult.isExisting,
-        approvedBy,
-        status: "SUCCESS_VERIFIED",
-      },
-    });
+    if (!user) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "INVALID_SESSION",
+          message: "Session is invalid, expired, or has been revoked. Please sign in again.",
+        },
+        { status: 401 }
+      );
+    }
+
+    // 4. Enforce Strict RBAC (Only ADMIN and EDITOR roles can create/execute experiments)
+    if (user.role !== "ADMIN" && user.role !== "EDITOR") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "FORBIDDEN",
+          message: `Role '${user.role}' is not authorized to create experiments or provision feature flags. Only ADMIN and EDITOR roles have write access.`,
+        },
+        { status: 403 }
+      );
+    }
+
+    const body = await request.json();
+
+    // 5. Strict Human-in-the-Loop Gate: Direct execution from raw strategy is rejected
+    if (body.strategy && !body.proposalId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "PROPOSAL_REVIEW_REQUIRED",
+          message:
+            "Direct execution from raw strategy is prohibited. PulsePilot requires a strict Human-in-the-Loop two-step handshake: submit your strategy to /api/experiments/propose for validation and proposal generation, review the proposal in the UI, and then submit proposalId and configurationHash to /api/experiments/approve.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const proposalId = body.proposalId;
+    const configurationHash = body.configurationHash;
+
+    if (!proposalId || !configurationHash) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "INVALID_PROPOSAL_PAYLOAD",
+          message:
+            "A valid proposalId and configurationHash are required for execution. First generate a proposal via /api/experiments/propose.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // 6. Execute Human-Approved Proposal against Flagsmith with Read-After-Write Verification
+    const executionResult = await approveAndExecuteProposal(
+      proposalId,
+      configurationHash,
+      user,
+      {
+        confirmedProductionTarget: body.confirmedProductionTarget,
+      }
+    );
 
     return NextResponse.json({
+      ...executionResult,
       success: true,
-      experimentId: experimentDbId,
-      flagsmithFeatureId: featureId,
-      flagsmithFeatureName: strategy.flagsmith_feature_name,
-      status: "ACTIVE",
-      remoteCreated: fsResult.remoteCreated,
-      isExisting: fsResult.isExisting,
-      approvedBy,
-      timestamp: new Date().toISOString(),
-      message: `Feature flag '${strategy.flagsmith_feature_name}' successfully provisioned in Flagsmith (Feature ID: ${featureId}). Verified in remote environment.`,
-      state: fsResult.state,
     });
   } catch (error: any) {
-    console.error("Experiment creation failed:", error);
+    console.error("Experiment creation/execution failed:", error);
+    const isAuthOrForbidden =
+      error.message?.includes("not authorized") || error.message?.includes("expired");
+    const isTamper = error.message?.includes("SECURITY VIOLATION");
+
     return NextResponse.json(
       {
         success: false,
-        error: "Failed to create experiment and provision Flagsmith flag",
-        details: error.message || error.errors,
+        error: "Failed to execute experiment proposal",
+        details: error.message,
       },
-      { status: 400 }
+      { status: isTamper ? 409 : isAuthOrForbidden ? 403 : 400 }
     );
   }
 }

@@ -1,236 +1,171 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { inMemoryTelemetryLogs } from "@/lib/telemetry/store";
-import { prisma } from "@/lib/db/prisma";
+import { getUserFromToken } from "@/lib/auth/auth-service";
+import { withTenantContext } from "@/lib/db/prisma";
+import type { Prisma } from "@prisma/client";
 
 const TelemetryEventSchema = z.object({
   experimentFlag: z.string().min(1),
   distinctUserId: z.string().min(1),
-  eventType: z.enum([
-    "EXPOSURE",
-    "CONVERSION",
-    "experiment_exposure",
-    "checkout_started",
-    "checkout_completed",
-    "checkout_abandoned",
-  ]),
+  eventType: z.enum(["EXPOSURE", "CONVERSION", "experiment_exposure", "checkout_started", "checkout_completed", "checkout_abandoned"]),
   variantKey: z.string().optional(),
   metricKey: z.string().optional(),
-  properties: z.record(z.any()).optional(),
+  properties: z.record(z.string(), z.any()).optional(),
   idempotencyKey: z.string().optional(),
   requirePersistence: z.boolean().optional(),
 });
 
+function getToken(request: Request): string | null {
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "");
+  const cookie = (request.headers.get("cookie") || "").split("; ").find((p) => p.startsWith("pulsepilot_session="))?.split("=")[1];
+  return bearer || cookie || null;
+}
+
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const event = TelemetryEventSchema.parse(body);
+    const event = TelemetryEventSchema.parse(await request.json());
+    const eventType: "EXPOSURE" | "CONVERSION" =
+      event.eventType === "EXPOSURE" || event.eventType === "experiment_exposure" ? "EXPOSURE" : "CONVERSION";
+    const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock") && process.env.DATABASE_URL.startsWith("postgres"));
+    const previewDemoMode = process.env.VERCEL_ENV === "preview" && process.env.NEXT_PUBLIC_APP_ENV === "preview";
 
-    const normalizedEventType: "EXPOSURE" | "CONVERSION" =
-      event.eventType === "experiment_exposure" || event.eventType === "EXPOSURE"
-        ? "EXPOSURE"
-        : "CONVERSION";
-
-    const record = {
-      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      timestamp: new Date().toISOString(),
-      experimentFlag: event.experimentFlag,
-      distinctUserId: event.distinctUserId,
-      eventType: normalizedEventType,
-      rawEventType: event.eventType,
-      variantKey: event.variantKey || "control",
-      metricKey: event.metricKey || (event.eventType === "EXPOSURE" ? "exposure" : event.eventType),
-      properties: event.properties || {},
-    };
-
-    const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
-
-    // Check if persistence is explicitly required or configured
-    if (event.requirePersistence && !isDbConfigured) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "PERSISTENT_STORAGE_UNAVAILABLE",
-          message: "Persistent PostgreSQL storage was requested but is not configured.",
-        },
-        { status: 503 }
-      );
+    if (process.env.NODE_ENV === "production" && !previewDemoMode && !databaseConfigured) {
+      return NextResponse.json({ success: false, status: "FAILED", error: "PERSISTENT_STORAGE_UNAVAILABLE" }, { status: 503 });
     }
 
-    let persistedToDb = false;
+    if (databaseConfigured) {
+      const token = getToken(request);
+      if (!token) return NextResponse.json({ success: false, status: "FAILED", error: "UNAUTHORIZED" }, { status: 401 });
+      const user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+      if (!user) return NextResponse.json({ success: false, status: "FAILED", error: "INVALID_SESSION" }, { status: 401 });
 
-    // 1. Prisma Persistence to PostgreSQL
-    if (isDbConfigured) {
+      // Persisted identity is derived from the signed-in user, never caller-supplied.
+      const distinctUserId = user.id;
+      const metricKey = event.metricKey || (eventType === "EXPOSURE" ? "exposure" : event.eventType);
+      const variantKey = event.variantKey || "control";
+      const conversionId = event.properties?.orderId || event.properties?.transactionId || event.properties?.eventId || event.idempotencyKey;
+      const dedupKey = eventType === "EXPOSURE"
+        ? user.organizationId + ":" + event.experimentFlag + ":" + distinctUserId + ":EXPOSURE"
+        : user.organizationId + ":" + event.experimentFlag + ":" + distinctUserId + ":CONVERSION:" + String(conversionId || metricKey);
+
       try {
-        const experiment = await prisma.experiment.findUnique({
-          where: { flagsmithFeatureName: event.experimentFlag },
-          include: { variants: true },
+        const saved = await withTenantContext(user.organizationId, async (tx) => {
+          const experiment = await tx.experiment.findUnique({
+            where: { flagsmithFeatureName: event.experimentFlag },
+            include: { variants: true },
+          });
+          if (!experiment) {
+            const error: any = new Error("EXPERIMENT_NOT_FOUND_FOR_TENANT");
+            error.statusCode = 404;
+            throw error;
+          }
+          const variant = experiment.variants.find((item) => item.key === variantKey);
+          if (!variant) {
+            const error: any = new Error("VARIANT_NOT_FOUND_FOR_EXPERIMENT");
+            error.statusCode = 400;
+            throw error;
+          }
+          const record = await tx.telemetryEvent.create({
+            data: {
+              experimentId: experiment.id,
+              variantId: variant.id,
+              distinctUserId,
+              eventType,
+              metricKey,
+              dedupKey,
+              properties: (event.properties || {}) as Prisma.InputJsonValue,
+            },
+          });
+          if (eventType === "EXPOSURE") {
+            await tx.experiment.update({
+              where: { id: experiment.id },
+              data: { sampleSizeCurrent: { increment: 1 } },
+            });
+          }
+          return record;
         });
 
-        if (!experiment) {
-          if (event.requirePersistence) {
-            return NextResponse.json(
-              {
-                success: false,
-                error: "EXPERIMENT_NOT_FOUND",
-                message: `Experiment for feature flag '${event.experimentFlag}' not found in database.`,
-              },
-              { status: 404 }
-            );
-          }
-        } else {
-          const matchedVariant =
-            experiment.variants.find((v) => v.key === event.variantKey) ||
-            experiment.variants.find((v) => v.isControl) ||
-            experiment.variants[0];
-
-          if (matchedVariant) {
-            // Deterministic deduplication key:
-            // Exposures: 1 per user per experiment
-            // Conversions: 1 per user per transaction/order/event (no randomness)
-            const conversionId =
-              event.properties?.orderId ||
-              event.properties?.transactionId ||
-              event.properties?.eventId ||
-              event.idempotencyKey;
-
-            let dedupKey: string;
-            if (normalizedEventType === "EXPOSURE") {
-              dedupKey = `${experiment.id}:${event.distinctUserId}:EXPOSURE`;
-            } else {
-              if (conversionId) {
-                dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${conversionId}`;
-              } else {
-                if (event.requirePersistence) {
-                  return NextResponse.json(
-                    {
-                      success: false,
-                      error: "MISSING_CONVERSION_IDENTIFIER",
-                      message:
-                        "Conversion telemetry events require an orderId, transactionId, eventId, or idempotencyKey for deterministic duplicate prevention.",
-                    },
-                    { status: 422 }
-                  );
-                }
-                // Fallback to deterministic single user conversion per metric key (never Date.now() or randomness)
-                dedupKey = `${experiment.id}:${event.distinctUserId}:CONVERSION:${record.metricKey}`;
-              }
-            }
-
-            try {
-              const savedEvent = await prisma.telemetryEvent.create({
-                data: {
-                  experimentId: experiment.id,
-                  variantId: matchedVariant.id,
-                  distinctUserId: event.distinctUserId,
-                  eventType: normalizedEventType,
-                  metricKey: record.metricKey,
-                  dedupKey,
-                  properties: record.properties,
-                },
-              });
-
-              persistedToDb = true;
-
-              // Increment current sample size if exposure
-              if (normalizedEventType === "EXPOSURE") {
-                await prisma.experiment.update({
-                  where: { id: experiment.id },
-                  data: {
-                    sampleSizeCurrent: { increment: 1 },
-                  },
-                });
-              }
-
-              record.id = savedEvent.id;
-            } catch (createErr: any) {
-              // Handle P2002 unique constraint violation for idempotent deduplication
-              if (createErr.code === "P2002") {
-                return NextResponse.json({
-                  success: true,
-                  duplicate: true,
-                  persisted: true,
-                  message: `Duplicate ${normalizedEventType} event safely ignored for user '${event.distinctUserId}'.`,
-                });
-              }
-              throw createErr;
-            }
-          }
+        return NextResponse.json({
+          success: true, status: "PERSISTED", persisted: true, duplicate: false,
+          eventId: saved.id, recordedAt: saved.timestamp.toISOString(), mode: "POSTGRESQL_TENANT_SCOPED",
+        });
+      } catch (error: any) {
+        if (error.code === "P2002") {
+          return NextResponse.json({ success: true, status: "DUPLICATE", persisted: true, duplicate: true });
         }
-      } catch (dbErr: any) {
-        console.error("[Telemetry Tracking DB Error]:", dbErr.message);
-        if (event.requirePersistence) {
-          return NextResponse.json(
-            {
-              success: false,
-              error: "PERSISTENT_STORAGE_UNAVAILABLE",
-              message: `Database failure persisting telemetry: ${dbErr.message}`,
-            },
-            { status: 503 }
-          );
-        }
+        return NextResponse.json({
+          success: false, status: "FAILED", error: error.message || "PERSISTENT_STORAGE_ERROR",
+        }, { status: error.statusCode || 503 });
       }
     }
 
-    // 2. In-Memory Store for Real-Time UI Reactivity & Sandbox Mode
+    // Explicit offline demo mode, never used in production.
+    const record = {
+      id: "evt_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      timestamp: new Date().toISOString(),
+      experimentFlag: event.experimentFlag,
+      distinctUserId: event.distinctUserId,
+      eventType,
+      rawEventType: event.eventType,
+      variantKey: event.variantKey || "control",
+      metricKey: event.metricKey || (eventType === "EXPOSURE" ? "exposure" : event.eventType),
+      properties: event.properties || {},
+    };
     inMemoryTelemetryLogs.unshift(record);
-    if (inMemoryTelemetryLogs.length > 500) {
-      inMemoryTelemetryLogs.pop();
-    }
-
+    if (inMemoryTelemetryLogs.length > 500) inMemoryTelemetryLogs.pop();
     return NextResponse.json({
-      success: true,
-      eventId: record.id,
-      recordedAt: record.timestamp,
-      persisted: persistedToDb,
-      mode: isDbConfigured ? "POSTGRESQL_PRODUCTION" : "SANDBOX MOCK MODE",
-      message: `Telemetry ${event.eventType} recorded for '${event.experimentFlag}' on user '${event.distinctUserId}'.`,
+      success: true, status: "ACCEPTED_IN_MEMORY", persisted: false, duplicate: false,
+      eventId: record.id, recordedAt: record.timestamp, mode: "SANDBOX_MOCK_MODE",
     });
-  } catch (err: any) {
-    return NextResponse.json(
-      { success: false, error: "Invalid telemetry payload", details: err.message },
-      { status: 400 }
-    );
+  } catch (error: any) {
+    return NextResponse.json({
+      success: false, status: "FAILED", error: "Invalid telemetry payload", details: error.message,
+    }, { status: 400 });
   }
 }
 
-export async function GET() {
-  const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
-
-  if (isDbConfigured) {
+export async function GET(request: Request) {
+  const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock") && process.env.DATABASE_URL.startsWith("postgres"));
+  const previewDemoMode = process.env.VERCEL_ENV === "preview" && process.env.NEXT_PUBLIC_APP_ENV === "preview";
+  if (process.env.NODE_ENV === "production" && !previewDemoMode && !databaseConfigured) {
+    return NextResponse.json({ success: false, error: "PERSISTENT_STORAGE_UNAVAILABLE" }, { status: 503 });
+  }
+  if (databaseConfigured) {
+    const token = getToken(request);
+    if (!token) return NextResponse.json({ success: false, error: "UNAUTHORIZED" }, { status: 401 });
+    const user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+    if (!user) return NextResponse.json({ success: false, error: "INVALID_SESSION" }, { status: 401 });
     try {
-      const dbCount = await prisma.telemetryEvent.count();
-      const recentDbEvents = await prisma.telemetryEvent.findMany({
-        take: 50,
-        orderBy: { timestamp: "desc" },
-        include: {
-          experiment: { select: { flagsmithFeatureName: true } },
-          variant: { select: { key: true } },
-        },
-      });
-
+      const events = await withTenantContext(user.organizationId, (tx) =>
+        tx.telemetryEvent.findMany({
+          take: 100,
+          orderBy: { timestamp: "desc" },
+          include: {
+            experiment: { select: { flagsmithFeatureName: true, title: true } },
+            variant: { select: { key: true, isControl: true } },
+          },
+        })
+      );
       return NextResponse.json({
-        source: "POSTGRESQL_DATABASE",
-        totalEvents: dbCount,
-        recentEvents: recentDbEvents.map((evt) => ({
-          id: evt.id,
-          timestamp: evt.timestamp.toISOString(),
-          experimentFlag: evt.experiment.flagsmithFeatureName,
-          distinctUserId: evt.distinctUserId,
-          eventType: evt.eventType,
-          variantKey: evt.variant.key,
-          metricKey: evt.metricKey,
-          properties: evt.properties,
+        total: events.length,
+        source: "POSTGRESQL_TENANT_SCOPED",
+        events: events.map((entry) => ({
+          id: entry.id,
+          timestamp: entry.timestamp.toISOString(),
+          experimentFlag: entry.experiment.flagsmithFeatureName,
+          experimentTitle: entry.experiment.title,
+          distinctUserId: entry.distinctUserId,
+          eventType: entry.eventType,
+          variantKey: entry.variant.key,
+          isControl: entry.variant.isControl,
+          metricKey: entry.metricKey,
+          properties: entry.properties,
         })),
       });
     } catch {
-      // Fall through to in-memory
+      return NextResponse.json({ success: false, error: "PERSISTENT_STORAGE_ERROR" }, { status: 503 });
     }
   }
-
-  return NextResponse.json({
-    source: "SANDBOX MOCK MODE",
-    totalEvents: inMemoryTelemetryLogs.length,
-    recentEvents: inMemoryTelemetryLogs.slice(0, 50),
-  });
+  return NextResponse.json({ total: inMemoryTelemetryLogs.length, source: "IN_MEMORY_MOCK", events: inMemoryTelemetryLogs });
 }
