@@ -66,26 +66,33 @@ export function getRefreshTokenFromRequest(request: Request): string | null {
  * the application's role and organization from the trusted public.users row.
  * User-editable user_metadata is deliberately never used for authorization.
  */
+async function getLegacyDevelopmentUser(request: Request): Promise<AuthenticatedApplicationUser | null> {
+  if (process.env.NODE_ENV === "production") return null;
+  const legacyToken = readCookie(request, "pulsepilot_session");
+  if (!legacyToken) return null;
+  try {
+    const legacy = await import("@/lib/auth/auth-service");
+    const user = await legacy.getUserFromToken(legacyToken);
+    return user ? (user as AuthenticatedApplicationUser) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getAuthenticatedApplicationUser(
   request: Request
 ): Promise<AuthenticatedApplicationUser | null> {
   const accessToken = getAccessTokenFromRequest(request);
-  if (!accessToken) {
-    // Development-only compatibility for local mock runs; never enabled on Vercel.
-    if (process.env.NODE_ENV !== "production") {
-      const legacyToken = readCookie(request, "pulsepilot_session");
-      if (legacyToken) {
-        try {
-          const legacy = await import("@/lib/auth/auth-service");
-          const user = await legacy.getUserFromToken(legacyToken);
-          if (user) return user as AuthenticatedApplicationUser;
-        } catch {
-          // Continue to unauthenticated response.
-        }
-      }
-    }
-    return null;
+  const supabaseConfigured = Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY !== "mock"
+  );
+
+  if (!supabaseConfigured && process.env.NODE_ENV !== "production") {
+    return getLegacyDevelopmentUser(request);
   }
+  if (!accessToken) return null;
 
   const supabase = getSupabasePublicClient();
   const { data, error } = await supabase.auth.getUser(accessToken);
