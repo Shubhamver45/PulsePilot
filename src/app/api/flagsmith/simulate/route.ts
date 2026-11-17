@@ -33,8 +33,11 @@ function readEvaluatedFlag(flags: any[], featureName: string) {
     flag.multivariate_feature_state_value?.multivariate_feature_option ??
     null;
   const rawValue = flag.feature_state_value ?? flag.value ?? option?.string_value ?? null;
-  const variantKey = option?.key ?? flag.variant ?? (
-    typeof rawValue === "string" ? rawValue : null
+  // The generic `variant` field can describe the default state rather
+  // than the evaluated multivariate choice. Prefer the option key, then the
+  // actual evaluated feature value, and use generic metadata only as a fallback.
+  const variantKey = option?.key ?? (
+    typeof rawValue === "string" ? rawValue : flag.variant ?? null
   );
   return { rawValue, variantKey };
 }
