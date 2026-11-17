@@ -133,26 +133,68 @@ export async function getLiveRemoteFeatureState(
       }
 
       // If multivariate_feature_state_values is missing (client /flags/ endpoint omits it),
-      // enrich from project feature definition using Management API
+      // enrich from project feature definition and environment live version using Management API
       if (!matched.multivariate_feature_state_values || matched.multivariate_feature_state_values.length === 0) {
         const featureId = matched.feature?.id || matched.id;
+        const envId = matched.environment;
         const projectId = process.env.FLAGSMITH_PROJECT_ID;
         const authHeaders = getManagementAuthHeader();
         if (projectId && authHeaders.Authorization && featureId) {
           try {
+            // 1. Fetch feature options metadata
             const featRes = await fetch(`${apiUrl}/projects/${projectId}/features/${featureId}/`, {
               headers: { ...authHeaders, "Content-Type": "application/json" },
               cache: "no-store",
             });
+            const optionsMap = new Map<number, any>();
             if (featRes.ok) {
               const featData = await featRes.json();
               if (Array.isArray(featData.multivariate_options)) {
-                matched.multivariate_feature_state_values = featData.multivariate_options.map((opt: any) => ({
+                for (const opt of featData.multivariate_options) {
+                  optionsMap.set(opt.id, opt);
+                }
+              }
+            }
+
+            // 2. Fetch live published version's actual percentage_allocation for this environment
+            let liveMvs: any[] = [];
+            if (envId) {
+              const verRes = await fetch(`${apiUrl}/environments/${envId}/features/${featureId}/versions/`, {
+                headers: { ...authHeaders, "Content-Type": "application/json" },
+                cache: "no-store",
+              });
+              if (verRes.ok) {
+                const verData = await verRes.json();
+                const versions = verData.results || verData;
+                const liveVer = Array.isArray(versions) ? versions.find((v: any) => v.is_live) : null;
+                if (liveVer) {
+                  const fsRes = await fetch(
+                    `${apiUrl}/environments/${envId}/features/${featureId}/versions/${liveVer.uuid}/featurestates/`,
+                    { headers: { ...authHeaders, "Content-Type": "application/json" }, cache: "no-store" }
+                  );
+                  if (fsRes.ok) {
+                    const fsData = await fsRes.json();
+                    const liveFs = Array.isArray(fsData) ? fsData[0] : fsData;
+                    if (Array.isArray(liveFs?.multivariate_feature_state_values)) {
+                      liveMvs = liveFs.multivariate_feature_state_values;
+                    }
+                  }
+                }
+              }
+            }
+
+            // 3. Map into matched state
+            if (optionsMap.size > 0) {
+              matched.multivariate_feature_state_values = Array.from(optionsMap.values()).map((opt: any) => {
+                const liveMatch = liveMvs.find(
+                  (lm: any) => lm.multivariate_feature_option === opt.id || lm.id === opt.id
+                );
+                return {
                   id: opt.id,
                   multivariate_feature_option: opt,
-                  percentage_allocation: opt.default_percentage_allocation,
-                }));
-              }
+                  percentage_allocation: liveMatch ? liveMatch.percentage_allocation : opt.default_percentage_allocation,
+                };
+              });
             }
           } catch {
             // Fail open: return matched state as-is
@@ -377,11 +419,19 @@ export function matchVariantOptionIndex(mvs: any[], variantKey: string): number 
   if (jsonIdx !== -1) return jsonIdx;
 
   // Pass 3: substring containment
-  return mvs.findIndex((mv) => {
+  const subIdx = mvs.findIndex((mv) => {
     const opt = mv.multivariate_feature_option || {};
     const strVal = typeof opt.string_value === "string" ? opt.string_value.toLowerCase() : "";
     return strVal.includes(lowerKey);
   });
+  if (subIdx !== -1) return subIdx;
+
+  // Pass 4: If single treatment variant in binary multivariate experiment
+  if (mvs.length === 1 && (lowerKey === "treatment" || lowerKey === "single_page" || lowerKey === "variant_single_page" || lowerKey === "variant_1")) {
+    return 0;
+  }
+
+  return -1;
 }
 
 /**
@@ -466,12 +516,43 @@ async function mutateRemoteFeatureState(
       const draftFs = Array.isArray(draftFsList) ? draftFsList[0] : draftFsList;
       const draftFsId = draftFs.id;
 
+      // In v2 draft, multivariate_feature_state_values has multivariate_feature_option as an integer ID.
+      // Enrich with option metadata from `state.multivariate_feature_state_values` so matchVariantOptionIndex works accurately
+      if (Array.isArray(draftFs.multivariate_feature_state_values) && Array.isArray(state.multivariate_feature_state_values)) {
+        draftFs.multivariate_feature_state_values = draftFs.multivariate_feature_state_values.map((dmv: any) => {
+          const matched = state.multivariate_feature_state_values.find(
+            (smv: any) =>
+              smv.multivariate_feature_option?.id === dmv.multivariate_feature_option ||
+              smv.id === dmv.multivariate_feature_option ||
+              smv.id === dmv.id
+          );
+          if (matched && typeof dmv.multivariate_feature_option === "number") {
+            return {
+              ...dmv,
+              multivariate_feature_option: matched.multivariate_feature_option,
+            };
+          }
+          return dmv;
+        });
+      }
+
       // Compute mutations
       const mutations = mutatePayloadFn(draftFs);
       const updatedPayload = {
         ...draftFs,
         ...mutations,
       };
+
+      // Flagsmith v2 versioning PUT endpoint strictly expects multivariate_feature_option as an integer PK
+      if (Array.isArray(updatedPayload.multivariate_feature_state_values)) {
+        updatedPayload.multivariate_feature_state_values = updatedPayload.multivariate_feature_state_values.map((mv: any) => ({
+          ...mv,
+          multivariate_feature_option:
+            typeof mv.multivariate_feature_option === "object" && mv.multivariate_feature_option !== null
+              ? mv.multivariate_feature_option.id
+              : mv.multivariate_feature_option,
+        }));
+      }
 
       // PUT updated draft feature state
       const updateDraftRes = await fetch(

@@ -206,3 +206,49 @@ export function calculateRequiredSampleSize(
   return Math.ceil(numerator / denominator);
 }
 
+export interface SRMResult {
+  chiSquare: number;
+  pValue: number;
+  isMismatch: boolean;
+}
+
+/**
+ * Calculates Pearson's Chi-Square Test for Sample Ratio Mismatch (SRM).
+ * Supports any number of variant groups (df = k - 1).
+ */
+export function calculateChiSquareSRM(
+  observed: number[],
+  expectedRatios: number[],
+  alpha: number = 0.001
+): SRMResult {
+  if (observed.length !== expectedRatios.length || observed.length === 0) {
+    throw new Error("Observed and expected ratio arrays must have the same non-zero length.");
+  }
+  const totalObserved = observed.reduce((a, b) => a + b, 0);
+  const totalRatio = expectedRatios.reduce((a, b) => a + b, 0);
+
+  let chiSquare = 0;
+  for (let i = 0; i < observed.length; i++) {
+    const expected = totalObserved * (expectedRatios[i] / totalRatio);
+    if (expected > 0) {
+      chiSquare += Math.pow(observed[i] - expected, 2) / expected;
+    }
+  }
+
+  const df = observed.length - 1;
+  let pValue: number;
+  if (df === 1) {
+    pValue = 2 * (1 - normalCDF(Math.sqrt(chiSquare)));
+  } else {
+    // Wilson-Hilferty transformation for chi-square approximation with df > 1
+    const z = (Math.pow(chiSquare / df, 1 / 3) - (1 - 2 / (9 * df))) / Math.sqrt(2 / (9 * df));
+    pValue = Math.max(0, Math.min(1, 1 - normalCDF(z)));
+  }
+
+  return {
+    chiSquare,
+    pValue,
+    isMismatch: pValue < alpha,
+  };
+}
+
