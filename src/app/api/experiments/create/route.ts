@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { ExperimentStrategySchema } from "@/lib/ai/schemas";
+import { ExperimentStrategySchema, validateExperimentStrategy } from "@/lib/ai/schemas";
 import { createFlagsmithMultivariateFeature } from "@/lib/flagsmith/flagsmith-admin";
 import { prisma } from "@/lib/db/prisma";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
@@ -20,6 +20,15 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const strategy = ExperimentStrategySchema.parse(body.strategy);
+    const validation = validateExperimentStrategy(strategy);
+    if (!validation.valid) {
+      return NextResponse.json({
+        success: false,
+        error: "EXPERIMENT_PLAN_INVALID",
+        message: "The strategy must pass deterministic validation before provisioning.",
+        validation,
+      }, { status: 422 });
+    }
 
     // Reject cross-organization attempts to reuse another workspace's flag name.
     const existing = await prisma.experiment.findUnique({
@@ -208,6 +217,7 @@ export async function POST(request: Request) {
       timestamp: new Date().toISOString(),
       message: `Feature flag '${strategy.flagsmith_feature_name}' was provisioned in Flagsmith and saved to PostgreSQL.`,
       state: flagsmithResult.state,
+      allocationVerification: flagsmithResult.allocationVerification ?? null,
     }, { status: 201 });
   } catch (error: any) {
     console.error("Experiment creation failed:", error);
