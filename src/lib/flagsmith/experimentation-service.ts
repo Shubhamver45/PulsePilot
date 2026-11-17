@@ -368,21 +368,24 @@ async function getPrismaClient() {
 // -----------------------------------------------------------------------------
 export async function getFlagsmithExperimentResults(
   featureFlagName: string = "exp_checkout_layout_v2",
-  options?: { includeSynthetic?: boolean }
+  options?: { includeSynthetic?: boolean },
+  organizationId?: string
 ): Promise<FlagsmithExperimentResults | null> {
   const includeSynthetic = options?.includeSynthetic ?? false;
 
-  // If database is available, dynamically aggregate from PostgreSQL prisma.telemetryEvent
+  // If database is available, dynamically aggregate from PostgreSQL tx.telemetryEvent
   if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
     try {
-      const prisma = await getPrismaClient();
-      let experiment: any = await prisma.experiment.findUnique({
+      if (!organizationId) throw new Error("TENANT_CONTEXT_REQUIRED");
+      const { withTenantContext } = await import("../db/prisma");
+      return await withTenantContext(organizationId, async (tx) => {
+      let experiment: any = await tx.experiment.findUnique({
         where: { flagsmithFeatureName: featureFlagName },
         include: { variants: true },
       });
 
       if (!experiment && (featureFlagName === "checkout_experience" || featureFlagName === "exp_checkout_layout_v2")) {
-        experiment = await prisma.experiment.findFirst({
+        experiment = await tx.experiment.findFirst({
           where: {
             flagsmithFeatureName: {
               in: ["exp_checkout_layout_v2", "checkout_experience"],
@@ -394,7 +397,7 @@ export async function getFlagsmithExperimentResults(
 
       if (experiment && experiment.variants.length > 0) {
         // 1. Fetch unique exposures per user (first-touch variant assignment)
-        const rawExposureEvents = await prisma.telemetryEvent.findMany({
+        const rawExposureEvents = await tx.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "EXPOSURE" },
           select: { distinctUserId: true, variantId: true, properties: true },
           distinct: ["distinctUserId"],
@@ -419,7 +422,7 @@ export async function getFlagsmithExperimentResults(
         }
 
         // 2. Fetch all conversion events
-        const rawConversionEvents = await prisma.telemetryEvent.findMany({
+        const rawConversionEvents = await tx.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "CONVERSION" },
           select: { distinctUserId: true, variantId: true, properties: true },
         });
@@ -526,6 +529,8 @@ export async function getFlagsmithExperimentResults(
           },
         };
       }
+        return null;
+      });
     } catch (dbErr: any) {
       console.warn("[PostgreSQL Telemetry Aggregate Error]:", dbErr.message);
     }
@@ -542,12 +547,23 @@ export async function getFlagsmithExperimentResults(
 }
 
 // -----------------------------------------------------------------------------
+reFlagName);
+  if (!exp) return null;
+
+  return {
+    ...exp,
+    lastRefreshedAt: new Date().toISOString(),
+  };
+}
+
+// -----------------------------------------------------------------------------
 // 4. REFRESH EXPERIMENT RESULTS (TRIGGER WAREHOUSE / DB SYNC)
 // -----------------------------------------------------------------------------
 export async function refreshFlagsmithExperimentResults(
-  featureFlagName: string = "checkout_experience"
+  featureFlagName: string = "checkout_experience",
+  organizationId?: string
 ): Promise<FlagsmithExperimentResults | null> {
-  return getFlagsmithExperimentResults(featureFlagName);
+  return getFlagsmithExperimentResults(featureFlagName, undefined, organizationId);
 }
 
 // -----------------------------------------------------------------------------

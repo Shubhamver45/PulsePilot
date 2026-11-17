@@ -40,10 +40,21 @@ export async function POST(request: Request) {
       ?.split("=")[1];
 
     const token = authHeader || cookieToken;
+    const isCookieAuth = Boolean(!authHeader && cookieToken);
+    if (isCookieAuth) {
+      const origin = request.headers.get("origin") || request.headers.get("referer");
+      const host = request.headers.get("host");
+      if (!origin || !host) return NextResponse.json({ success: false, error: "CSRF_DETECTED" }, { status: 403 });
+      try {
+        if (new URL(origin).host !== host) return NextResponse.json({ success: false, error: "CSRF_DETECTED" }, { status: 403 });
+      } catch {
+        return NextResponse.json({ success: false, error: "CSRF_DETECTED" }, { status: 403 });
+      }
+    }
     let user = null;
     if (token) {
       try {
-        user = await getUserFromToken(token, { checkRevocation: true, failClosed: false });
+        user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
       } catch {
         // Continue to evaluate
       }

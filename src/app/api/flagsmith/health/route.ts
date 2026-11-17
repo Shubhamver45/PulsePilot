@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getLiveRemoteFeatureState, getManagementAuthHeader } from "@/lib/flagsmith/flagsmith-admin";
-import { prisma } from "@/lib/db/prisma";
+import { withRestrictedAppRole } from "@/lib/db/prisma";
 
 const getApiUrl = () =>
   (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
@@ -143,11 +143,11 @@ export async function GET(request: Request) {
   if (process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock")) {
     try {
       const dbPingStart = Date.now();
-      await prisma.$queryRawUnsafe("SELECT 1");
+      await withRestrictedAppRole((tx) => tx.$queryRaw`SELECT 1`);
       dbLatencyMs = Date.now() - dbPingStart;
       isDatabaseConnected = true;
-
-      telemetryEventCount = await prisma.telemetryEvent.count();
+      // Public health cannot count tenant telemetry without an authenticated organization context.
+      telemetryEventCount = 0;
     } catch (dbErr: any) {
       isDatabaseConnected = false;
       dbError = dbErr.message;

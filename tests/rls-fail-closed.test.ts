@@ -40,4 +40,13 @@ assert.ok(!telemetryRoute.includes("tx.project.findFirst"), "Telemetry cannot pr
 assert.ok(auditRoute.includes("getPersistedAuditLogsForOrganization"), "Audit reads must be tenant scoped");
 assert.ok(auditRoute.includes('error: "UNAUTHORIZED"'), "Audit reads require authentication with a database");
 assert.ok(dashboardRoute.includes("withTenantContext"), "Dashboard database queries must be tenant scoped");
-console.log("RLS/auth/workspace/telemetry/audit/dashboard static security gates passed.");
+const flagsmithExperimentRoute = readFileSync("src/app/api/flagsmith/experiment/route.ts", "utf8");
+const flagsmithRefreshRoute = readFileSync("src/app/api/flagsmith/experiment/refresh/route.ts", "utf8");
+const flagsmithTraitsRoute = readFileSync("src/app/api/flagsmith/traits/route.ts", "utf8");
+const flagsmithHealthRoute = readFileSync("src/app/api/flagsmith/health/route.ts", "utf8");
+assert.ok(flagsmithExperimentRoute.includes("requireMutationUser"), "Flagsmith experiment creation must require privileged auth");
+assert.ok(flagsmithRefreshRoute.includes("requireMutationUser"), "Flagsmith refresh must require privileged auth");
+assert.ok(flagsmithTraitsRoute.includes("requireTraitMutationUser"), "Identity trait updates must require privileged auth");
+assert.ok(flagsmithHealthRoute.includes("withRestrictedAppRole"), "Public DB health check must use the restricted role");
+assert.ok(flagsmithHealthRoute.includes("telemetryCountRequiresAuthenticatedTenant"), "Public health must not expose tenant telemetry counts");
+console.log("RLS/auth/workspace/telemetry/audit/dashboard/Flagsmith security gates passed.");

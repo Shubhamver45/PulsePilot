@@ -7,10 +7,36 @@ import {
 } from "@/lib/flagsmith/flagsmith-admin";
 import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
+import { getUserFromToken } from "@/lib/auth/auth-service";
 import {
   checkProductionEvaluationGuard,
   checkProductionRemoteFetchGuard,
 } from "@/lib/flagsmith/production-guards";
+
+function getSession(request: Request): { token: string | null; cookieAuth: boolean } {
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "");
+  const cookie = (request.headers.get("cookie") || "").split("; ").find((p) => p.startsWith("pulsepilot_session="))?.split("=")[1];
+  return { token: bearer || cookie || null, cookieAuth: Boolean(!bearer && cookie) };
+}
+
+async function requireTraitMutationUser(request: Request) {
+  const { token, cookieAuth } = getSession(request);
+  if (cookieAuth) {
+    const source = request.headers.get("origin") || request.headers.get("referer");
+    const host = request.headers.get("host");
+    if (!source || !host) return { user: null, error: "CSRF_DETECTED", status: 403 };
+    try {
+      if (new URL(source).host !== host) return { user: null, error: "CSRF_DETECTED", status: 403 };
+    } catch {
+      return { user: null, error: "CSRF_DETECTED", status: 403 };
+    }
+  }
+  if (!token) return { user: null, error: "UNAUTHORIZED", status: 401 };
+  const user = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+  if (!user) return { user: null, error: "INVALID_SESSION", status: 401 };
+  if (user.role !== "ADMIN" && user.role !== "EDITOR") return { user: null, error: "FORBIDDEN", status: 403 };
+  return { user, error: null, status: 200 };
+}
 
 export interface TraitItem {
   trait_key: string;
@@ -37,6 +63,10 @@ export async function GET(request: Request) {
 
   // 1. Live Remote Query via Flagsmith Identities Endpoint
   if (envKey && envKey !== "mock") {
+    const { token } = getSession(request);
+    if (!token) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+    const viewer = await getUserFromToken(token, { checkRevocation: true, failClosed: true });
+    if (!viewer) return NextResponse.json({ error: "INVALID_SESSION" }, { status: 401 });
     try {
       const result = await getFlagsmithIdentityTraitsAndFlags(identity);
       if (result.success) {
@@ -96,6 +126,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const auth = await requireTraitMutationUser(request);
+  if (!auth.user) return NextResponse.json({ success: false, error: auth.error }, { status: auth.status });
   let body: any;
   try {
     body = await request.json();
