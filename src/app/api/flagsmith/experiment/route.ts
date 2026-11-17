@@ -4,10 +4,27 @@ import {
   createRealFlagsmithExperiment,
   CreateExperimentPayload,
 } from "@/lib/flagsmith/experimentation-service";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { prisma } from "@/lib/db/prisma";
 
 export async function GET(request: Request) {
+  const user = await getAuthenticatedApplicationUser(request);
+  if (!user) {
+    return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const flag = searchParams.get("flag") || "checkout_experience";
+
+  const experiment = await prisma.experiment.findFirst({
+    where: {
+      flagsmithFeatureName: flag,
+      project: { organizationId: user.organizationId },
+    },
+  });
+  if (!experiment) {
+    return NextResponse.json({ error: "EXPERIMENT_NOT_FOUND" }, { status: 404 });
+  }
 
   const results = await getFlagsmithExperimentResults(flag);
   if (!results) {
@@ -22,6 +39,14 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
+    if (user.role !== "ADMIN" && user.role !== "EDITOR") {
+      return NextResponse.json({ error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
+    }
+
     const body: CreateExperimentPayload = await request.json();
     const result = await createRealFlagsmithExperiment(body);
 
