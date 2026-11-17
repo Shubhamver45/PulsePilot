@@ -41,14 +41,23 @@ export async function GET(request: Request) {
           : null;
 
         if (matched) {
-          let parsedValue: any = matched.feature_state_value;
+          // Identity evaluation is the source of truth for the assigned value.
+          // Flagsmith may expose it as feature_state_value or value depending on API version.
+          const rawValue = matched.feature_state_value ?? matched.value ?? null;
+          let parsedValue: any = rawValue;
           try {
-            if (typeof parsedValue === "string" && (parsedValue.startsWith("{") || parsedValue.startsWith("["))) {
-              parsedValue = JSON.parse(parsedValue);
+            if (typeof rawValue === "string" && (rawValue.startsWith("{") || rawValue.startsWith("["))) {
+              parsedValue = JSON.parse(rawValue);
             }
           } catch {
-            // Keep as string
+            // Keep the original string when it is not JSON.
           }
+          const variantKey =
+            matched.variant ??
+            matched.multivariate_feature_option?.string_value ??
+            matched.multivariate_feature_option?.value ??
+            (typeof parsedValue === "object" && parsedValue?.variantKey ? parsedValue.variantKey : null) ??
+            (typeof parsedValue === "string" ? parsedValue : "control");
 
           const traits = Array.isArray(data.traits) ? data.traits : [];
           const isBeta = evaluateBetaTesterSegment(traits);
@@ -58,8 +67,8 @@ export async function GET(request: Request) {
             flag,
             identity,
             enabled: matched.enabled,
-            variantKey: typeof parsedValue === "object" && parsedValue?.layout ? parsedValue.layout : (matched.feature_state_value || "control"),
-            value: matched.feature_state_value,
+            variantKey,
+            value: rawValue,
             parsedValue,
             traits,
             segments,
