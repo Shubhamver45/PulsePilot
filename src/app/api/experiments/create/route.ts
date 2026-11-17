@@ -4,6 +4,7 @@ import { createFlagsmithMultivariateFeature } from "@/lib/flagsmith/flagsmith-ad
 import { prisma } from "@/lib/db/prisma";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { reviewExperimentReadinessWithMetadata } from "@/lib/ai/gemini-client";
 
 export async function POST(request: Request) {
   const user = await getAuthenticatedApplicationUser(request);
@@ -27,6 +28,24 @@ export async function POST(request: Request) {
         error: "EXPERIMENT_PLAN_INVALID",
         message: "The strategy must pass deterministic validation before provisioning.",
         validation,
+      }, { status: 422 });
+    }
+
+    // Re-run the readiness review server-side: client-provided approval state
+    // is never trusted as authority for a remote feature creation.
+    const readiness = await reviewExperimentReadinessWithMetadata(strategy);
+    if (!readiness.review.isReadyForLaunch) {
+      return NextResponse.json({
+        success: false,
+        error: "READINESS_REVIEW_BLOCKED",
+        message: "The server-side AI readiness review did not approve this experiment plan.",
+        review: readiness.review,
+        reviewGeneration: {
+          provider: readiness.provider,
+          model: readiness.model,
+          fallbackUsed: readiness.fallbackUsed,
+          fallbackReason: readiness.fallbackReason,
+        },
       }, { status: 422 });
     }
 
