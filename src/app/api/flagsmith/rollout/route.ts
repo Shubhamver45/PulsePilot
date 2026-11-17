@@ -46,11 +46,14 @@ async function syncExperimentAllocations(
   const defaultValue = allocation.defaultValue == null ? null : String(allocation.defaultValue);
   await prisma.$transaction(async (tx) => {
     for (const variant of experiment.variants) {
-      const configuredValue = normaliseFeatureValue(variant.featureValue);
-      const matchingOption = allocation.variants.find((item) => item.value === configuredValue);
+        const configuredValue = normaliseFeatureValue(variant.featureValue);
+      const matchingOption = allocation.variants.find((item: any) =>
+        item.key === variant.key || item.value === configuredValue
+      );
       const isDefault = defaultValue !== null && (
         defaultValue === configuredValue ||
-        (variant.isControl && allocation.defaultValue === "control")
+        defaultValue === variant.key ||
+        (variant.isControl && (defaultValue === "control" || defaultValue === ""))
       );
       const percentage = matchingOption?.percentageAllocation ?? (isDefault ? 100 : 0);
       await tx.experimentVariant.update({
@@ -72,11 +75,18 @@ function optionValue(item: any): string {
   return String(option.string_value ?? option.value ?? "");
 }
 
+function optionKey(item: any): string | null {
+  const option = item?.multivariate_feature_option || {};
+  const key = option.key;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
 function allocationSnapshot(state: any) {
   const options = Array.isArray(state?.multivariate_feature_state_values)
     ? state.multivariate_feature_state_values
     : [];
   const variants = options.map((item: any) => ({
+    key: optionKey(item),
     value: optionValue(item),
     percentageAllocation: Number(item.percentage_allocation ?? 0),
   }));
@@ -97,9 +107,9 @@ function serialiseFeatureValue(value: unknown): string {
 
 async function resolveVariantValue(featureName: string, variantKey: string, state: any): Promise<string> {
   const direct = (state?.multivariate_feature_state_values || []).find(
-    (item: any) => optionValue(item) === variantKey
+    (item: any) => optionKey(item) === variantKey || optionValue(item) === variantKey
   );
-  if (direct) return variantKey;
+  if (direct) return optionValue(direct) || variantKey;
 
   // The UI speaks in experiment variant keys; Flagsmith stores the variant's
   // configured value. Resolve the key through the experiment record.
@@ -114,7 +124,7 @@ async function resolveVariantValue(featureName: string, variantKey: string, stat
 
   const configuredValue = serialiseFeatureValue(variant.featureValue);
   const exists = (state?.multivariate_feature_state_values || []).some(
-    (item: any) => optionValue(item) === configuredValue
+    (item: any) => optionKey(item) === variantKey || optionValue(item) === configuredValue
   );
   if (!exists) {
     throw new Error(`Variant '${variantKey}' has no matching option in the live Flagsmith feature.`);
@@ -128,8 +138,15 @@ async function resolveControlValue(featureName: string, state: any): Promise<str
     include: { variants: true },
   });
   const control = experiment?.variants.find((item) => item.isControl);
+  // The live default value in Flagsmith is the control baseline. Prefer it to
+  // the application JSON because the option's value may be a compact string key.
+  if (state?.feature_state_value !== undefined && state?.feature_state_value !== null) {
+    return typeof state.feature_state_value === "string"
+      ? state.feature_state_value
+      : serialiseFeatureValue(state.feature_state_value);
+  }
   if (control) return serialiseFeatureValue(control.featureValue);
-  return String(state?.feature_state_value ?? "control");
+  return "control";
 }
 
 export async function GET(request: Request) {
