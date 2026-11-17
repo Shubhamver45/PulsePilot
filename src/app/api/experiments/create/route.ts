@@ -210,6 +210,8 @@ export async function POST(request: Request) {
       experimentId: experiment.id,
       flagsmithFeatureId: flagsmithResult.featureId,
       flagsmithFeatureName: strategy.flagsmith_feature_name,
+      flagsmithProjectId: process.env.FLAGSMITH_PROJECT_ID || null,
+      flagsmithEnvironmentId: flagsmithResult.state?.environment ?? null,
       status: experiment.status,
       remoteCreated: flagsmithResult.remoteCreated,
       isExisting: flagsmithResult.isExisting,
