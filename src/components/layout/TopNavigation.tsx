@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -60,11 +60,43 @@ export function TopNavigation({
   const router = useRouter();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState({
-    name: "Sarah Lin",
-    email: "sarah@pulsepilot.ai",
-    role: "Product Lead (Admin)",
-    initials: "SL",
+    name: "Loading account…",
+    email: "",
+    role: "Workspace member",
+    initials: "…",
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCurrentUser() {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || !data.authenticated || !data.user) {
+          router.replace("/login");
+          return;
+        }
+        if (cancelled) return;
+        const name = data.user.fullName || data.user.email;
+        const role = data.user.role === "ADMIN"
+          ? "Administrator"
+          : data.user.role === "EDITOR"
+          ? "Editor"
+          : "Viewer";
+        const initials = name.split(/\\s+/).slice(0, 2).map((part: string) => part[0]).join("").toUpperCase();
+        setCurrentUser({
+          name,
+          email: data.user.email,
+          role,
+          initials: initials || "U",
+        });
+      } catch {
+        if (!cancelled) router.replace("/login");
+      }
+    }
+    loadCurrentUser();
+    return () => { cancelled = true; };
+  }, [router]);
 
   const handleLogout = async () => {
     try {
