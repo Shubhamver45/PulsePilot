@@ -288,6 +288,7 @@ export default function DemoStorePage() {
     conversions: number;
     lift: number;
   } | null>(null);
+  const [simError, setSimError] = useState<string | null>(null);
 
   // 1. Evaluate Flag on Identity Change (Checks active experiment in Flagsmith)
   const evaluateFlagsmith = async (identity: string) => {
@@ -545,6 +546,7 @@ export default function DemoStorePage() {
   const handleRunSimulation = async () => {
     if (!simulatorEnabled) return;
     setIsSimulating(true);
+    setSimError(null);
     setSimProgress(10);
 
     try {
@@ -571,11 +573,14 @@ export default function DemoStorePage() {
           totalSimulated: data.result.syntheticVisitorsGenerated,
           exposures: data.result.exposures,
           conversions: data.result.conversions,
-          lift: simulatorScenario === "SINGLE_PAGE_WINS" ? 20.3 : simulatorScenario === "EXPRESS_WINS" ? 14.5 : 0.8,
+          lift: data.result.observedLiftPercent ?? 0,
         });
+      } else {
+        setSimError(data.message || data.error || "Synthetic traffic could not be generated.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Simulation failed:", err);
+      setSimError(err?.message || "Synthetic traffic could not be generated.");
     } finally {
       setTimeout(() => setIsSimulating(false), 500);
     }
