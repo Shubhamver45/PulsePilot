@@ -378,11 +378,14 @@ export async function getFlagsmithExperimentResults(
 
       if (experiment && experiment.variants.length > 0) {
         // 1. Fetch unique exposures per user (first-touch variant assignment)
-        const exposureEvents = await prisma.telemetryEvent.findMany({
+        const exposureRows = await prisma.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "EXPOSURE" },
-          select: { distinctUserId: true, variantId: true },
+          select: { distinctUserId: true, variantId: true, properties: true },
           distinct: ["distinctUserId"],
         });
+        const exposureEvents = exposureRows.filter((event: any) =>
+          !((event.properties as any)?.isSynthetic === true)
+        );
 
         const userVariantMap = new Map<string, string>();
         const exposuresByVariant: Record<string, number> = {};
@@ -398,10 +401,13 @@ export async function getFlagsmithExperimentResults(
         }
 
         // 2. Fetch all conversion events
-        const conversionEvents = await prisma.telemetryEvent.findMany({
+        const conversionRows = await prisma.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "CONVERSION" },
           select: { distinctUserId: true, variantId: true, properties: true },
         });
+        const conversionEvents = conversionRows.filter((event: any) =>
+          !((event.properties as any)?.isSynthetic === true)
+        );
 
         // 3. Track unique converted users per variant, repeat purchases, and revenue
         const convertedUsersByVariant = new Map<string, Set<string>>();
