@@ -8,14 +8,21 @@
 [![Google Gemini](https://img.shields.io/badge/AI-Google%20Gemini%202.5%20Flash-4285F4?style=flat-square&logo=google)](https://ai.google.dev)
 [![Next.js](https://img.shields.io/badge/Framework-Next.js%2014-black?style=flat-square&logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript%20Strict-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org)
-[![Flagsmith Test Suite](https://img.shields.io/badge/Flagsmith%20Tests-15%2F15%20Passed%20(100%25)-emerald?style=flat-square)](tests/flagsmith-integration.test.ts)
-[![Security & Math Audit](https://img.shields.io/badge/Audit-36%2F36%20Passed%20(100%25)-success?style=flat-square)](tests/audit.test.ts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 **Live Application:** [https://pulse-pilot-two.vercel.app/](https://pulse-pilot-two.vercel.app/)
 **GitHub Repository:** [https://github.com/Shubhamver45/PulsePilot](https://github.com/Shubhamver45/PulsePilot)
-**Demo Video:** [🎥 Watch 3-Minute Competition Demo Video](https://youtu.be/placeholder-pulsepilot-demo)
-**Flagsmith Cloud Project:** Project ID `53867` • Environment `Development` (`115953`) • Feature `exp_checkout_layout_v2` (`291896`)
+**Flagsmith Cloud Project:** Project ID `53867` • Feature `exp_checkout_layout_v2`
+
+**Deployment and judging notes:** [Competition Readiness & Deployment Notes](docs/COMPETITION_READINESS.md) · [Live Flagsmith integration tests](tests/flagsmith-integration.test.ts)
+
+---
+
+## Deployment configuration
+
+Hosted deployments require a Supabase Auth configuration, a persistent PostgreSQL database, and a Flagsmith environment key. Remote flag creation and release mutations additionally require a secret Flagsmith Organisation API token. The application distinguishes edge evaluation from Management API access and blocks a production mutation when the Management API cannot be verified.
+
+See [Competition Readiness & Deployment Notes](docs/COMPETITION_READINESS.md) for the complete environment-variable contract, canonical provisioning path, telemetry attribution rules, synthetic traffic isolation, and safe Preview setup.
 
 ---
 
