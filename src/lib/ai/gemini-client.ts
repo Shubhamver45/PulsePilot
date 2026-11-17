@@ -86,16 +86,25 @@ export async function formulateExperimentStrategy(
   return result.strategy;
 }
 
-export async function reviewExperimentReadiness(
+export interface ReadinessGenerationResult {
+  review: ReadinessReview;
+  provider: "gemini" | "deterministic";
+  model: string;
+  fallbackUsed: boolean;
+  fallbackReason?: string;
+}
+
+export async function reviewExperimentReadinessWithMetadata(
   strategy: ExperimentStrategy
-): Promise<ReadinessReview> {
+): Promise<ReadinessGenerationResult> {
   const isMock = !GEMINI_API_KEY || GEMINI_API_KEY === "mock";
+  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
   if (!isMock) {
     try {
       const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
       const model = genAI.getGenerativeModel({
-        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        model: modelName,
         generationConfig: {
           responseMimeType: "application/json",
           temperature: 0.1,
@@ -103,23 +112,48 @@ export async function reviewExperimentReadiness(
       });
 
       const systemPrompt = `You are the Quality & Safety Reviewer Agent for PulsePilot AI.
-Audit this experiment configuration for scientific validity, telemetry measurability, and safety guardrails.
-Output JSON matching the ReadinessReview schema.`;
+Audit this experiment configuration for scientific validity, telemetry measurability, traffic allocation, and operational safety.
+Check the actual specification provided. Do not claim an event is implemented merely because it is listed as required.
+Return JSON matching the ReadinessReview schema. Set isReadyForLaunch to true only when every required planning check passes.`;
 
       const result = await model.generateContent([
         systemPrompt,
         `Experiment Configuration: ${JSON.stringify(strategy)}`,
       ]);
       const parsed = JSON.parse(result.response.text());
-      return ReadinessReviewSchema.parse(parsed);
+      return {
+        review: ReadinessReviewSchema.parse(parsed),
+        provider: "gemini",
+        model: modelName,
+        fallbackUsed: false,
+      };
     } catch (err) {
-      console.warn("Readiness review fallback to local evaluator:", err);
+      console.warn("Gemini readiness review failed; deterministic review will be clearly labelled.", err);
+      return {
+        review: generateDeterministicReadiness(strategy),
+        provider: "deterministic",
+        model: "PulsePilot deterministic reviewer",
+        fallbackUsed: true,
+        fallbackReason: "Gemini was unavailable or returned a response that failed readiness schema validation.",
+      };
     }
   }
 
-  return generateDeterministicReadiness(strategy);
+  return {
+    review: generateDeterministicReadiness(strategy),
+    provider: "deterministic",
+    model: "PulsePilot deterministic reviewer",
+    fallbackUsed: true,
+    fallbackReason: "GEMINI_API_KEY is not configured for this deployment.",
+  };
 }
 
+export async function reviewExperimentReadiness(
+  strategy: ExperimentStrategy
+): Promise<ReadinessReview> {
+  const result = await reviewExperimentReadinessWithMetadata(strategy);
+  return result.review;
+}
 /**
  * Deterministic Strategy Generator for offline/mock resilience
  */
