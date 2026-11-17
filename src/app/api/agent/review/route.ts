@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { reviewExperimentReadiness } from "@/lib/ai/gemini-client";
-import { ExperimentStrategySchema } from "@/lib/ai/schemas";
+import { ExperimentStrategySchema, validateExperimentStrategy } from "@/lib/ai/schemas";
 
 export async function POST(request: Request) {
   try {
@@ -14,12 +14,21 @@ export async function POST(request: Request) {
     }
     const body = await request.json();
     const strategy = ExperimentStrategySchema.parse(body.strategy);
+    const validation = validateExperimentStrategy(strategy);
+    if (!validation.valid) {
+      return NextResponse.json({
+        success: false,
+        error: "EXPERIMENT_PLAN_INVALID",
+        validation,
+      }, { status: 422 });
+    }
 
     const review = await reviewExperimentReadiness(strategy);
 
     return NextResponse.json({
       success: true,
       review,
+      validation,
     });
   } catch (error: any) {
     console.error("Agent review error:", error);
