@@ -11,7 +11,6 @@ import {
   Building2,
   ArrowRight,
   AlertTriangle,
-  CheckCircle2,
 } from "lucide-react";
 
 export default function RegisterPage() {
@@ -45,7 +44,11 @@ export default function RegisterPage() {
         throw new Error(data.error || "Registration failed");
       }
 
-      router.push("/dashboard");
+      if (data.authenticated) {
+        router.push("/dashboard");
+      } else {
+        router.push("/login?registered=1");
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
