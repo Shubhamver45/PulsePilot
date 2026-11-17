@@ -96,7 +96,8 @@ const proposalRegistry = new Map<string, ExperimentProposal>();
 function isMockOrTestMode(): boolean {
   return (
     process.env.NODE_ENV === "test" ||
-    Boolean(process.env.DATABASE_URL?.includes("mock"))
+    Boolean(process.env.DATABASE_URL?.includes("mock")) ||
+    (process.env.VERCEL_ENV === "preview" && process.env.NEXT_PUBLIC_APP_ENV === "preview")
   );
 }
 

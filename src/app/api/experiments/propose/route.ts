@@ -23,12 +23,13 @@ export async function POST(request: Request) {
     if (csrfFailure(request)) return NextResponse.json({ success: false, error: "CSRF_DETECTED" }, { status: 403 });
     const session = getSession(request);
     const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock"));
+    const previewDemoMode = process.env.VERCEL_ENV === "preview" && process.env.NEXT_PUBLIC_APP_ENV === "preview";
     let user = session.token
       ? await getUserFromToken(session.token, { checkRevocation: true, failClosed: databaseConfigured })
       : null;
 
     // Guest proposals exist only in isolated offline demo mode.
-    if (!user && (databaseConfigured || process.env.NODE_ENV === "production")) {
+    if (!user && (databaseConfigured || (process.env.NODE_ENV === "production" && !previewDemoMode))) {
       return NextResponse.json({ success: false, error: "UNAUTHORIZED" }, { status: 401 });
     }
     if (!user) {

@@ -28,8 +28,9 @@ export async function POST(request: Request) {
     const eventType: "EXPOSURE" | "CONVERSION" =
       event.eventType === "EXPOSURE" || event.eventType === "experiment_exposure" ? "EXPOSURE" : "CONVERSION";
     const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock") && process.env.DATABASE_URL.startsWith("postgres"));
+    const previewDemoMode = process.env.VERCEL_ENV === "preview" && process.env.NEXT_PUBLIC_APP_ENV === "preview";
 
-    if (process.env.NODE_ENV === "production" && !databaseConfigured) {
+    if (process.env.NODE_ENV === "production" && !previewDemoMode && !databaseConfigured) {
       return NextResponse.json({ success: false, status: "FAILED", error: "PERSISTENT_STORAGE_UNAVAILABLE" }, { status: 503 });
     }
 
@@ -126,7 +127,8 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   const databaseConfigured = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock") && process.env.DATABASE_URL.startsWith("postgres"));
-  if (process.env.NODE_ENV === "production" && !databaseConfigured) {
+  const previewDemoMode = process.env.VERCEL_ENV === "preview" && process.env.NEXT_PUBLIC_APP_ENV === "preview";
+  if (process.env.NODE_ENV === "production" && !previewDemoMode && !databaseConfigured) {
     return NextResponse.json({ success: false, error: "PERSISTENT_STORAGE_UNAVAILABLE" }, { status: 503 });
   }
   if (databaseConfigured) {
