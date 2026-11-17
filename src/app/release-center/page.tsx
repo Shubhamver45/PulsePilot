@@ -185,7 +185,7 @@ export default function ReleaseCenterPage() {
   const currentLift = liveDataMode ? (leadingEvidence?.expectedLiftPercent ?? 0) : (scenario === "GUARDRAIL_BREACH" ? -4.2 : 18.4);
   const currentExposures = liveDataMode
     ? (experimentEvidence?.summary?.totalExposures ?? 0)
-    : (scenario === "INSUFFICIENT_DATA" ? 1200 : 4800);
+    : (scenario === "INSUFFICIENT_DATA" ? 1200 : 5500);
   const currentBayes = liveDataMode
     ? Number(((leadingEvidence?.chanceToWin ?? 0.5) * 100).toFixed(1))
     : (scenario === "INSUFFICIENT_DATA" ? 82.4 : scenario === "GUARDRAIL_BREACH" ? 14.1 : 97.4);
@@ -195,6 +195,7 @@ export default function ReleaseCenterPage() {
   const currentSrmPValue = liveDataMode ? (leadingEvidence?.sampleRatioPValue ?? null) : 0.77;
   const effectiveSampleTarget = experimentEvidence?.sampleSizeTarget ?? minSampleSize;
   const paymentGuardrailPassed = currentPaymentFailureRate !== null && currentPaymentFailureRate <= maxPaymentFailureThreshold;
+  const guardrailBreached = currentPaymentFailureRate !== null && currentPaymentFailureRate > maxPaymentFailureThreshold;
 
   // Readiness must fail closed when any required live evidence is absent.
   const readinessChecks = [
@@ -205,12 +206,16 @@ export default function ReleaseCenterPage() {
     },
     {
       label: `Bayesian Win Probability (Current: ${currentBayes}% vs Min: ${minBayesConfidence}%)`,
-      passed: Boolean(leadingEvidence) && currentBayes >= minBayesConfidence,
+      passed: liveDataMode
+        ? Boolean(leadingEvidence) && currentBayes >= minBayesConfidence
+        : currentBayes >= minBayesConfidence,
       value: leadingEvidence ? `${currentBayes}%` : "No treatment evidence",
     },
     {
       label: `Frequentist Significance (Current: p = ${currentPValue} vs Max: ${maxPValue})`,
-      passed: Boolean(leadingEvidence?.pValue !== undefined) && currentPValue <= maxPValue,
+      passed: liveDataMode
+        ? leadingEvidence?.pValue !== undefined && currentPValue <= maxPValue
+        : currentPValue <= maxPValue,
       value: leadingEvidence?.pValue !== undefined ? `p = ${currentPValue}` : "Not calculated",
     },
     {
@@ -225,7 +230,7 @@ export default function ReleaseCenterPage() {
     },
   ];
 
-  const allReadinessPassed = readinessChecks.every((check) => check.passed) && !loadingLiveEvidence && !liveEvidenceError;
+  const allReadinessPassed = readinessChecks.every((check) => check.passed) && !loadingLiveEvidence && !liveEvidenceError && Boolean(liveFlagState);
 
   // Handlers for Flagsmith Actuation
   const handleApplyGradualStage = async () => {
@@ -246,7 +251,7 @@ export default function ReleaseCenterPage() {
 
       const data = await res.json();
       if (data.success) {
-        setCurrentStage(targetStage);
+        await fetchLiveEvidence();
         setFeedback({
           message: `Flagsmith traffic updated to ${targetStage}% for '${winningVariant}'. Actuation verified in Flagsmith engine.`,
           type: "success",
@@ -279,7 +284,7 @@ export default function ReleaseCenterPage() {
 
       const data = await res.json();
       if (data.success) {
-        setCurrentStage(0);
+        await fetchLiveEvidence();
         setIsSimulatedBreach(false);
         setFeedback({
           message: `Flagsmith feature safely rolled back to 100% Control. Zero downtime verified.`,
@@ -313,7 +318,7 @@ export default function ReleaseCenterPage() {
 
       const data = await res.json();
       if (data.success) {
-        setCurrentStage(0);
+        await fetchLiveEvidence();
         setFeedback({
           message: `Emergency kill-switch executed. Feature flag disabled in Flagsmith (< 50ms latency).`,
           type: "success",
@@ -338,9 +343,9 @@ export default function ReleaseCenterPage() {
         description="Safely transition winning experiments into production with canary rollout stages, active guardrail monitoring, and verified Flagsmith rollback."
         badge={
           <div className="flex items-center gap-2">
-            <StatusBadge status="active" label="FLAGSMITH ACTUATOR ACTIVE" />
+            <StatusBadge status="active" label={liveFlagState ? "REMOTE STATE VERIFIED" : "REMOTE STATE NOT VERIFIED"} />
             <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200">
-              HITL Policy: Enforced
+              Operator approval required
             </span>
           </div>
         }
@@ -399,7 +404,7 @@ export default function ReleaseCenterPage() {
       )}
 
       {/* Safety Alert Banner (Breach Detected) */}
-      {(isSimulatedBreach || currentPaymentFailureRate > maxPaymentFailureThreshold) && (
+      {(isSimulatedBreach || guardrailBreached) && (
         <div className="p-4 rounded-lg bg-red-50 border border-red-300 text-red-900 shadow-sm space-y-3 animate-in fade-in">
           <div className="flex items-start justify-between">
             <div className="flex items-start gap-2.5">
@@ -413,7 +418,7 @@ export default function ReleaseCenterPage() {
                 </h4>
                 <p className="text-xs text-red-700 mt-1 leading-relaxed">
                   Payment failure rate spiked to{" "}
-                  <strong className="underline">{currentPaymentFailureRate}%</strong>, exceeding
+                  <strong className="underline">{currentPaymentFailureRate ?? "unavailable"}%</strong>, exceeding
                   your configured safety threshold of <strong>{maxPaymentFailureThreshold}%</strong>{" "}
                   (p &lt; 0.01). Continued rollout risks customer churn and checkout drop-off.
                 </p>
@@ -447,7 +452,7 @@ export default function ReleaseCenterPage() {
                 const val = e.target.value;
                 setSelectedFlag(val);
                 if (val === "exp_checkout_layout_v2") {
-                  setWinningVariant("single_page");
+                  setWinningVariant("treatment");
                 } else if (val === "exp_checkout_social_proof") {
                   setWinningVariant("variant_social_proof");
                 }
@@ -466,9 +471,21 @@ export default function ReleaseCenterPage() {
           <Sparkles className="w-4 h-4 text-primary shrink-0" />
           <div>
             <label className="text-[11px] font-bold text-text-secondary uppercase tracking-wider block">
-              Interactive Test Scenario (Demo Switcher)
+              Evidence Source
             </label>
-            <div className="flex items-center gap-1.5 mt-0.5">
+            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+              <button
+                onClick={() => {
+                  setScenario("LIVE_DATA");
+                  setIsSimulatedBreach(false);
+                  fetchLiveEvidence();
+                }}
+                className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors border ${
+                  scenario === "LIVE_DATA" ? "bg-primary text-white border-primary" : "bg-surface text-text-secondary border-border hover:bg-surface-subtle"
+                }`}
+              >
+                Live Evidence
+              </button>
               <button
                 onClick={() => {
                   setScenario("READY_FOR_ROLLOUT");
@@ -480,7 +497,7 @@ export default function ReleaseCenterPage() {
                     : "bg-surface text-text-secondary border-border hover:bg-surface-subtle"
                 }`}
               >
-                1. Ready for Rollout
+                Simulate: Ready
               </button>
               <button
                 onClick={() => {
@@ -493,7 +510,7 @@ export default function ReleaseCenterPage() {
                     : "bg-surface text-text-secondary border-border hover:bg-surface-subtle"
                 }`}
               >
-                2. Underpowered Data
+                Simulate: Underpowered
               </button>
               <button
                 onClick={() => {
@@ -506,7 +523,7 @@ export default function ReleaseCenterPage() {
                     : "bg-surface text-text-secondary border-border hover:bg-surface-subtle"
                 }`}
               >
-                3. Guardrail Breach
+                Simulate: Guardrail Breach
               </button>
             </div>
           </div>
@@ -637,7 +654,7 @@ export default function ReleaseCenterPage() {
               </div>
               <p className="text-xs text-amber-800 leading-relaxed">
                 Sample size is underpowered ({currentExposures.toLocaleString()} /{" "}
-                {minSampleSize.toLocaleString()} required). P-value of {currentPValue} exceeds
+                {effectiveSampleTarget.toLocaleString()} required). P-value of {currentPValue} exceeds
                 alpha ceiling. Premature rollout risks false positive regressions. Continue running for
                 an estimated 3.5 more days.
               </p>
@@ -677,8 +694,7 @@ export default function ReleaseCenterPage() {
           </div>
 
           <div className="p-3 rounded-md border border-violet-200 bg-violet-50 text-[11px] text-violet-800 leading-relaxed">
-            <strong>Autonomous Safety Handshake:</strong> The Release Guardian will never enact an
-            automated production mutation without explicit human confirmation recorded in the audit trail.
+            <strong>Operator approval:</strong> The AI provides evidence and a recommendation. It does not automatically submit a rollout mutation. An operator must explicitly choose and submit an action.
           </div>
         </div>
       </div>
@@ -696,7 +712,7 @@ export default function ReleaseCenterPage() {
             </p>
           </div>
           <div className="text-xs font-mono px-3 py-1.5 rounded bg-surface-subtle border border-border text-text font-semibold">
-            Flagsmith Stage: {currentStage}% Winner / {100 - currentStage}% Control
+            {liveFlagState ? "Verified Flagsmith Stage" : "Unverified Stage"}: {currentStage}% Winner / {100 - currentStage}% Control
           </div>
         </div>
 
@@ -763,14 +779,14 @@ export default function ReleaseCenterPage() {
         <div className="flex items-center justify-between pt-2 border-t border-border text-xs text-text-secondary">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            <span>Actual Flagsmith API mutation: Updates multivariate feature weights live.</span>
+            <span>{liveFlagState ? "Live Flagsmith state loaded. Mutations are read-back verified." : "Live Flagsmith state is unavailable. Production mutations are blocked."}</span>
           </div>
           <button
             onClick={() => {
               setTargetStage(100);
               setStageModalOpen(true);
             }}
-            disabled={!allReadinessPassed || isSimulatedBreach}
+            disabled={!allReadinessPassed || isSimulatedBreach || loadingLiveEvidence || !liveFlagState}
             className={`px-4 py-2 rounded-md text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 ${
               allReadinessPassed && !isSimulatedBreach
                 ? "bg-primary hover:bg-primary-dark text-white cursor-pointer"
@@ -801,7 +817,7 @@ export default function ReleaseCenterPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Metric 1 */}
           <div className={`p-4 rounded-lg border ${
-            currentPaymentFailureRate > maxPaymentFailureThreshold
+            guardrailBreached
               ? "border-red-300 bg-red-50 text-red-950"
               : "border-border bg-surface"
           }`}>
@@ -809,9 +825,9 @@ export default function ReleaseCenterPage() {
               Payment Failures
             </span>
             <div className="text-xl font-bold font-mono mt-1 flex items-baseline justify-between">
-              <span>{currentPaymentFailureRate}%</span>
-              <span className={`text-xs ${currentPaymentFailureRate > maxPaymentFailureThreshold ? "text-red-700 font-bold" : "text-emerald-700"}`}>
-                {currentPaymentFailureRate > maxPaymentFailureThreshold ? "BREACH" : "NORMAL"}
+              <span>{currentPaymentFailureRate === null ? "N/A" : `${currentPaymentFailureRate}%`}</span>
+              <span className={`text-xs ${guardrailBreached ? "text-red-700 font-bold" : currentPaymentFailureRate === null ? "text-amber-700" : "text-emerald-700"}`}>
+                {guardrailBreached ? "BREACH" : currentPaymentFailureRate === null ? "UNAVAILABLE" : "NORMAL"}
               </span>
             </div>
             <div className="mt-2 text-[11px] text-text-muted flex items-center justify-between">
@@ -832,8 +848,10 @@ export default function ReleaseCenterPage() {
               Application JS Errors
             </span>
             <div className="text-xl font-bold font-mono mt-1 flex items-baseline justify-between">
-              <span>{currentErrorRate}%</span>
-              <span className="text-xs text-emerald-700 font-bold">NORMAL</span>
+              <span>{currentErrorRate === null ? "N/A" : `${currentErrorRate}%`}</span>
+              <span className={`text-xs ${currentErrorRate === null ? "text-amber-700" : "text-emerald-700"} font-bold`}>
+                {currentErrorRate === null ? "UNAVAILABLE" : "NORMAL"}
+              </span>
             </div>
             <div className="mt-2 text-[11px] text-text-muted flex items-center justify-between">
               <span>Threshold: &le; {maxErrorRateThreshold}%</span>
