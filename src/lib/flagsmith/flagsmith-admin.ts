@@ -343,6 +343,7 @@ export async function createFlagsmithMultivariateFeature(
   remoteCreated?: boolean;
   isExisting?: boolean;
   state?: any;
+  allocationVerification?: FlagsmithAllocationVerification;
 }> {
   const projectId = process.env.FLAGSMITH_PROJECT_ID;
   const authHeaders = getManagementAuthHeader();
