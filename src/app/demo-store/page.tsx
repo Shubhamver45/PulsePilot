@@ -951,6 +951,12 @@ export default function DemoStorePage() {
           </div>
         )}
 
+        {simError && (
+          <div role="alert" className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            {simError}
+          </div>
+        )}
+
         {simResults && !isSimulating && (
           <div className="p-2.5 rounded bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-center justify-between">
             <div className="flex items-center gap-2">
