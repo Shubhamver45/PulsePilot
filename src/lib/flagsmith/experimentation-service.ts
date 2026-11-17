@@ -533,21 +533,14 @@ export async function getFlagsmithExperimentResults(
       });
     } catch (dbErr: any) {
       console.warn("[PostgreSQL Telemetry Aggregate Error]:", dbErr.message);
+      // A configured database must fail closed; never substitute demo fixtures for tenant data.
+      return null;
     }
+    return null;
   }
 
   // Check in-memory active experiments (only populated via explicit creation or testing)
   const exp = activeFlagsmithExperiments.get(featureFlagName);
-  if (!exp) return null;
-
-  return {
-    ...exp,
-    lastRefreshedAt: new Date().toISOString(),
-  };
-}
-
-// -----------------------------------------------------------------------------
-reFlagName);
   if (!exp) return null;
 
   return {
