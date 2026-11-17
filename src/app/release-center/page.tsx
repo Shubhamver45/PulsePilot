@@ -48,21 +48,43 @@ interface AuditLogItem {
 
 const STAGES = [5, 10, 25, 50, 75, 100];
 
+interface ExperimentEvidence {
+  sampleSizeTarget?: number;
+  sampleSizeCurrent?: number;
+  summary?: { totalExposures: number; totalConversions: number; leadingVariationKey: string | null };
+  variations?: Array<{
+    variantKey: string;
+    variantName: string;
+    isControl: boolean;
+    exposures: number;
+    conversions: number;
+    expectedLiftPercent?: number;
+    chanceToWin?: number;
+    pValue?: number;
+    sampleRatioPValue?: number;
+    featureValue?: unknown;
+  }>;
+}
+
 export default function ReleaseCenterPage() {
   // Selected flag & experiment
-  const [selectedFlag, setSelectedFlag] = useState("exp_checkout_social_proof");
-  const [winningVariant, setWinningVariant] = useState("variant_social_proof");
+  const [selectedFlag, setSelectedFlag] = useState("exp_checkout_layout_v2");
+  const [winningVariant, setWinningVariant] = useState("treatment");
+  const [experimentEvidence, setExperimentEvidence] = useState<ExperimentEvidence | null>(null);
+  const [liveFlagState, setLiveFlagState] = useState<any>(null);
+  const [loadingLiveEvidence, setLoadingLiveEvidence] = useState(false);
+  const [liveEvidenceError, setLiveEvidenceError] = useState<string | null>(null);
 
   // Feature 1: Evidence Configuration
-  const [minSampleSize, setMinSampleSize] = useState(2500);
+  const [minSampleSize, setMinSampleSize] = useState(5000);
   const [minBayesConfidence, setMinBayesConfidence] = useState(95);
   const [maxPValue, setMaxPValue] = useState(0.05);
 
   // Feature 2: Scenario Selection for Demo
-  const [scenario, setScenario] = useState<"READY_FOR_ROLLOUT" | "INSUFFICIENT_DATA" | "GUARDRAIL_BREACH">("READY_FOR_ROLLOUT");
+  const [scenario, setScenario] = useState<"LIVE_DATA" | "READY_FOR_ROLLOUT" | "INSUFFICIENT_DATA" | "GUARDRAIL_BREACH">("LIVE_DATA");
 
   // Feature 3: Gradual Rollout State
-  const [currentStage, setCurrentStage] = useState<number>(50);
+  const [currentStage, setCurrentStage] = useState<number>(0);
   const [targetStage, setTargetStage] = useState<number>(75);
   const [stageModalOpen, setStageModalOpen] = useState(false);
 
@@ -75,7 +97,7 @@ export default function ReleaseCenterPage() {
   const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
   const [killModalOpen, setKillModalOpen] = useState(false);
   const [rollbackReason, setRollbackReason] = useState("Payment failure rate breached 1.5% threshold");
-  const [authorizerName, setAuthorizerName] = useState("Sarah Lin (Product Lead)");
+  const [authorizerName, setAuthorizerName] = useState("Operator");
 
   // Operation Feedback & Audit
   const [isExecuting, setIsExecuting] = useState(false);
@@ -99,48 +121,111 @@ export default function ReleaseCenterPage() {
     }
   };
 
+  const fetchLiveEvidence = async (featureName: string = selectedFlag) => {
+    setLoadingLiveEvidence(true);
+    setLiveEvidenceError(null);
+    try {
+      const [experimentResponse, flagResponse] = await Promise.all([
+        fetch(`/api/flagsmith/experiment?flag=${encodeURIComponent(featureName)}`, { cache: "no-store" }),
+        fetch(`/api/flagsmith/rollout?featureName=${encodeURIComponent(featureName)}`, { cache: "no-store" }),
+      ]);
+      const experimentPayload = await experimentResponse.json();
+      const flagPayload = await flagResponse.json();
+
+      if (!experimentResponse.ok) {
+        throw new Error(experimentPayload.error || "Experiment telemetry could not be loaded.");
+      }
+      if (!flagResponse.ok || !flagPayload.success) {
+        throw new Error(flagPayload.error || "Live Flagsmith allocation state could not be loaded.");
+      }
+
+      const evidence = experimentPayload as ExperimentEvidence;
+      setExperimentEvidence(evidence);
+      setLiveFlagState(flagPayload.flag);
+
+      const leadingKey = evidence.summary?.leadingVariationKey;
+      const leading = evidence.variations?.find((item) => item.variantKey === leadingKey)
+        || evidence.variations?.find((item) => !item.isControl);
+      if (leading) {
+        setWinningVariant(leading.variantKey);
+        const rawValue = typeof leading.featureValue === "string"
+          ? leading.featureValue
+          : JSON.stringify(leading.featureValue);
+        const remoteOption = flagPayload.flag?.variants?.find((item: any) => item.value === rawValue);
+        setCurrentStage(Number(remoteOption?.percentageAllocation || 0));
+      } else {
+        setCurrentStage(0);
+      }
+    } catch (error: any) {
+      setExperimentEvidence(null);
+      setLiveFlagState(null);
+      setCurrentStage(0);
+      setLiveEvidenceError(error?.message || "Unable to load live experiment evidence.");
+    } finally {
+      setLoadingLiveEvidence(false);
+    }
+  };
+
   useEffect(() => {
     fetchAuditLogs();
   }, []);
 
-  // Compute Active Guardrail Values
-  const currentPaymentFailureRate = isSimulatedBreach || scenario === "GUARDRAIL_BREACH" ? 2.45 : 1.08;
-  const currentErrorRate = 0.12;
-  const currentLift = scenario === "GUARDRAIL_BREACH" ? -4.2 : 18.4;
-  const currentExposures = scenario === "INSUFFICIENT_DATA" ? 1200 : 4800;
-  const currentBayes = scenario === "INSUFFICIENT_DATA" ? 82.4 : scenario === "GUARDRAIL_BREACH" ? 14.1 : 97.4;
-  const currentPValue = scenario === "INSUFFICIENT_DATA" ? 0.142 : scenario === "GUARDRAIL_BREACH" ? 0.32 : 0.026;
+  useEffect(() => {
+    fetchLiveEvidence(selectedFlag);
+  }, [selectedFlag]);
 
-  // Readiness Checklist Evaluation
+  // Live evidence is the default. The three explicit scenario buttons below
+  // are simulations and are kept separate from persisted experiment telemetry.
+  const leadingEvidence = experimentEvidence?.variations?.find(
+    (item) => item.variantKey === experimentEvidence.summary?.leadingVariationKey
+  ) || experimentEvidence?.variations?.find((item) => !item.isControl);
+  const liveDataMode = scenario === "LIVE_DATA";
+  const currentPaymentFailureRate: number | null = liveDataMode ? null : (isSimulatedBreach || scenario === "GUARDRAIL_BREACH" ? 2.45 : 1.08);
+  const currentErrorRate: number | null = liveDataMode ? null : 0.12;
+  const currentLift = liveDataMode ? (leadingEvidence?.expectedLiftPercent ?? 0) : (scenario === "GUARDRAIL_BREACH" ? -4.2 : 18.4);
+  const currentExposures = liveDataMode
+    ? (experimentEvidence?.summary?.totalExposures ?? 0)
+    : (scenario === "INSUFFICIENT_DATA" ? 1200 : 4800);
+  const currentBayes = liveDataMode
+    ? Number(((leadingEvidence?.chanceToWin ?? 0.5) * 100).toFixed(1))
+    : (scenario === "INSUFFICIENT_DATA" ? 82.4 : scenario === "GUARDRAIL_BREACH" ? 14.1 : 97.4);
+  const currentPValue = liveDataMode
+    ? (leadingEvidence?.pValue ?? 1)
+    : (scenario === "INSUFFICIENT_DATA" ? 0.142 : scenario === "GUARDRAIL_BREACH" ? 0.32 : 0.026);
+  const currentSrmPValue = liveDataMode ? (leadingEvidence?.sampleRatioPValue ?? null) : 0.77;
+  const effectiveSampleTarget = experimentEvidence?.sampleSizeTarget ?? minSampleSize;
+  const paymentGuardrailPassed = currentPaymentFailureRate !== null && currentPaymentFailureRate <= maxPaymentFailureThreshold;
+
+  // Readiness must fail closed when any required live evidence is absent.
   const readinessChecks = [
     {
-      label: `Sample Size Adequacy (Current: ${currentExposures.toLocaleString()} vs Min: ${minSampleSize.toLocaleString()})`,
-      passed: currentExposures >= minSampleSize,
-      value: `${currentExposures.toLocaleString()} samples`,
+      label: `Sample Size Adequacy (Current: ${currentExposures.toLocaleString()} vs Target: ${effectiveSampleTarget.toLocaleString()})`,
+      passed: currentExposures >= Math.max(minSampleSize, effectiveSampleTarget),
+      value: `${currentExposures.toLocaleString()} / ${effectiveSampleTarget.toLocaleString()} exposures`,
     },
     {
       label: `Bayesian Win Probability (Current: ${currentBayes}% vs Min: ${minBayesConfidence}%)`,
-      passed: currentBayes >= minBayesConfidence,
-      value: `${currentBayes}%`,
+      passed: Boolean(leadingEvidence) && currentBayes >= minBayesConfidence,
+      value: leadingEvidence ? `${currentBayes}%` : "No treatment evidence",
     },
     {
       label: `Frequentist Significance (Current: p = ${currentPValue} vs Max: ${maxPValue})`,
-      passed: currentPValue <= maxPValue,
-      value: `p = ${currentPValue}`,
+      passed: Boolean(leadingEvidence?.pValue !== undefined) && currentPValue <= maxPValue,
+      value: leadingEvidence?.pValue !== undefined ? `p = ${currentPValue}` : "Not calculated",
     },
     {
-      label: `Sample Ratio Mismatch (SRM) Test (Chi-Square p > 0.01)`,
-      passed: true,
-      value: "p = 0.77 (SRM Clear)",
+      label: "Sample Ratio Mismatch (SRM) Test (Chi-Square p > 0.01)",
+      passed: currentSrmPValue !== null && currentSrmPValue > 0.01,
+      value: currentSrmPValue !== null ? `p = ${currentSrmPValue}` : "Not enough allocation evidence",
     },
     {
-      label: `Operational Guardrails (Payment Failure Rate: ${currentPaymentFailureRate}% vs Max: ${maxPaymentFailureThreshold}%)`,
-      passed: currentPaymentFailureRate <= maxPaymentFailureThreshold,
-      value: `${currentPaymentFailureRate}%`,
+      label: `Operational Guardrails (Payment Failure Rate: ${currentPaymentFailureRate === null ? "unavailable" : `${currentPaymentFailureRate}%`} vs Max: ${maxPaymentFailureThreshold}%)`,
+      passed: paymentGuardrailPassed,
+      value: currentPaymentFailureRate === null ? "No payment-failure telemetry" : `${currentPaymentFailureRate}%`,
     },
   ];
 
-  const allReadinessPassed = readinessChecks.every((c) => c.passed);
+  const allReadinessPassed = readinessChecks.every((check) => check.passed) && !loadingLiveEvidence && !liveEvidenceError;
 
   // Handlers for Flagsmith Actuation
   const handleApplyGradualStage = async () => {
