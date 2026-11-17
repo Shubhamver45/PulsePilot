@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import {
@@ -245,17 +245,22 @@ export default function DemoStorePage() {
   });
 
   // Mode: Distinguishes Live Flagsmith Edge from Sandbox Mock Mode
-  const [evaluationSource, setEvaluationSource] = useState<string>("flagsmith_remote_api");
+  const [evaluationSource, setEvaluationSource] = useState<string>("loading");
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
 
   // Telemetry Tracking State
   const [exposureLogged, setExposureLogged] = useState(false);
+  const [isTrackingExposure, setIsTrackingExposure] = useState(false);
+  const exposureRequestStarted = useRef(false);
   const [conversionLogged, setConversionLogged] = useState(false);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [orderFeedback, setOrderFeedback] = useState<string | null>(null);
   const [lastOrderDetails, setLastOrderDetails] = useState<{
     orderId: string;
     total: number;
     itemsCount: number;
     variantUsed: string;
+    experimentFlag: string;
     userId: string;
     timestamp: string;
   } | null>(null);
@@ -293,19 +298,17 @@ export default function DemoStorePage() {
   // 1. Evaluate Flag on Identity Change (Checks active experiment in Flagsmith)
   const evaluateFlagsmith = async (identity: string) => {
     setIsEvaluating(true);
+    setEvaluationSource("loading");
+    setEvaluationError(null);
+    setExposureLogged(false);
+    setOrderFeedback(null);
     try {
-      const res = await fetch(`/api/flagsmith/evaluate?flag=${encodeURIComponent(activeFlag)}&identity=${encodeURIComponent(identity)}`);
-      let data = await res.json();
-
-      // If activeFlag is not found, fallback to checkout_experience
-      if (!data.value && activeFlag !== "checkout_experience") {
-        const fallbackRes = await fetch(`/api/flagsmith/evaluate?flag=checkout_experience&identity=${encodeURIComponent(identity)}`);
-        if (fallbackRes.ok) {
-          const fallbackData = await fallbackRes.json();
-          if (fallbackData.value) {
-            data = fallbackData;
-          }
-        }
+      const res = await fetch(`/api/flagsmith/evaluate?flag=${encodeURIComponent(activeFlag)}&identity=${encodeURIComponent(identity)}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || data.error || !data.value) {
+        throw new Error(data.message || data.error || `Flagsmith did not return a value for '${activeFlag}'.`);
       }
 
       let parsedValue: any = {};
@@ -338,6 +341,9 @@ export default function DemoStorePage() {
 
       if (data.source) {
         setEvaluationSource(data.source);
+      } else {
+        setEvaluationSource("error");
+        throw new Error("The feature evaluation response did not identify its source.");
       }
 
       if (Array.isArray(data.traits) && data.traits.length > 0) {
@@ -349,8 +355,11 @@ export default function DemoStorePage() {
 
       // Reset step
       setMultiStepIndex(1);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Flagsmith evaluation failed:", err);
+      setEvaluationSource("error");
+      setEvaluationError(err?.message || "Flagsmith feature evaluation failed.");
+      setExposureLogged(false);
     } finally {
       setIsEvaluating(false);
     }
@@ -408,6 +417,8 @@ export default function DemoStorePage() {
     setDistinctUserId(userId);
     setExposureLogged(false);
     setConversionLogged(false);
+    setEvaluationError(null);
+    setOrderFeedback(null);
     if (userId === "user_alex_dev") {
       setShippingForm((prev) => ({
         ...prev,
@@ -428,30 +439,68 @@ export default function DemoStorePage() {
     evaluateFlagsmith(distinctUserId);
   }, [distinctUserId, activeFlag]);
 
-  // 2. Record Exposure when entering Checkout
+  // 2. Persist the first-touch exposure before enabling conversion recording.
   useEffect(() => {
-    if (currentView === "CHECKOUT" && !exposureLogged) {
-      fetch("/api/telemetry/track", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          experimentFlag: activeFlag,
-          distinctUserId,
-          eventType: "experiment_exposure",
-          variantKey: evaluatedVariant.variantKey,
-          properties: {
-            cartItems: cart.length,
-            cartSubtotal: calculateSubtotal(),
-            assignedLayout: evaluatedVariant.layout,
-            isSynthetic: false,
-            traits: identityTraits,
-            segments: identitySegments,
-          },
-        }),
-      }).catch((e) => console.warn("Exposure tracking error:", e));
-      setExposureLogged(true);
+    if (
+      currentView !== "CHECKOUT" ||
+      exposureLogged ||
+      exposureRequestStarted.current ||
+      isEvaluating ||
+      evaluationSource !== "flagsmith_remote_api" ||
+      evaluationError
+    ) {
+      return;
     }
-  }, [currentView, distinctUserId, evaluatedVariant.variantKey, exposureLogged, activeFlag]);
+
+    exposureRequestStarted.current = true;
+    setIsTrackingExposure(true);
+
+    const trackExposure = async () => {
+      try {
+        const response = await fetch("/api/telemetry/track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            experimentFlag: activeFlag,
+            distinctUserId,
+            eventType: "experiment_exposure",
+            variantKey: evaluatedVariant.variantKey,
+            properties: {
+              cartItems: cart.length,
+              cartSubtotal: calculateSubtotal(),
+              assignedLayout: evaluatedVariant.layout,
+              traits: identityTraits,
+              segments: identitySegments,
+            },
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || result.error || "Exposure could not be persisted.");
+        }
+        setExposureLogged(true);
+        setOrderFeedback(null);
+      } catch (error: any) {
+        console.warn("Exposure tracking failed:", error);
+        setOrderFeedback(`Checkout is blocked because the exposure was not recorded: ${error?.message || "telemetry unavailable"}`);
+      } finally {
+        exposureRequestStarted.current = false;
+        setIsTrackingExposure(false);
+      }
+    };
+
+    void trackExposure();
+  }, [
+    currentView,
+    distinctUserId,
+    evaluatedVariant.variantKey,
+    evaluatedVariant.layout,
+    exposureLogged,
+    activeFlag,
+    isEvaluating,
+    evaluationSource,
+    evaluationError,
+  ]);
 
   // Calculations
   const calculateSubtotal = () =>
@@ -494,49 +543,56 @@ export default function DemoStorePage() {
     setCart((prev) => prev.filter((item) => item.product.id !== productId));
   };
 
-  // 3. Complete Checkout (Record Conversion with EXACT SAME Identity)
+  // 3. Simulate checkout completion only after the exposure is persisted.
   const handleCompleteOrder = async () => {
+    if (!exposureLogged || isTrackingExposure || evaluationSource !== "flagsmith_remote_api") {
+      setOrderFeedback("Checkout is unavailable until a live Flagsmith assignment and persisted exposure are confirmed.");
+      return;
+    }
+
     setIsSubmittingOrder(true);
+    setOrderFeedback(null);
     try {
       const orderId = `ORD-${Math.floor(100000 + Math.random() * 900000)}`;
-
-      // Send conversion telemetry to Flagsmith with IDENTICAL distinctUserId
       const res = await fetch("/api/telemetry/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           experimentFlag: activeFlag,
-          distinctUserId, // CRITICAL: Must match exposure distinctUserId
+          distinctUserId,
           eventType: "checkout_completed",
           variantKey: evaluatedVariant.variantKey,
           metricKey: "checkout_completed",
           properties: {
             orderId,
             revenue: calculateTotal(),
-            itemsCount: cart.reduce((c, i) => c + i.quantity, 0),
+            itemsCount: cart.reduce((sum, item) => sum + item.quantity, 0),
             variantLayout: evaluatedVariant.layout,
-            isSynthetic: false,
             traits: identityTraits,
             segments: identitySegments,
           },
         }),
       });
-
-      if (res.ok) {
-        setConversionLogged(true);
-        setLastOrderDetails({
-          orderId,
-          total: calculateTotal(),
-          itemsCount: cart.reduce((c, i) => c + i.quantity, 0),
-          variantUsed: evaluatedVariant.variantName,
-          userId: distinctUserId,
-          timestamp: new Date().toLocaleTimeString(),
-        });
-        setCart([]); // Clear cart
-        setCurrentView("CONFIRMATION");
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        throw new Error(result.message || result.error || "Conversion telemetry was not persisted.");
       }
-    } catch (err) {
-      console.error("Order completion failed:", err);
+
+      setConversionLogged(true);
+      setLastOrderDetails({
+        orderId,
+        total: calculateTotal(),
+        itemsCount: cart.reduce((sum, item) => sum + item.quantity, 0),
+        variantUsed: evaluatedVariant.variantName,
+        experimentFlag: activeFlag,
+        userId: distinctUserId,
+        timestamp: new Date().toLocaleTimeString(),
+      });
+      setCart([]);
+      setCurrentView("CONFIRMATION");
+    } catch (error: any) {
+      console.error("Order completion failed:", error);
+      setOrderFeedback(error?.message || "Checkout telemetry could not be saved. No order confirmation was generated.");
     } finally {
       setIsSubmittingOrder(false);
     }
