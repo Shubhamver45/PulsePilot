@@ -102,7 +102,7 @@ async function main() {
     "Mismatched remote control/default value blocks verification");
 
   if (originalGeminiKey !== undefined) process.env.GEMINI_API_KEY = originalGeminiKey;
-  console.log(`\nExperiment plan & Flagsmith allocation tests: ${passed}/11 passed.`);
+  console.log(`\nExperiment plan & Flagsmith allocation tests: ${passed} passed.`);
 }
 
 main().catch((error) => {
