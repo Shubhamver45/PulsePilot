@@ -265,7 +265,8 @@ export async function POST(request: Request) {
         if (!result.success || !result.verifiedState) {
           await recordAuditLog({
             action: req.action === "ROLLOUT_WINNER" ? "ROLLOUT_FAILED" : "GRADUAL_STAGE_FAILED",
-            actor: { name: actorName, type: "human" },
+            organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
             entityType: "FLAGSMITH_FLAG",
             entityId: req.flagsmithFeatureName,
             details: result.error || "Flagsmith did not return a verifiable post-mutation state.",
@@ -334,6 +335,7 @@ export async function POST(request: Request) {
       const action = req.action === "ROLLOUT_WINNER" ? "ROLLOUT_APPROVED_EXECUTED" : "GRADUAL_STAGE_UPDATED";
       await recordAuditLog({
         action,
+        organizationId: user.organizationId,
         actor: { name: actorName, type: "human" },
         entityType: "FLAGSMITH_FLAG",
         entityId: req.flagsmithFeatureName,
@@ -370,7 +372,8 @@ export async function POST(request: Request) {
         if (!result.success || !result.verifiedState) {
           await recordAuditLog({
             action: "ROLLBACK_FAILED",
-            actor: { name: actorName, type: "human" },
+            organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
             entityType: "FLAGSMITH_FLAG",
             entityId: req.flagsmithFeatureName,
             details: result.error || "Flagsmith did not return a verifiable rollback state.",
@@ -402,6 +405,7 @@ export async function POST(request: Request) {
 
       await recordAuditLog({
         action: "ROLLBACK_EXECUTED",
+        organizationId: user.organizationId,
         actor: { name: actorName, type: "human" },
         entityType: "FLAGSMITH_FLAG",
         entityId: req.flagsmithFeatureName,
@@ -434,7 +438,8 @@ export async function POST(request: Request) {
         if (!result.success || result.verifiedState?.enabled !== false) {
           await recordAuditLog({
             action: "KILL_SWITCH_FAILED",
-            actor: { name: actorName, type: "human" },
+            organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
             entityType: "FLAGSMITH_FLAG",
             entityId: req.flagsmithFeatureName,
             details: result.error || "Flagsmith did not verify the disabled state.",
@@ -450,6 +455,7 @@ export async function POST(request: Request) {
       // the operator may re-enable it after the incident has been resolved.
       await recordAuditLog({
         action: "KILL_SWITCH_TRIGGERED",
+        organizationId: user.organizationId,
         actor: { name: actorName, type: "human" },
         entityType: "FLAGSMITH_FLAG",
         entityId: req.flagsmithFeatureName,
