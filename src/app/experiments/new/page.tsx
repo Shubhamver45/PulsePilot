@@ -32,6 +32,7 @@ import {
   ExperimentStrategy,
   ReadinessReview,
   MetricItemSchema,
+  validateExperimentStrategy,
 } from "@/lib/ai/schemas";
 
 const selectableObjectives = [
@@ -1068,13 +1069,13 @@ export default function AIExperimentStudioPage() {
       {currentStep === 7 && deploymentResult && strategy && (
         <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-6 animate-in fade-in">
           <div className="flex items-center gap-3 pb-4 border-b border-border">
-            <div className="w-10 h-10 rounded-full bg-success-light text-success flex items-center justify-center">
-              <CheckCircle2 className="w-6 h-6" />
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${deploymentResult.allocationVerification?.verified ? "bg-success-light text-success" : "bg-warning-light text-warning"}`}>
+              {deploymentResult.allocationVerification?.verified ? <CheckCircle2 className="w-6 h-6" /> : <AlertTriangle className="w-6 h-6" />}
             </div>
             <div>
-              <h2 className="text-base font-bold text-text">Step 7: Flagsmith Remote Verification Complete!</h2>
+              <h2 className="text-base font-bold text-text">Step 7: Flagsmith Provisioning Result</h2>
               <p className="text-xs text-text-secondary mt-0.5">
-                The multivariate feature flag has been provisioned remotely and verified in the Flagsmith environment.
+                {deploymentResult.allocationVerification?.verified ? "The keyed multivariate options and live environment allocations were read back and matched the requested experiment." : "Provisioning response received. Do not treat this as a verified experiment until live allocation evidence is present."}
               </p>
             </div>
           </div>
@@ -1090,7 +1091,7 @@ export default function AIExperimentStudioPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-text-secondary">Project / Environment:</span>
-              <span className="text-text">Project 53867 &bull; Development</span>
+              <span className="text-text">Project {deploymentResult.flagsmithProjectId || "not returned"} &bull; Environment {deploymentResult.flagsmithEnvironmentId ?? "not returned"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-secondary">Provisioning Status:</span>
@@ -1099,9 +1100,26 @@ export default function AIExperimentStudioPage() {
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-text-secondary">Read-After-Write Verification:</span>
-              <span className="text-success font-bold">&check; VERIFIED IN REMOTE ENVIRONMENT</span>
+              <span className="text-text-secondary">Live allocation verification:</span>
+              <span className={deploymentResult.allocationVerification?.verified ? "text-success font-bold" : "text-warning font-bold"}>
+                {deploymentResult.allocationVerification?.verified ? "VERIFIED · ALLOCATIONS MATCH" : "NOT VERIFIED"}
+              </span>
             </div>
+            {deploymentResult.allocationVerification && (
+              <div className="border-t border-border pt-2 space-y-1">
+                <p className="font-semibold text-text-secondary">Read-back allocation</p>
+                {deploymentResult.allocationVerification.variants.map((variant: any) => (
+                  <div key={variant.key} className="flex justify-between">
+                    <span>{variant.key} (expected {variant.expectedPercent}%)</span>
+                    <span>{variant.actualPercent == null ? "unknown" : `${variant.actualPercent}%`}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between font-bold border-t border-border pt-1">
+                  <span>Default/control residual</span>
+                  <span>{deploymentResult.allocationVerification.controlPercent == null ? "unknown" : `${deploymentResult.allocationVerification.controlPercent}%`}</span>
+                </div>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-text-secondary">Authorized By:</span>
               <span className="text-text">{deploymentResult.approvedBy}</span>
