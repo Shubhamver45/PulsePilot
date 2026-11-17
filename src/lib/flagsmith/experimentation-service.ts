@@ -48,6 +48,9 @@ export interface ExperimentVariationResult {
   expectedLiftPercent?: number; // relative to control
   chanceToWin?: number; // 0 to 1 (Bayesian win prob)
   credibleInterval95?: [number, number];
+  pValue?: number;
+  sampleRatioPValue?: number;
+  featureValue?: unknown;
 }
 
 export interface FlagsmithExperimentResults {
@@ -62,6 +65,8 @@ export interface FlagsmithExperimentResults {
     key: string;
     name: string;
   };
+  sampleSizeTarget?: number;
+  sampleSizeCurrent?: number;
   summary: {
     totalExposures: number;
     totalConversions: number;
@@ -448,6 +453,8 @@ export async function getFlagsmithExperimentResults(
             let expectedLiftPercent = 0;
             let chanceToWin = 0.5;
             let credibleInterval95: [number, number] = [0, 0];
+            let pValue: number | undefined;
+            let sampleRatioPValue: number | undefined;
 
             if (!isControl && expCount > 0 && controlExposures > 0) {
               const comp = compareVariants(
@@ -457,6 +464,8 @@ export async function getFlagsmithExperimentResults(
               expectedLiftPercent = Number(comp.relativeUpliftPercent.toFixed(1));
               chanceToWin = Number(comp.bayesianProbabilityToBeatControl.toFixed(3));
               credibleInterval95 = [Number(comp.confidenceInterval95[0].toFixed(4)), Number(comp.confidenceInterval95[1].toFixed(4))];
+              pValue = Number(comp.pValue.toFixed(6));
+              sampleRatioPValue = Number(comp.sampleRatioMismatch.pValue.toFixed(6));
             }
 
             return {
@@ -469,6 +478,9 @@ export async function getFlagsmithExperimentResults(
               expectedLiftPercent: !isControl ? expectedLiftPercent : undefined,
               chanceToWin: !isControl ? chanceToWin : undefined,
               credibleInterval95: !isControl ? credibleInterval95 : undefined,
+              pValue: !isControl ? pValue : undefined,
+              sampleRatioPValue: !isControl ? sampleRatioPValue : undefined,
+              featureValue: v.featureValue,
             };
           });
 
@@ -482,6 +494,8 @@ export async function getFlagsmithExperimentResults(
             status: experiment.status as any,
             lastRefreshedAt: new Date().toISOString(),
             warehouseConnected: true,
+            sampleSizeTarget: experiment.sampleSizeTarget,
+            sampleSizeCurrent: experiment.sampleSizeCurrent,
             variations,
             primaryMetric: {
               key: experiment.primaryMetric,
