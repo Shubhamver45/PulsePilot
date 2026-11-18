@@ -236,7 +236,7 @@ export async function getLiveRemoteFeatureState(
     // The Management API feature-state list endpoint is keyed by the environment
     // API key. Keep the numeric environment ID for feature-version operations.
     const [environmentsResponse, featuresResponse] = await Promise.all([
-      fetch(`${apiUrl}/environments/`, { headers, cache: "no-store" }),
+      fetch(`${apiUrl}/environments/?project=${encodeURIComponent(projectId)}`, { headers, cache: "no-store" }),
       fetch(`${apiUrl}/projects/${projectId}/features/`, { headers, cache: "no-store" }),
     ]);
 
