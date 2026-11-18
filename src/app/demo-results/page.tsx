@@ -28,7 +28,7 @@ function uplift(value?: number): string {
 
 export default async function DemoResultsPage() {
   let scorecard: Awaited<ReturnType<typeof getFlagsmithExperimentResults>> = null;
-  let experiment: Awaited<ReturnType<typeof prisma.experiment.findUnique>> & { variants?: any[] } = null;
+  let experiment: (NonNullable<Awaited<ReturnType<typeof prisma.experiment.findUnique>>> & { variants: any[] }) | null = null;
   let syntheticEvents: any[] = [];
   let unavailable = false;
 
