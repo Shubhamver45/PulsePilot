@@ -19,7 +19,7 @@ export async function GET(request: Request) {
       aiCopilot: {
         configured: geminiConfigured,
         provider: "Google Gemini",
-        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        model: "Configured server-side",
       },
     });
   } catch (error: any) {
