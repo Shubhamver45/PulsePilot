@@ -444,6 +444,7 @@ export async function createFlagsmithMultivariateFeature(
               ...authHeaders,
             },
             body: JSON.stringify({
+              feature: featureId,
               type: "unicode",
               string_value: variant.value,
               key: variant.key,
@@ -605,6 +606,7 @@ export async function createFlagsmithMultivariateFeature(
             ...authHeaders,
           },
           body: JSON.stringify({
+            feature: createdFeatureId,
             type: "unicode",
             string_value: variant.value,
             key: variant.key,
