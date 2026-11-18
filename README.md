@@ -51,7 +51,7 @@ Traditional product experimentation is manual, sluggish, and risky:
 
 ### The Solution: PulsePilot AI
 PulsePilot AI turns natural language product intent into verified, live A/B and multivariate experiments actuated through **Flagsmith Cloud**:
-1. **Prompt-to-Experiment Planning:** Gemini 2.5 Flash generates structured plans when `GEMINI_API_KEY` is configured. The application identifies its deterministic offline planner when Gemini is unavailable; it never labels that fallback as a Gemini response.
+1. **Prompt-to-Experiment Planning:** Gemini 3.8 Flash generates structured plans when `GEMINI_API_KEY` is configured. The application identifies its deterministic offline planner when Gemini is unavailable; it never labels that fallback as a Gemini response.
 2. **Flagsmith Remote Actuation Plane:** The canonical provisioning and release code creates keyed multivariate options and verifies the environment's actual allocations through the Management API. Live writes require a scoped Organisation API token; missing credentials fail closed.
 3. **Zero-Hallucination Math Engine:** Strict mathematical integrity: an LLM NEVER computes statistics. Two-tailed Z-tests, p-values ($p < 0.05$), relative uplift, and Bayesian win probabilities are calculated by a pure TypeScript engine (`stats.ts`).
 4. **Strict Human-in-the-Loop (HITL) Governance:** The Release Guardian recommends winners, but production mutations require authenticated human approval before Flagsmith API execution.
@@ -100,7 +100,7 @@ flowchart TD
 
 ## 🤖 The Five-Agent Design
 
-PulsePilot structures autonomous experimentation across five specialized AI agents powered by Gemini 2.5 Flash:
+PulsePilot structures autonomous experimentation across five specialized AI agents powered by Gemini 3.8 Flash:
 
 | Agent | Role | Responsibilities | Output Schema |
 | :--- | :--- | :--- | :--- |
@@ -156,7 +156,7 @@ PulsePilot interacts directly with live Flagsmith Cloud resources on **Project I
 | **UI Design System** | Executive Light Theme | Custom Zinc/Slate + Soft Lavender (`#7C3AED`), Lucide Icons |
 | **Data Visualizations** | Recharts | Smooth trajectory charts, confidence intervals, tooltips |
 | **Feature Flags Engine** | Flagsmith Cloud | Edge identity evaluation, keyed multivariate options, Management API versioning and read-back verification |
-| **AI Agent Model** | Google Gemini (when configured) | `gemini-2.5-flash`, Zod structured output, deterministic offline fallback with provenance |
+| **AI Agent Model** | Google Gemini (when configured) | `gemini-3.8-flash`, Zod structured output, deterministic offline fallback with provenance |
 | **Database & ORM** | Supabase Managed PostgreSQL | Prisma ORM 6 (12 relational models, audit logs) |
 | **Math Engine** | Pure TypeScript (`stats.ts`) | Abramowitz-Stegun Normal CDF, Two-tailed Z-tests, Beta-Binomial Bayes |
 
