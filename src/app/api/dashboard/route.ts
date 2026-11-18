@@ -11,7 +11,17 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7D";
     const dashboard = await getProductionDashboardData(range, user.organizationId);
-    return NextResponse.json(dashboard);
+    const geminiConfigured = Boolean(
+      process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "mock"
+    );
+    return NextResponse.json({
+      ...dashboard,
+      aiCopilot: {
+        configured: geminiConfigured,
+        provider: "Google Gemini",
+        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      },
+    });
   } catch (error: any) {
     console.error("[Dashboard] Failed to read persisted experiment telemetry:", error?.message || error);
     return NextResponse.json({
