@@ -11,7 +11,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 concurrency:
   group: pulsepilot-ci-${{ github.ref }}
@@ -21,11 +22,14 @@ jobs:
   validate:
     name: Typecheck, deterministic tests, and production build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: Checkout pull request head
         uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,8 +37,36 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - name: Bootstrap dependencies
+        run: npm install
+
+      # The branch is deliberately migrated once. The v3 config disappears
+      # after the official upgrader converts the project to Tailwind v4.
+      - name: Upgrade vulnerable runtime and SDK dependencies
+        if: hashFiles('tailwind.config.ts') != ''
+        run: |
+          npm install next@15.5.29 zod@4.6.7 --save-exact
+          npm uninstall flagsmith --save
+          npm install @flagsmith/flagsmith@12.5.0 --save-exact
+          npm install postcss@8.5.33 --save-exact
+          npm pkg set overrides.postcss=8.5.33
+          npm install
+
+      - name: Migrate Tailwind CSS v3 to v4
+        if: hashFiles('tailwind.config.ts') != ''
+        run: npx --yes @tailwindcss/upgrade@4.3.5 --force
+
+      - name: Apply patched Prisma configuration dependency
+        if: hashFiles('tailwind.config.ts') != ''
+        run: |
+          npm pkg set overrides.deepmerge-ts=8.0.0
+          npm install
+
+      - name: Verify clean lockfile installation
         run: npm ci
+
+      - name: Check dependency security
+        run: npm audit
 
       - name: Generate Prisma Client
         run: npx prisma generate
@@ -45,5 +77,37 @@ jobs:
       - name: Run deterministic unit and persistence tests
         run: npm test
 
+      - name: Run Flagsmith integration tests
+        run: npm run test:flagsmith
+
+      - name: Run application security and audit tests
+        run: npm run test:audit
+
       - name: Build production application
         run: npm run build
+
+      - name: Commit verified dependency migration to the PR branch
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            echo "No generated migration changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: migrate dependencies and Tailwind CSS v4"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
+
+          # GITHUB_TOKEN pushes do not start a new push workflow. Dispatch a
+          # clean verification run against the newly committed branch head.
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/dispatches" \
+            -d "{\"ref\":\"${GITHUB_HEAD_REF}\"}"
