@@ -7,6 +7,7 @@ import {
   verifyFlagsmithAllocationState,
   type CreateFlagInput,
 } from "../src/lib/flagsmith/flagsmith-admin.ts";
+import { resolveFlagsmithVariantKey } from "../src/lib/flagsmith/identity-evaluation.ts";
 
 let passed = 0;
 function check(condition: unknown, message: string) {
@@ -76,6 +77,27 @@ const strategy: ExperimentStrategy = {
 };
 
 async function main() {
+  check(
+    resolveFlagsmithVariantKey({ variant: "treatment", value: { layout: "single_page" }, feature: { type: "MULTIVARIATE" } }) === "treatment",
+    "Flagsmith official variant field is used instead of remote-config value"
+  );
+  check(
+    resolveFlagsmithVariantKey({ variant: "control", value: { layout: "multi_step" }, feature: { type: "MULTIVARIATE" } }) === "control",
+    "Flagsmith control variant is preserved"
+  );
+  check(
+    resolveFlagsmithVariantKey({ value: { layout: "single_page" }, feature_state_value: "{\"variantKey\":\"treatment\"}", feature: { type: "MULTIVARIATE" } }) === null,
+    "Multivariate assignment with no authoritative key fails closed"
+  );
+  check(
+    resolveFlagsmithVariantKey({ feature_state_value: "{\"layout\":\"single_page\"}", feature: { type: "STANDARD" } }) === "control",
+    "Standard flags without an explicit variant use the control label"
+  );
+  check(
+    resolveFlagsmithVariantKey({ value: "legacy-value", multivariate_feature_option: { key: "legacy_treatment" }, feature: { type: "MULTIVARIATE" } }) === "legacy_treatment",
+    "Keyed option compatibility response is supported"
+  );
+
   const valid = validateExperimentStrategy(strategy);
   check(valid.valid, `Valid prompt-derived strategy passes deterministic validation: ${valid.errors.join("; ")}`);
   check(valid.allocation.totalPercent === 100, "Validated strategy allocation totals exactly 100%");
