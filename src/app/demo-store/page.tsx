@@ -283,7 +283,7 @@ export default function DemoStorePage() {
 
   // Traffic Simulator State
   const [simulatorEnabled, setSimulatorEnabled] = useState(true);
-  const [simulatorCount, setSimulatorCount] = useState<number>(25);
+  const [simulatorCount, setSimulatorCount] = useState<number>(20);
   const [simulatorScenario, setSimulatorScenario] = useState<"SINGLE_PAGE_WINS" | "EXPRESS_WINS" | "FLAT">("SINGLE_PAGE_WINS");
   const [isSimulating, setIsSimulating] = useState(false);
   const [simProgress, setSimProgress] = useState(0);
@@ -940,7 +940,7 @@ export default function DemoStorePage() {
                 </span>
               </div>
               <p className="text-[11px] text-text-secondary">
-                Generate batches of realistic visitors, stream Flagsmith exposures, and trigger conversions.
+                Generate labelled synthetic identities evaluated by live Flagsmith. Events are persisted for QA but excluded from real scorecards and release gates.
               </p>
             </div>
           </div>
@@ -981,9 +981,9 @@ export default function DemoStorePage() {
                 onChange={(e) => setSimulatorScenario(e.target.value as any)}
                 className="w-full mt-1 p-1.5 rounded bg-surface-subtle border border-border text-text text-xs font-semibold"
               >
-                <option value="SINGLE_PAGE_WINS">Variant A (Single-Page) Wins (+20% Lift)</option>
-                <option value="EXPRESS_WINS">Variant B (Express) Wins (+15% Lift)</option>
-                <option value="FLAT">Neutral Flat Baseline (0% Lift)</option>
+                <option value="SINGLE_PAGE_WINS">Single-Page wins (synthetic scenario)</option>
+                <option value="EXPRESS_WINS">Express wins (synthetic scenario)</option>
+                <option value="FLAT">Neutral baseline (synthetic scenario)</option>
               </select>
             </div>
 
@@ -1032,7 +1032,7 @@ export default function DemoStorePage() {
               </span>
             </div>
             <span className="font-mono font-bold text-amber-800">
-              +{simResults.lift}% Lift Attributed
+              +{simResults.lift}% Synthetic uplift (not measured)
             </span>
           </div>
         )}
