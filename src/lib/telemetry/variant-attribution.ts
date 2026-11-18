@@ -1,4 +1,4 @@
-/** 
+/**
  * Resolve a persisted exposure only from the authoritative assignment returned
  * by Flagsmith. Do not accept a browser-provided variant key as a fallback.
  */
