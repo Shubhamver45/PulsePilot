@@ -9,6 +9,7 @@ import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { checkProductionEvaluationGuard } from "@/lib/flagsmith/production-guards";
+import { isPublicDemoIdentity } from "@/lib/telemetry/public-demo-identity";
 
 export interface TraitItem {
   trait_key: string;
@@ -25,7 +26,6 @@ const SetTraitsSchema = z.object({
   traits: z.array(TraitItemSchema).max(20),
 });
 
-const PUBLIC_DEMO_IDENTITIES = new Set(["user_alex_dev", "user_elena_ai"]);
 const PUBLIC_DEMO_TRAITS = new Set(["plan", "beta_tester", "device"]);
 
 function isHosted(): boolean {
@@ -41,7 +41,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const identity = searchParams.get("identity") || (user?.id ?? "user_alex_dev");
 
-  if (!user && !PUBLIC_DEMO_IDENTITIES.has(identity)) {
+  if (!user && !isPublicDemoIdentity(identity)) {
     return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
   }
   if (user && user.role !== "ADMIN" && identity !== user.id) {
@@ -102,7 +102,7 @@ export async function POST(request: Request) {
   const user = await getAuthenticatedApplicationUser(request);
   const { identity, traits } = parsed.data;
 
-  if (!user && !PUBLIC_DEMO_IDENTITIES.has(identity)) {
+  if (!user && !isPublicDemoIdentity(identity)) {
     return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
   }
   if (user && user.role === "VIEWER") {

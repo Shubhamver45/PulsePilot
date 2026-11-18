@@ -801,21 +801,9 @@ export default function DemoStorePage() {
               >
                 <option value="user_alex_dev">user_alex_dev (Alex)</option>
                 <option value="user_elena_ai">user_elena_ai (Elena)</option>
-                <option value="user_control_1">user_control_1 (QA Control)</option>
-                <option value="user_sarah_prod">user_sarah_prod (QA Treatment)</option>
-                <option value="user_david_lead">user_david_lead (QA Lead)</option>
               </select>
 
-              <button
-                onClick={() => {
-                  const randomId = `visitor_${Math.random().toString(36).slice(2, 8)}`;
-                  handleSelectIdentity(randomId);
-                }}
-                className="p-1 rounded border border-border bg-white hover:bg-surface-subtle text-text-secondary shrink-0"
-                title="Generate Random Visitor ID"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isEvaluating ? "animate-spin" : ""}`} />
-              </button>
+
             </div>
           </div>
 

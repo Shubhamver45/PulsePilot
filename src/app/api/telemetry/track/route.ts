@@ -6,6 +6,7 @@ import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { checkRateLimit } from "@/lib/security/rate-limiter";
 import { getFlagsmithIdentityAssignment } from "@/lib/flagsmith/identity-evaluation";
 import { resolveExposureVariant } from "@/lib/telemetry/variant-attribution";
+import { isPublicDemoIdentity } from "@/lib/telemetry/public-demo-identity";
 
 const PUBLIC_DEMO_EXPERIMENTS = new Set(["exp_checkout_layout_v2", "checkout_experience"]);
 const PUBLIC_DEMO_ORGANIZATION_ID = "org_acme_growth";
@@ -37,6 +38,13 @@ export async function POST(request: Request) {
 
     if (!user && !isPublicDemoExperiment) {
       return NextResponse.json({ success: false, error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
+    if (!user && !isPublicDemoIdentity(event.distinctUserId)) {
+      return NextResponse.json({
+        success: false,
+        error: "PUBLIC_DEMO_IDENTITY_NOT_ALLOWED",
+        message: "Anonymous demo telemetry is limited to the two supported demo personas. Sign in to record events for a workspace identity.",
+      }, { status: 403 });
     }
 
     const clientIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()

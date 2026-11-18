@@ -3,11 +3,20 @@ import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
 import { evaluateBetaTesterSegment } from "@/lib/flagsmith/flagsmith-admin";
 import { getFlagsmithIdentityAssignment } from "@/lib/flagsmith/identity-evaluation";
 import { checkProductionEvaluationGuard } from "@/lib/flagsmith/production-guards";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { isPublicDemoIdentity } from "@/lib/telemetry/public-demo-identity";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const flag = searchParams.get("flag") || "exp_checkout_layout_v2";
-  const identity = searchParams.get("identity") || "demo_visitor_1";
+  const identity = searchParams.get("identity") || "user_alex_dev";
+  const user = await getAuthenticatedApplicationUser(request);
+  if (!user && !isPublicDemoIdentity(identity)) {
+    return NextResponse.json({
+      error: "PUBLIC_DEMO_IDENTITY_NOT_ALLOWED",
+      message: "Anonymous evaluation is limited to the supported demo personas. Sign in to evaluate workspace identities.",
+    }, { status: 403 });
+  }
 
   const envKey =
     process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
