@@ -700,7 +700,7 @@ export default function DemoStorePage() {
       )}
 
       {/* IDENTITY TARGETING & FLAGSMITH TRAITS PANEL */}
-      <div className="p-4 rounded-xl border border-violet-200 bg-gradient-to-br from-white via-violet-50/20 to-white shadow-xs space-y-3.5">
+      <div className="p-4 rounded-xl border border-violet-200 bg-linear-to-br from-white via-violet-50/20 to-white shadow-xs space-y-3.5">
         {/* Header Row */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-violet-100">
           <div className="flex items-center gap-2.5">
@@ -1044,7 +1044,7 @@ export default function DemoStorePage() {
       {currentView === "CATALOG" && (
         <div className="space-y-6">
           {/* Hero Banner */}
-          <div className="p-8 rounded-2xl bg-gradient-to-r from-violet-700 via-purple-700 to-indigo-800 text-white shadow-md relative overflow-hidden">
+          <div className="p-8 rounded-2xl bg-linear-to-r from-violet-700 via-purple-700 to-indigo-800 text-white shadow-md relative overflow-hidden">
             <div className="relative z-10 max-w-xl space-y-2">
               <span className="text-xs uppercase tracking-wider font-mono px-2.5 py-0.5 rounded-full bg-white/20 text-white">
                 Developer & AI Workstation Gear

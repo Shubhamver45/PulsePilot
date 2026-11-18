@@ -45,7 +45,7 @@ export function ConversionChart({
         </div>
         <div className="flex items-center gap-4 text-xs font-medium">
           <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#777D8D]" />
+            <span className="w-2.5 h-2.5 rounded-full bg-text-secondary" />
             <span className="text-text-secondary">Control</span>
           </div>
           <div className="flex items-center gap-1.5">
@@ -81,7 +81,7 @@ export function ConversionChart({
                     <div className="p-3 bg-surface border border-border rounded-lg shadow-md text-xs">
                       <p className="font-semibold text-text mb-1.5">{label}</p>
                       <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-4 text-[#777D8D]">
+                        <div className="flex items-center justify-between gap-4 text-text-secondary">
                           <span>Control:</span>
                           <span className="font-mono font-medium">{payload[0]?.value}%</span>
                         </div>

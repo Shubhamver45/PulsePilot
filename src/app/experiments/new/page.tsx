@@ -337,7 +337,7 @@ export default function AIExperimentStudioPage() {
                 value={customObjective}
                 onChange={(e) => setCustomObjective(e.target.value)}
                 placeholder="Enter custom business objective (e.g. Increase Enterprise Demo Requests)"
-                className="w-full mt-3 p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-none focus:border-primary"
+                className="w-full mt-3 p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-hidden focus:border-primary"
               />
             )}
           </div>
@@ -352,7 +352,7 @@ export default function AIExperimentStudioPage() {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={`Tell PulsePilot what you want to improve...\n\nExample: I want to increase checkout conversions.\nTest a single-page checkout against my current multi-step checkout.`}
-              className="w-full p-4 text-xs bg-surface-subtle/50 border border-border rounded-lg text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary leading-relaxed"
+              className="w-full p-4 text-xs bg-surface-subtle/50 border border-border rounded-lg text-text focus:outline-hidden focus:border-primary focus:ring-1 focus:ring-primary leading-relaxed"
             />
           </div>
 
@@ -428,7 +428,7 @@ export default function AIExperimentStudioPage() {
 
           {generationError && (
             <div className="p-3 bg-danger-light border border-danger/30 rounded text-xs text-danger flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              <AlertTriangle className="w-4 h-4 shrink-0" />
               <span>{generationError}</span>
             </div>
           )}
@@ -481,7 +481,7 @@ export default function AIExperimentStudioPage() {
                 onChange={(e) =>
                   setStrategy({ ...strategy, flagsmith_feature_name: e.target.value })
                 }
-                className="ml-2 font-mono text-xs px-2 py-1 bg-surface-subtle border border-border rounded text-text font-semibold focus:outline-none focus:border-primary"
+                className="ml-2 font-mono text-xs px-2 py-1 bg-surface-subtle border border-border rounded text-text font-semibold focus:outline-hidden focus:border-primary"
               />
             </div>
           </div>
@@ -920,9 +920,9 @@ export default function AIExperimentStudioPage() {
                 }`}
               >
                 {check.pass ? (
-                  <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0 mt-0.5" />
+                  <CheckCircle2 className="w-4 h-4 text-success shrink-0 mt-0.5" />
                 ) : (
-                  <AlertTriangle className="w-4 h-4 text-warning flex-shrink-0 mt-0.5" />
+                  <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
                 )}
                 <div>
                   <span className="font-bold text-text capitalize">

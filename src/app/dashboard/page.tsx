@@ -437,7 +437,7 @@ export default function DashboardPage() {
                           <span>Treatment Rate:</span>
                           <span className="font-mono">{data.treatmentRate}%</span>
                         </div>
-                        <div className="text-[#777D8D] flex justify-between gap-4">
+                        <div className="text-text-secondary flex justify-between gap-4">
                           <span>Control Baseline:</span>
                           <span className="font-mono">{data.controlRate}%</span>
                         </div>
@@ -539,7 +539,7 @@ export default function DashboardPage() {
 
                   <td className="py-3.5 px-4 font-mono text-xs text-text-secondary">
                     <div className="flex items-center gap-1.5">
-                      <Flag className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                      <Flag className="w-3.5 h-3.5 text-primary shrink-0" />
                       <span className="truncate max-w-[150px]">{exp.flagsmithFeature}</span>
                     </div>
                   </td>
@@ -680,7 +680,7 @@ export default function DashboardPage() {
                 className="p-3 rounded-lg bg-surface-subtle/60 border border-border flex items-center justify-between gap-3 text-xs"
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-md bg-primary-light text-primary flex items-center justify-center flex-shrink-0">
+                  <div className="w-8 h-8 rounded-md bg-primary-light text-primary flex items-center justify-center shrink-0">
                     <Sparkles className="w-4 h-4" />
                   </div>
                   <div className="min-w-0">
@@ -696,7 +696,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                <div className="text-right flex-shrink-0">
+                <div className="text-right shrink-0">
                   <StatusBadge
                     status={agent.status === "awaiting_approval" ? "warning" : "active"}
                     label={agent.status === "awaiting_approval" ? "PENDING HITL" : "ACTIVE"}
@@ -828,7 +828,7 @@ export default function DashboardPage() {
             value={aiQuestion}
             onChange={(e) => setAiQuestion(e.target.value)}
             placeholder="e.g. Which experiment has the highest conversion lift?"
-            className="w-full p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-none focus:border-primary"
+            className="w-full p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-hidden focus:border-primary"
           />
           <div className="flex justify-end">
             <button

@@ -59,7 +59,7 @@ export function DataTable<T extends Record<string, any>>({
                 setCurrentPage(1);
               }}
               placeholder={searchPlaceholder}
-              className="w-full pl-9 pr-3 py-1.5 text-xs bg-surface border border-border rounded-md text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              className="w-full pl-9 pr-3 py-1.5 text-xs bg-surface border border-border rounded-md text-text focus:outline-hidden focus:border-primary focus:ring-1 focus:ring-primary"
             />
           </div>
           <span className="text-xs text-text-secondary">

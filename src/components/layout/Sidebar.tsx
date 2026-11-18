@@ -212,10 +212,10 @@ export function Sidebar({ className }: { className?: string }) {
             className="w-full flex items-center justify-between p-2 rounded-md bg-surface border border-border shadow-xs hover:border-primary/40 transition-colors text-left"
           >
             <div className="flex items-center gap-2 min-w-0">
-              <Building2 className="w-3.5 h-3.5 text-text-secondary flex-shrink-0" />
+              <Building2 className="w-3.5 h-3.5 text-text-secondary shrink-0" />
               <span className="text-xs font-medium text-text truncate">{workspace}</span>
             </div>
-            <ChevronDown className={`w-3.5 h-3.5 text-text-muted flex-shrink-0 transition-transform ${workspaceDropdownOpen ? "rotate-180" : ""}`} />
+            <ChevronDown className={`w-3.5 h-3.5 text-text-muted shrink-0 transition-transform ${workspaceDropdownOpen ? "rotate-180" : ""}`} />
           </button>
 
           {workspaceDropdownOpen && (
