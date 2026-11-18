@@ -12,7 +12,7 @@ const PROJECT_ID = "proj_pulsepilot_demo";
 const EXPERIMENT_ID = "exp_pulsepilot_checkout_demo";
 
 function isAuthorized(request: Request): boolean {
-  const expected = process.env.PULSE_PREVIEW_BOOTSTRAP_TOKEN || "";
+  const expected = process.env.PULSE_PREVIEW_BOOTSTRAP_TOKEN_TEMP || process.env.PULSE_PREVIEW_BOOTSTRAP_TOKEN || "";
   const provided = new URL(request.url).searchParams.get("token") || "";
   if (!expected || !provided) return false;
 
