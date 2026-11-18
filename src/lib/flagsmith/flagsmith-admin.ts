@@ -210,7 +210,7 @@ export async function getLiveRemoteFeatureState(
   featureName: string
 ): Promise<{ success: boolean; state?: any; error?: string }> {
   const apiUrl = getApiUrl();
-  const projectId = process.env.FLAGSMITH_PROJECT_ID;
+  const projectId = process.env.FLAGSMITH_PROJECT_ID || "53867";
   const environmentKey =
     process.env.FLAGSMITH_ENVIRONMENT_KEY ||
     process.env.NEXT_PUBLIC_FLAGSMITH_ENVIRONMENT_ID ||
@@ -345,7 +345,7 @@ export async function createFlagsmithMultivariateFeature(
   state?: any;
   allocationVerification?: FlagsmithAllocationVerification;
 }> {
-  const projectId = process.env.FLAGSMITH_PROJECT_ID;
+  const projectId = process.env.FLAGSMITH_PROJECT_ID || "53867";
   const authHeaders = getManagementAuthHeader();
   const apiUrl = getApiUrl();
 
@@ -1126,7 +1126,7 @@ export async function getOrCreateFlagsmithSegment(input: {
   created?: boolean;
   error?: string;
 }> {
-  const projectId = process.env.FLAGSMITH_PROJECT_ID;
+  const projectId = process.env.FLAGSMITH_PROJECT_ID || "53867";
   const authHeaders = getManagementAuthHeader();
   const apiUrl = getApiUrl();
 
