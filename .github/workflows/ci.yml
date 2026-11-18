@@ -57,7 +57,6 @@ jobs:
         run: npx --yes @tailwindcss/upgrade@4.3.5 --force
 
       - name: Apply patched Prisma configuration dependency
-        if: hashFiles('tailwind.config.ts') != ''
         run: |
           npm pkg set overrides.deepmerge-ts=8.0.0
           npm install
