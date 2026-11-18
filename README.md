@@ -18,6 +18,10 @@
 
 ---
 
+## Verified upstream Flagsmith API contract
+
+PulsePilot's evaluation and provisioning paths were checked against the official [Flagsmith source repository](https://github.com/Flagsmith/flagsmith) at commit [15033bd](https://github.com/Flagsmith/flagsmith/commit/15033bd8538bccdabaa6ad87c10ce826f152b3a1). In particular, the [SDK identity serializer](https://github.com/Flagsmith/flagsmith/blob/15033bd8538bccdabaa6ad87c10ce826f152b3a1/api/features/serializers.py) returns the assigned multivariate key as `variant`; the feature's `value` is its remote configuration and is not the variant identifier. PulsePilot keeps those fields separate and validates exposure assignment server-side.
+
 ## Deployment configuration
 
 Hosted deployments require Supabase Auth, a persistent PostgreSQL connection, a Flagsmith environment key, a Flagsmith Organisation Management API token, and a Gemini API key for hosted AI-agent calls. The application distinguishes read-only Flagsmith Edge evaluation from Management API provisioning and mutations. It fails closed when authoritative Management state, persistent evidence, or operational guardrails cannot be verified.
@@ -25,10 +29,11 @@ Hosted deployments require Supabase Auth, a persistent PostgreSQL connection, a 
 ### Live verification snapshot — 17 November 2026
 
 - **Vercel Preview:** the last ready preview is on an earlier remediation commit. The latest branch passed isolated TypeScript, test and production-build checks, but Vercel rate-limited a subsequent preview build. The public landing page and health route on the earlier preview returned HTTP 200.
-- **Flagsmith Edge:** connected; the environment returns two flags. Two distinct test identities evaluated for `exp_checkout_layout_v2` both currently receive `treatment`. This confirms live evaluation, **not** a valid control/treatment traffic split.
+- **Flagsmith Edge:** connected; the environment returns two flags. Five stable test identities evaluated for `exp_checkout_layout_v2` all returned the official `variantKey: control`, while the remote-config value was `"treatment"`. This indicates a feature default/allocation mismatch, not a verified A/B split.
 - **Flagsmith Management API:** not configured in Vercel because an Organisation API token is absent. Keyed multivariate provisioning and remote rollout therefore remain unavailable.
 - **PostgreSQL:** the Supabase project is active, but Vercel has no configured `DATABASE_URL`/`DIRECT_URL` for the hosted app. Database-backed registration, scorecards, and persistent telemetry cannot be signed off end-to-end.
 - **Gemini:** the hosted Gemini API credential is not configured, so hosted multi-agent generation has not been verified.
+- **Identity attribution:** the evaluator uses Flagsmith's official `variant` field for assignment; exposure ingestion re-checks the assignment server-side and does not trust a client-provided variant key.
 
 The Release Guardian blocks real rollout while these prerequisites or real statistical/guardrail evidence are missing. Do not interpret a connected Edge API or an offline mock test as proof that the hosted A/B experiment is fully configured.
 
