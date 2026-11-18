@@ -21,7 +21,7 @@ export async function formulateExperimentStrategyWithMetadata(
   userPrompt: string
 ): Promise<StrategyGenerationResult> {
   const isMock = !GEMINI_API_KEY || GEMINI_API_KEY === "mock";
-  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const modelName = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
   if (!isMock) {
     try {
@@ -99,7 +99,7 @@ export async function reviewExperimentReadinessWithMetadata(
   strategy: ExperimentStrategy
 ): Promise<ReadinessGenerationResult> {
   const isMock = !GEMINI_API_KEY || GEMINI_API_KEY === "mock";
-  const modelName = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const modelName = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
   if (!isMock) {
     try {
