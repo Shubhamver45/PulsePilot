@@ -184,6 +184,7 @@ export default function HomePage() {
           </div>
           <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
             <Link href="/demo-store" className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800">Run the storefront demo <ArrowUpRight className="h-4 w-4" /></Link>
+            <Link href="/demo-results" className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50">View live scorecard <ArrowRight className="h-4 w-4" /></Link>
             <Link href="/login" className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50">Sign in to workspace <ArrowRight className="h-4 w-4" /></Link>
           </div>
         </div>

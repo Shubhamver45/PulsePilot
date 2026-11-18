@@ -12,6 +12,7 @@ function isPublicRoute(pathname: string): boolean {
     pathname === "/register" ||
     pathname === "/auth/callback" ||
     pathname === "/demo-store" ||
+    pathname === "/demo-results" ||
     pathname.startsWith("/demo-store/") ||
     pathname === "/docs" ||
     pathname.startsWith("/docs/");

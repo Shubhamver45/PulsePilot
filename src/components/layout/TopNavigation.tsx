@@ -29,6 +29,7 @@ function isPublicRoute(pathname: string): boolean {
     pathname === "/register" ||
     pathname === "/auth/callback" ||
     pathname === "/demo-store" ||
+    pathname === "/demo-results" ||
     pathname.startsWith("/demo-store/") ||
     pathname === "/docs" ||
     pathname.startsWith("/docs/");
@@ -126,6 +127,7 @@ export function TopNavigation({
         </Link>
         <nav className="flex items-center gap-2 sm:gap-5 text-xs font-semibold">
           <Link href="/demo-store" className="hidden sm:inline text-text-secondary hover:text-primary transition-colors">Live demo</Link>
+          <Link href="/demo-results" className="hidden md:inline text-text-secondary hover:text-primary transition-colors">Results</Link>
           <Link href="/docs/PRD.md" target="_blank" className="hidden md:inline text-text-secondary hover:text-primary transition-colors">Product brief</Link>
           {isGuest ? (
             <>

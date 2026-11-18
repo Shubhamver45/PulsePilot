@@ -674,7 +674,7 @@ export default function DemoStorePage() {
               )}
             </button>
             <Link
-              href="/analytics"
+              href="/demo-results"
               className="px-3 py-1.5 rounded-md bg-primary hover:bg-primary-dark text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
             >
               <BarChart3 className="w-3.5 h-3.5" /> View Experiment Intelligence
@@ -1867,10 +1867,10 @@ export default function DemoStorePage() {
               Back to Demo Store
             </button>
             <Link
-              href="/analytics"
+              href="/demo-results"
               className="px-4 py-2 rounded-md bg-primary hover:bg-primary-dark text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs"
             >
-              <BarChart3 className="w-3.5 h-3.5" /> Inspect Experiment Analytics & Lift
+              <BarChart3 className="w-3.5 h-3.5" /> Inspect Live Experiment Results
             </Link>
           </div>
         </div>
