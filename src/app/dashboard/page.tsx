@@ -84,8 +84,10 @@ export default function DashboardPage() {
   const [agentActivities, setAgentActivities] = useState<AgentActivityItem[]>([]);
   const [recentActivities, setRecentActivities] = useState<RecentActivityItem[]>([]);
   const [workspaceName, setWorkspaceName] = useState("PulsePilot Workspace");
+  const [displayName, setDisplayName] = useState("there");
   const [isDemoData, setIsDemoData] = useState(false);
   const [flagsmithConnected, setFlagsmithConnected] = useState(false);
+  const [aiCopilotConfigured, setAiCopilotConfigured] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
 
   // Modals & Interaction States
@@ -100,10 +102,19 @@ export default function DashboardPage() {
     async function fetchDashboard() {
       try {
         setLoading(true);
-        const res = await fetch(`/api/dashboard?range=${selectedRange}`);
+        const [res, profileRes] = await Promise.all([
+          fetch(`/api/dashboard?range=${selectedRange}`, { cache: "no-store" }),
+          fetch("/api/auth/me", { cache: "no-store" }),
+        ]);
         if (!res.ok) throw new Error("Failed to load dashboard data");
         const json = await res.json();
 
+        if (profileRes.ok) {
+          const profile = await profileRes.json();
+          const fullName = profile?.user?.fullName || profile?.user?.email || "";
+          if (fullName) setDisplayName(fullName.trim().split(/\s+/)[0]);
+        }
+        setAiCopilotConfigured(Boolean(json.aiCopilot?.configured));
         setKpis(json.kpis);
         setWorkspaceName(json.workspace?.name || "PulsePilot Workspace");
         setIsDemoData(Boolean(json.workspace?.isDemoData));
@@ -130,20 +141,52 @@ export default function DashboardPage() {
     fetchDashboard();
   }, [selectedRange]);
 
-  // Handle Ask AI interaction
-  const handleAskAISubmit = (e: React.FormEvent) => {
+  // Route copilot prompts through the authenticated server-side agent orchestrator.
+  const handleAskAISubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!aiQuestion.trim()) return;
+    const prompt = aiQuestion.trim();
+    if (!prompt || !aiCopilotConfigured || isAskingAI) return;
+
     setIsAskingAI(true);
-    setTimeout(() => {
-      setIsAskingAI(false);
-      const exposures = kpis?.totalExposures.value ?? 0;
-      const rate = kpis?.overallConversionRate.displayValue ?? "0.00%";
-      const ready = kpis?.featuresReadyForRollout.value ?? 0;
+    setAiResponse(null);
+    try {
+      const response = await fetch("/api/agent/orchestrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          context: {
+            workspaceName,
+            selectedRange,
+            persistedMetrics: kpis,
+            activeExperiments: activeExperiments.slice(0, 8),
+            flagsmithConnected,
+          },
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.status !== "SUCCESS") {
+        throw new Error(result.error || result.details || "The agent orchestrator could not complete this request.");
+      }
+
+      const output = result.data;
+      const readableOutput =
+        typeof output === "string"
+          ? output
+          : output?.summary || output?.analysis || output?.recommendation
+          ? String(output.summary || output.analysis || output.recommendation)
+          : JSON.stringify(output, null, 2);
+
       setAiResponse(
-        `Current persisted evidence: ${exposures.toLocaleString()} distinct experiment-user exposures and an aggregate conversion rate of ${rate} in the selected date range. ${ready} experiment(s) currently meet the configured rollout-readiness checks. An experiment without sufficient sample size or statistical significance should continue collecting data rather than be promoted.`
+        `${result.agentName || "PulsePilot Agent"} · ${result.executionTimeMs ?? "—"} ms\n\n${readableOutput || "The agent returned no response content."}`
       );
-    }, 1200);
+    } catch (error: any) {
+      setAiResponse(
+        `The AI request did not complete. ${error?.message || "Please retry after checking the agent configuration."}\n\nNo fallback answer or sample analysis was substituted.`
+      );
+    } finally {
+      setIsAskingAI(false);
+    }
   };
 
   return (
@@ -163,7 +206,7 @@ export default function DashboardPage() {
           </div>
 
           <h1 className="text-2xl sm:text-3xl font-bold text-text tracking-tight">
-            {greeting}, Sarah
+            {greeting}, {displayName}
           </h1>
 
           <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-text-secondary">
@@ -171,12 +214,15 @@ export default function DashboardPage() {
             <span>•</span>
             <span className="flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-text-muted" />
-              {currentDateFormatted || "Monday, November 9, 2026"}
+              {currentDateFormatted || "Today"}
             </span>
             <span>•</span>
-            <span className="text-success font-medium flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+            <span className={`font-medium flex items-center gap-1 ${flagsmithConnected ? "text-success" : "text-text-secondary"}`}>
+              <span className={`w-2 h-2 rounded-full ${flagsmithConnected ? "bg-success animate-pulse" : "bg-text-muted"}`} />
               {flagsmithConnected ? "Flagsmith configured" : "Flagsmith status unavailable"}
+            </span>
+            <span className={`font-medium ${aiCopilotConfigured ? "text-success" : "text-amber-700"}`}>
+              {aiCopilotConfigured ? "Gemini AI ready" : "Gemini AI needs setup"}
             </span>
           </div>
         </div>
@@ -185,10 +231,12 @@ export default function DashboardPage() {
         <div className="flex items-center gap-2.5 flex-wrap">
           <button
             onClick={() => setAskAIModalOpen(true)}
-            className="px-3.5 py-2 rounded-md bg-surface border border-border hover:bg-surface-subtle text-text text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors"
+            disabled={!aiCopilotConfigured}
+            title={!aiCopilotConfigured ? "Configure GEMINI_API_KEY in the Preview environment to enable live AI agents." : "Ask the authenticated PulsePilot agent orchestrator"}
+            className="px-3.5 py-2 rounded-md bg-surface border border-border hover:bg-surface-subtle text-text text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Sparkles className="w-4 h-4 text-primary" />
-            Ask AI Copilot
+            {aiCopilotConfigured ? "Ask AI Copilot" : "AI Copilot setup required"}
           </button>
 
           <Link
@@ -818,11 +866,18 @@ export default function DashboardPage() {
           router.push("/command-center");
         }}
         title="Ask PulsePilot AI Copilot"
-        description="Query your active experiment telemetry, ask for hypothesis ideas, or check statistical significance in plain English."
+        description={aiCopilotConfigured
+          ? "Your prompt is routed to the appropriate authenticated PulsePilot agent, using the selected workspace context."
+          : "Google Gemini is not configured for this Preview deployment. Add GEMINI_API_KEY to enable live AI orchestration."}
         confirmLabel="Open Full Command Center"
         cancelLabel="Done"
       >
         <form onSubmit={handleAskAISubmit} className="space-y-3 mt-3">
+          {!aiCopilotConfigured && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950">
+              Live Gemini agents are disabled until <code>GEMINI_API_KEY</code> is configured in the Preview environment. PulsePilot will not show a canned response as AI output.
+            </div>
+          )}
           <input
             type="text"
             value={aiQuestion}
