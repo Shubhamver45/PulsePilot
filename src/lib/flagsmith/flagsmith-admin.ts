@@ -241,7 +241,11 @@ export async function getLiveRemoteFeatureState(
     ]);
 
     if (!environmentsResponse.ok) {
-      return { success: false, error: `Flagsmith environment lookup failed (${environmentsResponse.status}).` };
+      const detail = await environmentsResponse.text();
+      return {
+        success: false,
+        error: `Flagsmith environment lookup failed (${environmentsResponse.status}): ${detail.slice(0, 500)}`,
+      };
     }
     if (!featuresResponse.ok) {
       return { success: false, error: `Flagsmith project feature lookup failed (${featuresResponse.status}).` };
