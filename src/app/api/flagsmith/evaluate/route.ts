@@ -1,13 +1,8 @@
 import { NextResponse } from "next/server";
 import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
 import { evaluateBetaTesterSegment } from "@/lib/flagsmith/flagsmith-admin";
-import {
-  checkProductionEvaluationGuard,
-  checkProductionRemoteFetchGuard,
-} from "@/lib/flagsmith/production-guards";
-
-const getApiUrl = () =>
-  (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
+import { getFlagsmithIdentityAssignment } from "@/lib/flagsmith/identity-evaluation";
+import { checkProductionEvaluationGuard } from "@/lib/flagsmith/production-guards";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -18,105 +13,42 @@ export async function GET(request: Request) {
     process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
     process.env.FLAGSMITH_ENVIRONMENT_KEY;
 
-  // 1. Live Remote Evaluation via Flagsmith Identities Endpoint
+  // Share the assignment resolver with telemetry ingestion. It reads the
+  // official Flagsmith variant key, not the remote-config JSON value.
   if (envKey && envKey !== "mock") {
-    try {
-      const apiUrl = getApiUrl();
-      const res = await fetch(
-        `${apiUrl}/identities/?identifier=${encodeURIComponent(identity)}`,
-        {
-          method: "GET",
-          headers: {
-            "X-Environment-Key": envKey,
-            "Content-Type": "application/json",
-          },
-          cache: "no-store",
-        }
-      );
+    const assignment = await getFlagsmithIdentityAssignment(identity, flag);
+    if (assignment.success) {
+      const traits = assignment.traits || [];
+      const isBeta = evaluateBetaTesterSegment(traits);
+      const segments = isBeta ? ["Beta Testers"] : ["Standard Users"];
 
-      if (!res.ok) {
-        if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
-          return NextResponse.json({
-            error: "FLAGSMITH_REMOTE_EVALUATION_FAILED",
-            message: `Flagsmith identity evaluation failed with HTTP ${res.status}. Local mock evaluation is disabled in hosted deployments.`,
-            source: "error",
-          }, { status: 502 });
-        }
-      } else {
-        const data = await res.json();
-        const matched = Array.isArray(data.flags)
-          ? data.flags.find((f: any) => f.feature?.name === flag || f.name === flag)
-          : null;
+      return NextResponse.json({
+        flag,
+        identity,
+        enabled: assignment.enabled,
+        variantKey: assignment.variantKey,
+        value: assignment.value,
+        parsedValue: assignment.parsedValue,
+        traits,
+        segments,
+        isBetaTester: isBeta,
+        source: "flagsmith_remote_api",
+      });
+    }
 
-        if (matched) {
-          // Identity evaluation is the source of truth for the assigned value.
-          // Flagsmith may expose it as feature_state_value or value depending on API version.
-          const rawValue = matched.feature_state_value ?? matched.value ?? null;
-          let parsedValue: any = rawValue;
-          try {
-            if (typeof rawValue === "string" && (rawValue.startsWith("{") || rawValue.startsWith("["))) {
-              parsedValue = JSON.parse(rawValue);
-            }
-          } catch {
-            // Keep the original string when it is not JSON.
-          }
-          const evaluatedOption =
-            matched.multivariate_feature_option ??
-            matched.multivariate_feature_state_value?.multivariate_feature_option ??
-            matched.multivariate_feature_option_value ??
-            null;
-          // Do not trust the generic "variant" metadata field: the Flagsmith
-          // identity response can label the flag's default/control state while
-          // feature_state_value contains the actual evaluated multivariate value.
-          const variantKey =
-            evaluatedOption?.key ??
-            (typeof parsedValue === "object" && parsedValue?.variantKey ? parsedValue.variantKey : null) ??
-            evaluatedOption?.string_value ??
-            evaluatedOption?.value ??
-            (typeof parsedValue === "string" ? parsedValue : "control");
-
-          const traits = Array.isArray(data.traits) ? data.traits : [];
-          const isBeta = evaluateBetaTesterSegment(traits);
-          const segments = isBeta ? ["Beta Testers"] : ["Standard Users"];
-
-          return NextResponse.json({
-            flag,
-            identity,
-            enabled: matched.enabled,
-            variantKey,
-            value: rawValue,
-            parsedValue,
-            traits,
-            segments,
-            isBetaTester: isBeta,
-            source: "flagsmith_remote_api",
-          });
-        }
-        if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
-          return NextResponse.json({
-            error: "FLAG_NOT_PRESENT_IN_REMOTE_ENVIRONMENT",
-            message: `Feature '${flag}' was not returned for this identity by Flagsmith. Local mock evaluation is disabled in hosted deployments.`,
-            source: "error",
-          }, { status: 404 });
-        }
-      }
-    } catch (err: any) {
-      console.warn("[Flagsmith Remote Evaluation Error]:", err.message);
-      const fetchGuard = checkProductionRemoteFetchGuard(err);
-      if (!fetchGuard.allowed) {
-        return NextResponse.json(
-          {
-            error: fetchGuard.error,
-            code: fetchGuard.code,
-            source: "error",
-          },
-          { status: fetchGuard.statusCode || 502 }
-        );
-      }
+    if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+      return NextResponse.json({
+        error: assignment.status === 404
+          ? "FLAG_NOT_PRESENT_IN_REMOTE_ENVIRONMENT"
+          : "FLAGSMITH_REMOTE_EVALUATION_FAILED",
+        message: assignment.error,
+        source: "error",
+      }, { status: assignment.status || 502 });
     }
   }
 
-  // Production check: reject missing credentials without falling back to mock
+  // Development may use deterministic local evaluation. Hosted deployments
+  // never disguise a failed remote evaluation as a successful mock result.
   const evalGuard = checkProductionEvaluationGuard(envKey);
   if (!evalGuard.allowed) {
     return NextResponse.json(
@@ -129,9 +61,7 @@ export async function GET(request: Request) {
     );
   }
 
-  // 2. Local Fallback with Deterministic MurmurHash3 (Development / Sandbox / Testing Only)
   const result = flagsmithMockStore.evaluateForIdentity(flag, identity);
-
   return NextResponse.json({
     flag,
     identity,
