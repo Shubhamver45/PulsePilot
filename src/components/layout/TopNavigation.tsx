@@ -14,6 +14,7 @@ import {
   ExternalLink,
   LogOut,
   ChevronDown,
+  Sparkles,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,17 @@ import { CommandPalette } from "../ui/CommandPalette";
 import { NotificationPanel, NotificationItem } from "../ui/NotificationPanel";
 
 const initialNotifications: NotificationItem[] = [];
+
+function isPublicRoute(pathname: string): boolean {
+  return pathname === "/" ||
+    pathname === "/login" ||
+    pathname === "/register" ||
+    pathname === "/auth/callback" ||
+    pathname === "/demo-store" ||
+    pathname.startsWith("/demo-store/") ||
+    pathname === "/docs" ||
+    pathname.startsWith("/docs/");
+}
 
 export function TopNavigation({
   onMobileMenuToggle,
@@ -34,11 +46,12 @@ export function TopNavigation({
 
   const router = useRouter();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [isGuest, setIsGuest] = useState(true);
   const [currentUser, setCurrentUser] = useState({
-    name: "Loading account…",
+    name: "Demo visitor",
     email: "",
-    role: "Workspace member",
-    initials: "…",
+    role: "Public demo",
+    initials: "PV",
   });
 
   useEffect(() => {
@@ -48,7 +61,11 @@ export function TopNavigation({
         const response = await fetch("/api/auth/me", { cache: "no-store" });
         const data = await response.json();
         if (!response.ok || !data.authenticated || !data.user) {
-          router.replace("/login");
+          if (isPublicRoute(pathname)) {
+            if (!cancelled) setIsGuest(true);
+          } else {
+            router.replace("/login");
+          }
           return;
         }
         if (cancelled) return;
@@ -59,6 +76,7 @@ export function TopNavigation({
           ? "Editor"
           : "Viewer";
         const initials = name.split(/\\s+/).slice(0, 2).map((part: string) => part[0]).join("").toUpperCase();
+        setIsGuest(false);
         setCurrentUser({
           name,
           email: data.user.email,
@@ -66,12 +84,15 @@ export function TopNavigation({
           initials: initials || "U",
         });
       } catch {
-        if (!cancelled) router.replace("/login");
+        if (!cancelled) {
+          if (isPublicRoute(pathname)) setIsGuest(true);
+          else router.replace("/login");
+        }
       }
     }
     loadCurrentUser();
     return () => { cancelled = true; };
-  }, [router]);
+  }, [router, pathname]);
 
   const handleLogout = async () => {
     try {
@@ -90,6 +111,34 @@ export function TopNavigation({
       return { label, href };
     }),
   ];
+
+  if (isPublicRoute(pathname)) {
+    return (
+      <header className="h-16 w-full px-4 sm:px-6 lg:px-8 border-b border-border/80 bg-white/95 backdrop-blur flex items-center justify-between sticky top-0 z-30">
+        <Link href="/" className="flex items-center gap-2.5 shrink-0">
+          <span className="h-9 w-9 rounded-xl bg-primary text-white flex items-center justify-center shadow-sm">
+            <Sparkles className="h-4.5 w-4.5" />
+          </span>
+          <span>
+            <span className="block text-sm font-bold tracking-tight text-text">PulsePilot</span>
+            <span className="block text-[10px] text-text-secondary leading-tight">AI experimentation platform</span>
+          </span>
+        </Link>
+        <nav className="flex items-center gap-2 sm:gap-5 text-xs font-semibold">
+          <Link href="/demo-store" className="hidden sm:inline text-text-secondary hover:text-primary transition-colors">Live demo</Link>
+          <Link href="/docs/PRD.md" target="_blank" className="hidden md:inline text-text-secondary hover:text-primary transition-colors">Product brief</Link>
+          {isGuest ? (
+            <>
+              <Link href="/login" className="px-2.5 py-2 text-text-secondary hover:text-text transition-colors">Sign in</Link>
+              <Link href="/register" className="rounded-lg bg-primary px-3.5 py-2.5 text-white hover:bg-primary-dark shadow-sm transition-colors">Create workspace</Link>
+            </>
+          ) : (
+            <Link href="/dashboard" className="rounded-lg bg-primary px-3.5 py-2.5 text-white hover:bg-primary-dark shadow-sm transition-colors">Open workspace</Link>
+          )}
+        </nav>
+      </header>
+    );
+  }
 
   return (
     <>
