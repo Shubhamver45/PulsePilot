@@ -81,7 +81,16 @@ export async function GET() {
     controlPercent + treatmentTotalPercent! === 100
   );
 
+  const geminiConfigured = Boolean(
+    process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "mock"
+  );
+
   return NextResponse.json({
+    aiCopilot: {
+      configured: geminiConfigured,
+      provider: "Google Gemini",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+    },
     connected: edgeConnected,
     edgeConnected,
     managementApiConnected: management.success,
