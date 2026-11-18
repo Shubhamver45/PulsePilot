@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { checkRateLimit } from "@/lib/security/rate-limiter";
 import { getFlagsmithIdentityAssignment } from "@/lib/flagsmith/identity-evaluation";
+import { resolveExposureVariant } from "@/lib/telemetry/variant-attribution";
 
 const PUBLIC_DEMO_EXPERIMENTS = new Set(["exp_checkout_layout_v2", "checkout_experience"]);
 const PUBLIC_DEMO_ORGANIZATION_ID = "org_acme_growth";
@@ -140,12 +141,14 @@ export async function POST(request: Request) {
 
           let matchedVariant;
           if (normalizedEventType === "EXPOSURE") {
-            matchedVariant = experiment.variants.find((variant) => variant.key === event.variantKey);
+            // The browser's variantKey is informational only. Production and
+            // hosted telemetry use the server-resolved Flagsmith assignment.
+            matchedVariant = resolveExposureVariant(experiment.variants, authoritativeVariantKey);
             if (!matchedVariant) {
               return NextResponse.json({
                 success: false,
-                error: "UNKNOWN_EXPOSURE_VARIANT",
-                message: "The supplied exposure variant does not belong to this experiment.",
+                error: "FLAGSMITH_VARIANT_NOT_CONFIGURED",
+                message: "The authoritative Flagsmith assignment does not match a configured experiment variant.",
               }, { status: 422 });
             }
           } else {

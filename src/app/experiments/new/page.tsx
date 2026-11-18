@@ -1241,7 +1241,7 @@ export default function AIExperimentStudioPage() {
               <button
                 onClick={() =>
                   copyToClipboard(
-                    `import flagsmith from "flagsmith";
+                    `import flagsmith from "@flagsmith/flagsmith";
 import { useEffect, useState } from "react";
 
 export function CheckoutComponent({ user }) {
@@ -1309,7 +1309,7 @@ export function CheckoutComponent({ user }) {
               </button>
             </div>
             <pre className="p-3 bg-surface-subtle border border-border rounded font-mono text-[11px] text-text overflow-x-auto max-h-72 leading-relaxed">
-{`import flagsmith from "flagsmith";
+{`import flagsmith from "@flagsmith/flagsmith";
 import { useEffect, useState } from "react";
 
 export function CheckoutComponent({ user }) {

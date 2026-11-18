@@ -9,7 +9,7 @@ const getApiUrl = () =>
 
 export async function GET() {
   const apiUrl = getApiUrl();
-  const projectId = process.env.FLAGSMITH_PROJECT_ID || "53867";
+  const projectId = process.env.FLAGSMITH_PROJECT_ID || "";
   const environmentKey =
     process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
     process.env.FLAGSMITH_ENVIRONMENT_KEY ||
