@@ -1,5 +1,5 @@
 import { resolveExposureVariant } from "../src/lib/telemetry/variant-attribution.ts";
-import { isPublicDemoIdentity } from "../src/lib/telemetry/public-demo-identity.ts";
+import { isPublicDemoIdentity, canEvaluateFlagsmithIdentity } from "../src/lib/telemetry/public-demo-identity.ts";
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -24,9 +24,4 @@ assert(resolved?.key !== clientSuppliedVariant, "Forged client treatment key can
 assert(resolveExposureVariant(variants, "unknown") === null, "Unknown server assignment is rejected instead of falling back to control");
 assert(resolveExposureVariant(variants, null) === null, "Missing authoritative assignment is rejected");
 assert(resolveExposureVariant(variants, "  treatment  ")?.id === "variant-treatment", "Whitespace around an authoritative key is normalized");
-assert(isPublicDemoIdentity("user_alex_dev"), "Alex demo persona is available without authentication");
-assert(isPublicDemoIdentity("user_elena_ai"), "Elena demo persona is available without authentication");
-assert(!isPublicDemoIdentity("visitor_forged_123"), "Anonymous telemetry cannot invent arbitrary visitor identities");
-assert(!isPublicDemoIdentity("user_control_1"), "Unsupported QA identity is not exposed to anonymous demo traffic");
-
-console.log("\nTelemetry attribution tests: 9 passed.");
+assert(isPublicDemoIdentity("user_alex_dev"), "Alex demo persona is¶»§q«^
