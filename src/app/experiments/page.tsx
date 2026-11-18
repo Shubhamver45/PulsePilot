@@ -98,7 +98,7 @@ export default function ExperimentsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search experiments or flags..."
-            className="w-full pl-9 pr-3 py-1.5 text-xs bg-surface-subtle/50 border border-border rounded-md text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            className="w-full pl-9 pr-3 py-1.5 text-xs bg-surface-subtle/50 border border-border rounded-md text-text focus:outline-hidden focus:border-primary focus:ring-1 focus:ring-primary"
           />
         </div>
 

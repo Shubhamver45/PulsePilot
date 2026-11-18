@@ -209,7 +209,7 @@ model AgentRun {
   rawResponse      String?     @db.Text
   structuredOutput Json
   tokensUsed       Int?
-  modelName        String      @default("gemini-2.5-flash")
+  modelName        String      @default("gemini-3.8-flash")
   createdAt        DateTime    @default(now())
 
   @@index([experimentId])

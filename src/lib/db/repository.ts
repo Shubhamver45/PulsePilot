@@ -323,7 +323,7 @@ export const demoAgentActivities: AgentActivityItem[] = [
     status: "ready",
     latestActivity: "Formulated experiment 'Interactive Plan Picker vs Matrix'",
     timestamp: "18m ago",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
   },
   {
     id: "agent-2",
@@ -333,7 +333,7 @@ export const demoAgentActivities: AgentActivityItem[] = [
     status: "running",
     latestActivity: "Evaluated 148,920 event tokens; verified 97.4% Bayes confidence on exp-1",
     timestamp: "4m ago",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
   },
   {
     id: "agent-3",
@@ -343,7 +343,7 @@ export const demoAgentActivities: AgentActivityItem[] = [
     status: "awaiting_approval",
     latestActivity: "Generated 100% rollout authorization proposal for Variant B",
     timestamp: "12m ago",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
   },
   {
     id: "agent-4",
@@ -353,7 +353,7 @@ export const demoAgentActivities: AgentActivityItem[] = [
     status: "running",
     latestActivity: "Scanned 8 primary guardrails across active Flagsmith flags; flagged exp-4",
     timestamp: "1m ago",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
   },
   {
     id: "agent-5",
@@ -363,7 +363,7 @@ export const demoAgentActivities: AgentActivityItem[] = [
     status: "ready",
     latestActivity: "Confirmed 1:1 Sample Ratio Mismatch (SRM) health on 6 active flags",
     timestamp: "32s ago",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
   },
 ];
 

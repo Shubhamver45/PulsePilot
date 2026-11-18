@@ -1,143 +1,122 @@
 import { NextResponse } from "next/server";
 import { getLiveRemoteFeatureState } from "@/lib/flagsmith/flagsmith-admin";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const DEMO_EXPERIMENT_FLAG = "exp_pulsepilot_judge_checkout_v1";
+
 const getApiUrl = () =>
   (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
-const getEventsUrl = () =>
-  (process.env.FLAGSMITH_EVENTS_URL || "https://events.flagsmith.com/api/v1").replace(/\/$/, "");
 
 export async function GET() {
-  const startTime = Date.now();
   const apiUrl = getApiUrl();
-  const eventsUrl = getEventsUrl();
-  const projectId = process.env.FLAGSMITH_PROJECT_ID || "53867";
-  const envKey =
+  const projectId = process.env.FLAGSMITH_PROJECT_ID || "";
+  const environmentKey =
     process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
     process.env.FLAGSMITH_ENVIRONMENT_KEY ||
+    process.env.NEXT_PUBLIC_FLAGSMITH_ENVIRONMENT_ID ||
     "";
 
-  let measuredLatencyMs = 0;
-  let liveFlags: any[] = [];
-  let isConnected = false;
-  let activeFeatureState: any = null;
-  let environmentNumericId: number | null = null;
+  let edgeConnected = false;
+  let edgeLatencyMs: number | null = null;
+  let liveFlagsCount = 0;
 
-  if (envKey && envKey !== "mock") {
+  if (environmentKey && environmentKey !== "mock") {
+    const startedAt = Date.now();
     try {
-      const pingStart = Date.now();
-      const res = await fetch(`${apiUrl}/flags/`, {
-        method: "GET",
+      const response = await fetch(`${apiUrl}/flags/`, {
         headers: {
-          "X-Environment-Key": envKey,
+          "X-Environment-Key": environmentKey,
           "Content-Type": "application/json",
         },
         cache: "no-store",
       });
-
-      measuredLatencyMs = Date.now() - pingStart;
-
-      if (res.ok) {
-        liveFlags = await res.json();
-        isConnected = true;
-        const matched = Array.isArray(liveFlags)
-          ? liveFlags.find((f: any) => f.feature?.name === "exp_checkout_layout_v2")
-          : null;
-        if (matched) {
-          activeFeatureState = matched;
-          environmentNumericId = matched.environment || null;
-        }
+      edgeLatencyMs = Date.now() - startedAt;
+      if (response.ok) {
+        const flags = await response.json();
+        edgeConnected = true;
+        liveFlagsCount = Array.isArray(flags) ? flags.length : 0;
       }
-    } catch (err) {
-      console.warn("Flagsmith live ping error:", err);
+    } catch {
+      edgeConnected = false;
     }
   }
 
-  // Fallback to local check if remote was unavailable
-  if (!activeFeatureState) {
-    const remote = await getLiveRemoteFeatureState("exp_checkout_layout_v2");
-    if (remote.success && remote.state) {
-      activeFeatureState = remote.state;
-      isConnected = true;
-      environmentNumericId = remote.state.environment || null;
-    }
-  }
+  // Management state is separate from edge evaluation: it is the only safe
+  // source for editable multivariate allocation records.
+  const management = projectId
+    ? await getLiveRemoteFeatureState(DEMO_EXPERIMENT_FLAG)
+    : { success: false as const, error: "FLAGSMITH_PROJECT_ID is not configured." };
 
-  // Key prefix for sanitized display
-  const sanitizedEnvKey =
-    envKey.length > 8
-      ? `${envKey.slice(0, 6)}...${envKey.slice(-4)}`
-      : "Configured";
+  const state = management.success ? management.state : null;
+  const optionStates = Array.isArray(state?.multivariate_feature_state_values)
+    ? state.multivariate_feature_state_values
+    : [];
 
-  const responsePayload = {
-    connected: isConnected,
-    apiKeyConfigured: Boolean(envKey && envKey !== "mock"),
-    environmentKeyConfigured: Boolean(envKey && envKey !== "mock"),
-    environmentName: "Development",
-    environmentId: environmentNumericId || 115953,
-    environmentKeyPrefix: sanitizedEnvKey,
-    projectId,
+  const variants = optionStates.map((item: any) => {
+    const option = item.multivariate_feature_option || {};
+    return {
+      key: option.key ?? null,
+      optionId: option.id ?? null,
+      value: option.string_value ?? null,
+      allocationPercent: Number.isFinite(Number(item.percentage_allocation))
+        ? Number(item.percentage_allocation)
+        : null,
+    };
+  });
+  const treatmentTotalPercent = variants.every((variant: any) => variant.allocationPercent !== null)
+    ? variants.reduce((sum: number, variant: any) => sum + variant.allocationPercent, 0)
+    : null;
+  const controlPercent = treatmentTotalPercent !== null && treatmentTotalPercent <= 100
+    ? 100 - treatmentTotalPercent
+    : null;
+  const allocationVerified = Boolean(
+    management.success &&
+    state?.enabled === true &&
+    state?.feature_state_value &&
+    variants.length === 2 &&
+    variants.every((variant: any) => variant.key && variant.allocationPercent !== null) &&
+    controlPercent !== null &&
+    controlPercent + treatmentTotalPercent! === 100
+  );
+
+  const geminiConfigured = Boolean(
+    process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "mock"
+  );
+
+  return NextResponse.json({
+    aiCopilot: {
+      configured: geminiConfigured,
+      provider: "Google Gemini",
+      model: "Configured server-side",
+    },
+    connected: edgeConnected,
+    edgeConnected,
+    managementApiConnected: management.success,
+    apiKeyConfigured: Boolean(process.env.FLAGSMITH_ORG_API_TOKEN || process.env.FLAGSMITH_ADMIN_TOKEN),
+    environmentKeyConfigured: Boolean(environmentKey && environmentKey !== "mock"),
+    environmentName: "Configured Flagsmith environment",
+    environmentId: state?.environment ?? null,
+    projectId: projectId || null,
     apiBaseUrl: apiUrl,
-    eventsBaseUrl: eventsUrl,
-    sdkStatus: isConnected ? "READY" : "CONNECTING",
-    experimentationReadiness: "READY",
-    warehouseStatus: "MANAGED_WAREHOUSE_CONNECTED",
-    measuredLatencyMs: measuredLatencyMs > 0 ? measuredLatencyMs : 142,
+    sdkStatus: edgeConnected ? "READY" : "UNAVAILABLE",
+    experimentationReadiness: allocationVerified ? "READY" : "NEEDS_CONFIGURATION",
+    measuredLatencyMs: edgeLatencyMs,
+    liveFlagsCount,
+    activeExperimentFlag: state ? {
+      featureId: state.feature?.id ?? null,
+      stateId: state.id ?? null,
+      name: state.feature?.name ?? DEMO_EXPERIMENT_FLAG,
+      type: state.feature?.type ?? null,
+      enabled: state.enabled ?? null,
+      defaultValue: state.feature_state_value ?? null,
+      variants,
+      controlPercent,
+      treatmentTotalPercent,
+      allocationTotalPercent: controlPercent !== null ? controlPercent + treatmentTotalPercent! : null,
+    } : null,
+    managementError: management.success ? null : management.error,
     lastSynchronizedAt: new Date().toISOString(),
-    liveFlagsCount: liveFlags.length > 0 ? liveFlags.length : 2,
-
-    // Real Remote Flagsmith Details (Task 1)
-    activeExperimentFlag: {
-      featureId: activeFeatureState?.feature?.id || 291896,
-      stateId: activeFeatureState?.id || 1826064,
-      name: activeFeatureState?.feature?.name || "exp_checkout_layout_v2",
-      type: activeFeatureState?.feature?.type || "MULTIVARIATE",
-      enabled: activeFeatureState?.enabled ?? true,
-      initialValue: activeFeatureState?.feature_state_value || '{"layout":"multi_step"}',
-      variants: [
-        {
-          key: "control",
-          name: "Multi-Step Checkout",
-          layout: "multi_step",
-          allocationPercent: 50,
-        },
-        {
-          key: "variant_single_page",
-          name: "Single-Page Streamlined Checkout",
-          layout: "single_page",
-          allocationPercent: 50,
-        },
-      ],
-      readAfterWriteVerification: {
-        status: "VERIFIED_AT_EDGE",
-        verifiedAt: new Date().toISOString(),
-        endpoint: `${apiUrl}/flags/`,
-        latencyMs: measuredLatencyMs > 0 ? measuredLatencyMs : 142,
-      },
-      lastEvaluation: {
-        identity: "user_alex_dev",
-        evaluatedVariant: "single_page",
-        method: "GET /api/v1/identities/?identifier=user_alex_dev",
-        status: "200_OK",
-        timestamp: new Date().toISOString(),
-      },
-      lastRemoteMutation: {
-        action: "MUTATE_MULTIVARIATE_STAGE",
-        protocol: "Flagsmith v2 Feature Versioning (POST /versions/ -> PUT /featurestates/ -> POST /publish/)",
-        environmentId: environmentNumericId || 115953,
-        status: "PUBLISHED_TO_EDGE",
-        timestamp: new Date().toISOString(),
-      },
-    },
-
-    // Flagsmith CLI and MCP Architectural Evaluation (Task 1)
-    cliAndMcpEvaluation: {
-      cliSupport: "Documented & Available (flagsmith-cli)",
-      mcpSupport: "Available (@flagsmith/mcp for IDEs)",
-      runtimeArchitecture: "DIRECT_REST_API_V2_VERSIONING",
-      architecturalRationale:
-        "PulsePilot operates as an autonomous agent orchestrator running inside Next.js/Vercel serverless environments. Spawning external CLI/MCP subprocesses in serverless lambdas adds container cold-starts, lacks typed return validation, and adds unneeded binary dependencies. PulsePilot's direct HTTPS REST integration with Flagsmith v2 Feature Versioning provides deterministic, type-safe, sub-200ms mutations with immediate read-after-write verification.",
-    },
-  };
-
-  return NextResponse.json(responsePayload);
+  });
 }

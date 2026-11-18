@@ -58,7 +58,7 @@ const getApiUrl = () =>
  * Note: Server-side environment keys (starting with "ser.") must NOT be used
  * for Management API operations (projects/features), as Flagsmith returns 401.
  */
-export function getManagementAuthHeader(): { Authorization?: string; "X-Environment-Key"?: string } {
+export function getManagementAuthHeader(): { Authorization?: string } {
   const orgToken =
     process.env.FLAGSMITH_ORG_API_TOKEN ||
     process.env.FLAGSMITH_ADMIN_TOKEN ||
@@ -66,88 +66,271 @@ export function getManagementAuthHeader(): { Authorization?: string; "X-Environm
       ? process.env.FLAGSMITH_MANAGEMENT_KEY
       : undefined);
 
-  if (orgToken && orgToken !== "mock") {
-    if (orgToken.startsWith("Api-Key ") || orgToken.startsWith("Token ")) {
-      return { Authorization: orgToken };
-    }
-    return { Authorization: `Api-Key ${orgToken}` };
-  }
-
-  // Fallback to server-side environment key if present
-  const serverKey = process.env.FLAGSMITH_SERVER_SIDE_API_KEY;
-  if (serverKey && serverKey !== "mock") {
-    return { "X-Environment-Key": serverKey };
-  }
-
-  return {};
+  if (!orgToken || orgToken === "mock") return {};
+  return {
+    Authorization: orgToken.startsWith("Api-Key ") || orgToken.startsWith("Token ")
+      ? orgToken
+      : `Api-Key ${orgToken}`,
+  };
 }
 
 /**
  * Fetch live remote feature state from Flagsmith via Flags endpoint
  */
+function unwrapApiList(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
+}
+
+function optionKey(option: any): string | undefined {
+  if (!option) return undefined;
+  if (typeof option === "string") return option;
+  return option.key ?? option.string_value ?? option.value;
+}
+
+function optionFeatureValue(option: any): string | undefined {
+  if (!option) return undefined;
+  if (typeof option === "string") return option;
+  return option.string_value ?? option.value ?? option.key;
+}
+
+function multivariateOptionId(item: any): number | undefined {
+  const option = item?.multivariate_feature_option ?? item?.feature_option;
+  if (typeof option === "number") return option;
+  return typeof option?.id === "number" ? option.id : undefined;
+}
+
+function normaliseFlagValue(value: any): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value.string_value === "string") return value.string_value;
+  if (value === undefined || value === null) return undefined;
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+export interface FlagsmithAllocationVerification {
+  verified: boolean;
+  controlPercent: number | null;
+  treatmentPercent: number | null;
+  totalPercent: number | null;
+  variants: Array<{ key: string; expectedPercent: number; actualPercent: number | null }>;
+  errors: string[];
+}
+
+/**
+ * Verifies the actual environment feature-state allocations returned by the
+ * Flagsmith Management API. Project-level option existence alone is not proof
+ * that a live environment has the requested experiment distribution.
+ */
+export function verifyFlagsmithAllocationState(
+  state: any,
+  input: CreateFlagInput
+): FlagsmithAllocationVerification {
+  const errors: string[] = [];
+  const expectedTreatmentTotal = input.variants.reduce(
+    (sum, variant) => sum + Number(variant.trafficAllocation),
+    0
+  );
+  const expectedControlPercent = 100 - expectedTreatmentTotal;
+  const remoteOptions = Array.isArray(state?.multivariate_feature_state_values)
+    ? state.multivariate_feature_state_values
+    : [];
+  const verifiedVariants: FlagsmithAllocationVerification["variants"] = [];
+  let actualTreatmentTotal = 0;
+
+  const controlValue = normaliseFlagValue(state?.feature_state_value);
+  if (controlValue !== input.initialValue) {
+    errors.push("The remote Flagsmith default/control value does not match the requested experiment control configuration.");
+  }
+
+  for (const expected of input.variants) {
+    const match = remoteOptions.find((item: any) =>
+      optionKey(item?.multivariate_feature_option) === expected.key
+    );
+    const actual = match && Number.isFinite(Number(match.percentage_allocation))
+      ? Number(match.percentage_allocation)
+      : null;
+
+    verifiedVariants.push({
+      key: expected.key,
+      expectedPercent: Number(expected.trafficAllocation),
+      actualPercent: actual,
+    });
+
+    if (actual === null) {
+      errors.push(`Flagsmith environment state does not expose an allocation for variant '${expected.key}'.`);
+      continue;
+    }
+
+    actualTreatmentTotal += actual;
+    if (Math.abs(actual - Number(expected.trafficAllocation)) > 0.01) {
+      errors.push(`Variant '${expected.key}' allocation mismatch: expected ${expected.trafficAllocation}%, received ${actual}%.`);
+    }
+  }
+
+  // Any option outside this strategy must not consume traffic silently.
+  for (const remote of remoteOptions) {
+    const remoteKey = optionKey(remote?.multivariate_feature_option);
+    const expected = input.variants.find((variant) => variant.key === remoteKey);
+    const allocation = Number(remote?.percentage_allocation ?? 0);
+    if (!expected && Number.isFinite(allocation) && allocation > 0.01) {
+      errors.push(`Unconfigured Flagsmith option '${remoteKey || "unknown"}' still receives ${allocation}% traffic.`);
+    }
+  }
+
+  const actualControlPercent = 100 - actualTreatmentTotal;
+  if (Math.abs(actualControlPercent - expectedControlPercent) > 0.01) {
+    errors.push(`Default/control allocation mismatch: expected ${expectedControlPercent}%, received ${actualControlPercent}%.`);
+  }
+
+  const treatmentTotalMatches = Math.abs(actualTreatmentTotal - expectedTreatmentTotal) <= 0.01;
+  const actualTotal = actualTreatmentTotal + actualControlPercent;
+  if (!treatmentTotalMatches || Math.abs(actualTotal - 100) > 0.01) {
+    errors.push(`The verified Flagsmith allocation invariant failed: received ${actualTotal}% total.`);
+  }
+
+  return {
+    verified: errors.length === 0,
+    controlPercent: remoteOptions.length ? actualControlPercent : null,
+    treatmentPercent: remoteOptions.length ? actualTreatmentTotal : null,
+    totalPercent: remoteOptions.length ? actualTotal : null,
+    variants: verifiedVariants,
+    errors,
+  };
+}
+
+/**
+ * Reads the authoritative environment feature state from the Flagsmith
+ * Management API. The public Flags API is intentionally used only for
+ * per-identity evaluation; it does not provide the editable allocation
+ * records required for safe mutations.
+ */
 export async function getLiveRemoteFeatureState(
   featureName: string
 ): Promise<{ success: boolean; state?: any; error?: string }> {
   const apiUrl = getApiUrl();
-  const envKey =
-    process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
-    process.env.FLAGSMITH_ENVIRONMENT_KEY;
+  const projectId = process.env.FLAGSMITH_PROJECT_ID;
+  const environmentKey =
+    process.env.FLAGSMITH_ENVIRONMENT_KEY ||
+    process.env.NEXT_PUBLIC_FLAGSMITH_ENVIRONMENT_ID ||
+    "";
 
-  if (!envKey || envKey === "mock") {
+  const authHeaders = getManagementAuthHeader();
+  if (!authHeaders.Authorization) {
     return {
       success: false,
-      error: "Flagsmith environment key (FLAGSMITH_SERVER_SIDE_API_KEY or FLAGSMITH_ENVIRONMENT_KEY) is not configured.",
+      error: "A Flagsmith Organisation API token is required to read authoritative feature states.",
+    };
+  }
+  if (!projectId || !environmentKey || environmentKey === "mock") {
+    return {
+      success: false,
+      error: "FLAGSMITH_PROJECT_ID and FLAGSMITH_ENVIRONMENT_KEY must be configured for Management API operations.",
     };
   }
 
-  let lastError = "";
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const res = await fetch(`${apiUrl}/flags/`, {
-        method: "GET",
-        headers: {
-          "X-Environment-Key": envKey,
-          "Content-Type": "application/json",
-        },
-        cache: "no-store",
-      });
+  try {
+    const headers = { "Content-Type": "application/json", ...authHeaders };
 
-      if (!res.ok) {
-        const errText = await res.text();
-        return {
-          success: false,
-          error: `Flagsmith API Error (${res.status}): Failed to retrieve feature flags. Details: ${errText}`,
-        };
-      }
+    // The Management API feature-state list endpoint is keyed by the environment
+    // API key. Keep the numeric environment ID for feature-version operations.
+    const [environmentsResponse, featuresResponse] = await Promise.all([
+      fetch(`${apiUrl}/environments/?project=${encodeURIComponent(projectId)}`, { headers, cache: "no-store" }),
+      fetch(`${apiUrl}/projects/${projectId}/features/`, { headers, cache: "no-store" }),
+    ]);
 
-      const flags = await res.json();
-      const matched = Array.isArray(flags)
-        ? flags.find((f: any) => f.feature?.name === featureName || f.name === featureName)
-        : null;
-
-      if (!matched) {
-        return {
-          success: false,
-          error: `Feature '${featureName}' does not exist in the configured Flagsmith environment.`,
-        };
-      }
-
+    if (!environmentsResponse.ok) {
+      const detail = await environmentsResponse.text();
       return {
-        success: true,
-        state: matched,
+        success: false,
+        error: `Flagsmith environment lookup failed (${environmentsResponse.status}): ${detail.slice(0, 500)}`,
       };
-    } catch (err: any) {
-      lastError = err.message;
-      if (attempt < 3) {
-        await new Promise((r) => setTimeout(r, 400 * attempt));
-      }
     }
-  }
+    if (!featuresResponse.ok) {
+      return { success: false, error: `Flagsmith project feature lookup failed (${featuresResponse.status}).` };
+    }
 
-  return {
-    success: false,
-    error: `Network error connecting to Flagsmith API: ${lastError}`,
-  };
+    const [environmentsPayload, featuresPayload] = await Promise.all([
+      environmentsResponse.json(),
+      featuresResponse.json(),
+    ]);
+    const environments = unwrapApiList(environmentsPayload);
+    const features = unwrapApiList(featuresPayload);
+
+    const environment = environments.find((item: any) =>
+      item.api_key === environmentKey ||
+      item.apiKey === environmentKey ||
+      String(item.id) === environmentKey
+    );
+    const feature = features.find((item: any) =>
+      String(item.name || "").toLowerCase() === featureName.toLowerCase()
+    );
+
+    if (!environment) {
+      return { success: false, error: "The configured Flagsmith environment key was not found in the selected project." };
+    }
+    if (!feature) {
+      return { success: false, error: `Feature '${featureName}' was not found in Flagsmith project ${projectId}.` };
+    }
+
+    const statesResponse = await fetch(
+      `${apiUrl}/environments/${encodeURIComponent(environmentKey)}/featurestates/`,
+      { headers, cache: "no-store" }
+    );
+    if (!statesResponse.ok) {
+      return { success: false, error: `Flagsmith environment feature-state lookup failed (${statesResponse.status}).` };
+    }
+    const states = unwrapApiList(await statesResponse.json());
+
+    const state = states.find((item: any) => {
+      const featureRef = item.feature ?? item.feature_id;
+      const featureId = typeof featureRef === "number" ? featureRef : featureRef?.id;
+      return Number(featureId) === Number(feature.id);
+    });
+
+    if (!state) {
+      return { success: false, error: `No environment feature state exists for '${featureName}'.` };
+    }
+
+    const projectOptions = Array.isArray(feature.multivariate_options)
+      ? feature.multivariate_options
+      : [];
+    const stateOptions = Array.isArray(state.multivariate_feature_state_values)
+      ? state.multivariate_feature_state_values.map((item: any) => {
+          const optionId = multivariateOptionId(item);
+          const definition = projectOptions.find((option: any) => Number(option.id) === Number(optionId));
+          const currentOption =
+            typeof item.multivariate_feature_option === "object"
+              ? item.multivariate_feature_option
+              : null;
+          return {
+            ...item,
+            multivariate_feature_option: definition || currentOption || item.multivariate_feature_option,
+          };
+        })
+      : [];
+
+    return {
+      success: true,
+      state: {
+        ...state,
+        environment: environment.id,
+        feature: {
+          ...feature,
+          id: feature.id,
+          name: feature.name,
+          multivariate_options: projectOptions,
+        },
+        multivariate_feature_state_values: stateOptions,
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Flagsmith Management API request failed: ${err?.message || "Unknown network error"}`,
+    };
+  }
 }
 
 /**
@@ -164,28 +347,195 @@ export async function createFlagsmithMultivariateFeature(
   remoteCreated?: boolean;
   isExisting?: boolean;
   state?: any;
+  allocationVerification?: FlagsmithAllocationVerification;
 }> {
   const projectId = process.env.FLAGSMITH_PROJECT_ID;
   const authHeaders = getManagementAuthHeader();
   const apiUrl = getApiUrl();
 
+  // Feature provisioning always requires an Organisation Management API token.
+  // Check this first so callers receive the precise credential prerequisite,
+  // even when the project ID is also missing.
+  if (!authHeaders.Authorization) {
+    return {
+      success: false,
+      error:
+        "FLAGSMITH_ORG_API_TOKEN is not configured. Project-level multivariate feature creation requires a Flagsmith Organisation API Token (Settings -> API Keys in Flagsmith).",
+      remoteCreated: false,
+    };
+  }
+
   if (!projectId) {
     return {
       success: false,
       error: "FLAGSMITH_PROJECT_ID is not configured in .env.",
+      remoteCreated: false,
     };
   }
 
-  // 1. Idempotency Check: Does the feature already exist in the environment?
+  // 1. Idempotency Check: if the feature exists, reconcile missing keyed
+  // options instead of silently claiming it is ready for experimentation.
   const existingCheck = await getLiveRemoteFeatureState(input.name);
   if (existingCheck.success && existingCheck.state) {
-    const featureId = existingCheck.state.feature?.id || existingCheck.state.id;
+    const existingState = existingCheck.state;
+    const featureId = existingState.feature?.id || existingState.id;
+    const existingOptions = Array.isArray(existingState.feature?.multivariate_options)
+      ? existingState.feature.multivariate_options
+      : [];
+    const existingByKey = new Map<string, any>();
+    for (const option of existingOptions) {
+      const key = optionKey(option);
+      if (key) existingByKey.set(key, option);
+    }
+
+    const mismatched = input.variants.find((variant) => {
+      const current = existingByKey.get(variant.key);
+      return current && optionFeatureValue(current) !== variant.value;
+    });
+    if (mismatched) {
+      return {
+        success: false,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: existingState,
+        error: `Flagsmith feature '${input.name}' already has key '${mismatched.key}' with a different value. Reconcile the remote option before provisioning this strategy.`,
+      };
+    }
+
+    const missing = input.variants.filter((variant) => !existingByKey.has(variant.key));
+    // Legacy options that were created without explicit keys cannot safely be
+    // associated with experiment events; do not add a duplicate string value.
+    const legacyValueCollision = missing.find((variant) =>
+      existingOptions.some((option: any) =>
+        !optionKey(option) && optionFeatureValue(option) === variant.value
+      )
+    );
+    if (legacyValueCollision) {
+      return {
+        success: false,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: existingState,
+        error: `Flagsmith feature '${input.name}' contains a legacy unkeyed option for '${legacyValueCollision.key}'. Migrate that option to an explicit variant key in Flagsmith before reusing it.`,
+      };
+    }
+
+    if (missing.length) {
+      if (!authHeaders.Authorization) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          state: existingState,
+          error: "A Flagsmith Organisation API token is required to add missing keyed multivariate options.",
+        };
+      }
+
+      for (const variant of missing) {
+        const optionResponse = await fetch(
+          `${apiUrl}/projects/${projectId}/features/${featureId}/mv-options/`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeaders,
+            },
+            body: JSON.stringify({
+              feature: featureId,
+              type: "unicode",
+              string_value: variant.value,
+              key: variant.key,
+              default_percentage_allocation: variant.trafficAllocation,
+            }),
+          }
+        );
+        if (!optionResponse.ok) {
+          const detail = await optionResponse.text();
+          return {
+            success: false,
+            featureId,
+            isExisting: true,
+            remoteCreated: false,
+            state: existingState,
+            error: `Flagsmith could not add missing keyed option '${variant.key}' (${optionResponse.status}): ${detail.slice(0, 500)}`,
+          };
+        }
+      }
+
+      const verification = await getLiveRemoteFeatureState(input.name);
+      if (!verification.success || !verification.state) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          error: `Missing options were submitted, but the environment could not be verified: ${verification.error || "No state returned"}`,
+        };
+      }
+
+      const verifiedKeys = new Set(
+        (verification.state.feature?.multivariate_options || [])
+          .map((option: any) => optionKey(option))
+          .filter(Boolean)
+      );
+      const stillMissing = input.variants.map((variant) => variant.key).filter((key) => !verifiedKeys.has(key));
+      if (stillMissing.length) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          state: verification.state,
+          error: `Flagsmith verification is still missing keyed options: ${stillMissing.join(", ")}.`,
+        };
+      }
+
+      const allocationVerification = verifyFlagsmithAllocationState(verification.state, input);
+      if (!allocationVerification.verified) {
+        return {
+          success: false,
+          featureId,
+          isExisting: true,
+          remoteCreated: false,
+          state: verification.state,
+          allocationVerification,
+          error: `Flagsmith variant options exist, but live allocations did not verify: ${allocationVerification.errors.join(" ")}`,
+        };
+      }
+
+      return {
+        success: true,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: verification.state,
+        allocationVerification,
+      };
+    }
+
+    const allocationVerification = verifyFlagsmithAllocationState(existingState, input);
+    if (!allocationVerification.verified) {
+      return {
+        success: false,
+        featureId,
+        isExisting: true,
+        remoteCreated: false,
+        state: existingState,
+        allocationVerification,
+        error: `Existing Flagsmith feature does not match the requested live allocation: ${allocationVerification.errors.join(" ")}`,
+      };
+    }
+
     return {
       success: true,
       featureId,
       isExisting: true,
       remoteCreated: false,
-      state: existingCheck.state,
+      state: existingState,
+      allocationVerification,
     };
   }
 
@@ -200,6 +550,9 @@ export async function createFlagsmithMultivariateFeature(
   }
 
   try {
+    // Create the multivariate parent feature first. Flagsmith requires each
+    // variation to be created separately so every option has a stable key;
+    // unkeyed inline variants are not sufficient for exposure tracking.
     const res = await fetch(`${apiUrl}/projects/${projectId}/features/`, {
       method: "POST",
       headers: {
@@ -212,19 +565,12 @@ export async function createFlagsmithMultivariateFeature(
         default_enabled: true,
         initial_value: input.initialValue,
         description: input.description,
-        multivariate_options: input.variants.map((v) => ({
-          type: "unicode",
-          string_value: v.value,
-          default_percentage_allocation: v.trafficAllocation,
-        })),
       }),
     });
 
     if (!res.ok) {
       const errText = await res.text();
-
-      // If already exists on project level (race condition or different environment)
-      if (errText.includes("already exists")) {
+      if (errText.toLowerCase().includes("already exists")) {
         const retryCheck = await getLiveRemoteFeatureState(input.name);
         if (retryCheck.success && retryCheck.state) {
           return {
@@ -236,7 +582,6 @@ export async function createFlagsmithMultivariateFeature(
           };
         }
       }
-
       return {
         success: false,
         error: `Flagsmith Management API Error (${res.status}): ${errText}`,
@@ -245,16 +590,76 @@ export async function createFlagsmithMultivariateFeature(
     }
 
     const json = await res.json();
-    const createdFeatureId = json.id;
+    const createdFeatureId = Number(json.id);
+    if (!createdFeatureId) {
+      return { success: false, error: "Flagsmith created the parent feature but returned no numeric feature ID.", remoteCreated: true };
+    }
 
-    // 3. Read-After-Write Verification: Verify the feature is now visible in the environment
+    // Add each keyed multivariate option using the documented mv-options endpoint.
+    for (const variant of input.variants) {
+      const optionResponse = await fetch(
+        `${apiUrl}/projects/${projectId}/features/${createdFeatureId}/mv-options/`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders,
+          },
+          body: JSON.stringify({
+            feature: createdFeatureId,
+            type: "unicode",
+            string_value: variant.value,
+            key: variant.key,
+            default_percentage_allocation: variant.trafficAllocation,
+          }),
+        }
+      );
+
+      if (!optionResponse.ok) {
+        const detail = await optionResponse.text();
+        return {
+          success: false,
+          featureId: createdFeatureId,
+          remoteCreated: true,
+          error: `Flagsmith created the feature but failed to add keyed variant '${variant.key}' (${optionResponse.status}): ${detail.slice(0, 500)}`,
+        };
+      }
+    }
+
+    // Read-after-write verification confirms that each keyed option is
+    // visible in this environment before returning success.
     const verification = await getLiveRemoteFeatureState(input.name);
-    if (!verification.success) {
+    if (!verification.success || !verification.state) {
       return {
-        success: true,
+        success: false,
         featureId: createdFeatureId,
         remoteCreated: true,
-        error: `Warning: Feature was created on Project, but not yet propagated to Environment: ${verification.error}`,
+        error: `Feature and keyed options were created, but environment verification failed: ${verification.error || "No environment state returned"}`,
+      };
+    }
+
+    const verifiedOptions = verification.state.multivariate_feature_state_values || [];
+    const configuredKeys = new Set(verifiedOptions.map((item: any) => optionKey(item.multivariate_feature_option)));
+    const missingKeys = input.variants.map((variant) => variant.key).filter((key) => !configuredKeys.has(key));
+    if (missingKeys.length) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        state: verification.state,
+        error: `Flagsmith environment verification is missing keyed options: ${missingKeys.join(", ")}.`,
+      };
+    }
+
+    const allocationVerification = verifyFlagsmithAllocationState(verification.state, input);
+    if (!allocationVerification.verified) {
+      return {
+        success: false,
+        featureId: createdFeatureId,
+        remoteCreated: true,
+        state: verification.state,
+        allocationVerification,
+        error: `Flagsmith feature exists but the live environment allocation did not verify: ${allocationVerification.errors.join(" ")}`,
       };
     }
 
@@ -263,6 +668,7 @@ export async function createFlagsmithMultivariateFeature(
       featureId: createdFeatureId,
       remoteCreated: true,
       state: verification.state,
+      allocationVerification,
     };
   } catch (err: any) {
     return {
@@ -290,11 +696,19 @@ async function mutateRemoteFeatureState(
   const authHeaders = getManagementAuthHeader();
   const apiUrl = getApiUrl();
 
+  if (!authHeaders.Authorization) {
+    return {
+      success: false,
+      error: "FLAGSMITH_ORG_API_TOKEN is required for remote feature mutations.",
+      liveUpdated: false,
+    };
+  }
+
   const remoteLookup = await getLiveRemoteFeatureState(featureName);
   if (!remoteLookup.success || !remoteLookup.state) {
     return {
       success: false,
-      error: `Cannot ${mutationDescription}: ${remoteLookup.error}`,
+      error: `Cannot ${mutationDescription}: ${remoteLookup.error || "Feature state not found"}`,
       liveUpdated: false,
     };
   }
@@ -304,205 +718,277 @@ async function mutateRemoteFeatureState(
   const featureId = state.feature?.id;
   const featureStateId = state.id;
 
-  if (!authHeaders.Authorization) {
+  if (!envId || !featureId || !featureStateId) {
     return {
       success: false,
-      error: `FLAGSMITH_ORG_API_TOKEN is required for remote ${mutationDescription}. Please provide a valid Organisation API token in .env.`,
+      error: `Cannot ${mutationDescription}: Flagsmith did not return the environment, feature, and feature-state identifiers required for a safe mutation.`,
       liveUpdated: false,
     };
   }
 
   try {
-    // 1. Attempt v2 Feature Versioning first
-    const v2VersionRes = await fetch(`${apiUrl}/environments/${envId}/features/${featureId}/versions/`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders,
-      },
-      body: JSON.stringify({}),
-    });
+    const headers = { "Content-Type": "application/json", ...authHeaders };
+    let expectedMutation: any;
 
-    if (v2VersionRes.ok) {
-      const v2Version = await v2VersionRes.json();
-      const versionUuid = v2Version.uuid;
+    const versionResponse = await fetch(
+      `${apiUrl}/environments/${envId}/features/${featureId}/versions/`,
+      { method: "POST", headers, body: JSON.stringify({}) }
+    );
 
-      // Fetch draft feature state in this version
-      const draftFsRes = await fetch(
-        `${apiUrl}/environments/${envId}/features/${featureId}/versions/${versionUuid}/featurestates/`,
-        {
-          headers: {
-            "Content-Type": "application/json",
-            ...authHeaders,
-          },
-        }
+    if (versionResponse.ok) {
+      const version = await versionResponse.json();
+      if (!version?.uuid) {
+        return { success: false, error: "Flagsmith returned an invalid feature-version response.", liveUpdated: false };
+      }
+
+      const draftResponse = await fetch(
+        `${apiUrl}/environments/${envId}/features/${featureId}/versions/${version.uuid}/featurestates/`,
+        { headers, cache: "no-store" }
       );
-
-      if (!draftFsRes.ok) {
-        const errText = await draftFsRes.text();
+      if (!draftResponse.ok) {
         return {
           success: false,
-          error: `Failed to fetch draft feature state in v2 version (${draftFsRes.status}): ${errText}`,
+          error: `Failed to retrieve the Flagsmith draft feature state (${draftResponse.status}).`,
           liveUpdated: false,
         };
       }
 
-      const draftFsList = await draftFsRes.json();
-      const draftFs = Array.isArray(draftFsList) ? draftFsList[0] : draftFsList;
-      const draftFsId = draftFs.id;
+      const draftPayload = await draftResponse.json();
+      const draft = Array.isArray(draftPayload) ? draftPayload[0] : draftPayload;
+      if (!draft?.id) {
+        return { success: false, error: "Flagsmith returned an empty feature-version draft.", liveUpdated: false };
+      }
 
-      // Compute mutations
-      const mutations = mutatePayloadFn(draftFs);
-      const updatedPayload = {
-        ...draftFs,
-        ...mutations,
+      // Versioned draft payloads may expose only the numeric multivariate option
+      // ID. Hydrate option definitions from the authoritative environment state
+      // for key/value matching, but keep numeric IDs in the Management API body.
+      const sourceOptions = new Map<number, any>();
+      for (const item of state.multivariate_feature_state_values || []) {
+        const optionId = multivariateOptionId(item);
+        if (optionId !== undefined) sourceOptions.set(optionId, item.multivariate_feature_option);
+      }
+      const enrichedDraft = {
+        ...draft,
+        multivariate_feature_state_values: (draft.multivariate_feature_state_values || []).map((item: any) => ({
+          ...item,
+          multivariate_feature_option:
+            typeof item.multivariate_feature_option === "object"
+              ? item.multivariate_feature_option
+              : sourceOptions.get(multivariateOptionId(item) || -1) ?? item.multivariate_feature_option,
+        })),
       };
 
-      // PUT updated draft feature state
-      const updateDraftRes = await fetch(
-        `${apiUrl}/environments/${envId}/features/${featureId}/versions/${versionUuid}/featurestates/${draftFsId}/`,
+      expectedMutation = mutatePayloadFn(enrichedDraft);
+      const mutationsForWire = {
+        ...expectedMutation,
+        ...(Array.isArray(expectedMutation?.multivariate_feature_state_values)
+          ? {
+              multivariate_feature_state_values: expectedMutation.multivariate_feature_state_values.map((item: any) => ({
+                ...item,
+                multivariate_feature_option: multivariateOptionId(item),
+              })),
+            }
+          : {}),
+      };
+
+      const updateResponse = await fetch(
+        `${apiUrl}/environments/${envId}/features/${featureId}/versions/${version.uuid}/featurestates/${draft.id}/`,
         {
           method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            ...authHeaders,
-          },
-          body: JSON.stringify(updatedPayload),
+          headers,
+          body: JSON.stringify({ ...draft, ...mutationsForWire }),
         }
       );
-
-      if (!updateDraftRes.ok) {
-        const errText = await updateDraftRes.text();
+      if (!updateResponse.ok) {
+        const detail = await updateResponse.text();
         return {
           success: false,
-          error: `Failed to update draft feature state in v2 version (${updateDraftRes.status}): ${errText}`,
+          error: `Flagsmith draft update failed (${updateResponse.status}): ${detail.slice(0, 500)}`,
           liveUpdated: false,
         };
       }
 
-      // Publish draft version
-      const publishRes = await fetch(
-        `${apiUrl}/environments/${envId}/features/${featureId}/versions/${versionUuid}/publish/`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...authHeaders,
-          },
-          body: JSON.stringify({}),
-        }
+      const publishResponse = await fetch(
+        `${apiUrl}/environments/${envId}/features/${featureId}/versions/${version.uuid}/publish/`,
+        { method: "POST", headers, body: JSON.stringify({}) }
       );
-
-      if (!publishRes.ok) {
-        const errText = await publishRes.text();
+      if (!publishResponse.ok) {
+        const detail = await publishResponse.text();
         return {
           success: false,
-          error: `Failed to publish v2 feature version (${publishRes.status}): ${errText}`,
+          error: `Flagsmith feature-version publish failed (${publishResponse.status}): ${detail.slice(0, 500)}`,
           liveUpdated: false,
         };
       }
     } else {
-      // 2. Fallback to v1 environment PATCH endpoint if v2 is not enabled on this environment
-      const envKey = process.env.FLAGSMITH_ENVIRONMENT_KEY || envId;
-      const v1Mutations = mutatePayloadFn(state);
-      const res = await fetch(`${apiUrl}/environments/${envKey}/featurestates/${featureStateId}/`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders,
-        },
-        body: JSON.stringify(v1Mutations),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
+      // Version 1 environments use the environment feature-state endpoint.
+      const versionError = await versionResponse.text();
+      if (versionResponse.status !== 404 && versionResponse.status !== 405) {
         return {
           success: false,
-          error: `Flagsmith ${mutationDescription} Error (${res.status}): ${errText}`,
+          error: `Flagsmith could not create a feature version (${versionResponse.status}): ${versionError.slice(0, 300)}`,
+          liveUpdated: false,
+        };
+      }
+
+      expectedMutation = mutatePayloadFn(state);
+      const environmentKey =
+        process.env.FLAGSMITH_ENVIRONMENT_KEY ||
+        process.env.NEXT_PUBLIC_FLAGSMITH_ENVIRONMENT_ID;
+      if (!environmentKey) {
+        return { success: false, error: "FLAGSMITH_ENVIRONMENT_KEY is required for v1 feature-state updates.", liveUpdated: false };
+      }
+
+      const updateResponse = await fetch(
+        `${apiUrl}/environments/${encodeURIComponent(environmentKey)}/featurestates/${featureStateId}/`,
+        {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify(expectedMutation),
+        }
+      );
+      if (!updateResponse.ok) {
+        const detail = await updateResponse.text();
+        return {
+          success: false,
+          error: `Flagsmith feature-state update failed (${updateResponse.status}): ${detail.slice(0, 500)}`,
           liveUpdated: false,
         };
       }
     }
 
-    // 3. Read-After-Write Verification
+    // Read-after-write verification is mandatory: publishing alone is not proof.
     const verified = await getLiveRemoteFeatureState(featureName);
+    if (!verified.success || !verified.state) {
+      return {
+        success: false,
+        error: `Flagsmith mutation was accepted but remote verification failed: ${verified.error || "No state returned"}`,
+        liveUpdated: false,
+      };
+    }
 
-    return {
-      success: true,
-      liveUpdated: true,
-      verifiedState: verified.state,
-    };
+    if (expectedMutation?.enabled !== undefined && verified.state.enabled !== expectedMutation.enabled) {
+      return { success: false, error: "Flagsmith verification failed: enabled state does not match the requested mutation.", liveUpdated: false, verifiedState: verified.state };
+    }
+
+    if (expectedMutation?.feature_state_value !== undefined) {
+      const expectedValue = normaliseFlagValue(expectedMutation.feature_state_value);
+      const actualValue = normaliseFlagValue(verified.state.feature_state_value);
+      if (expectedValue !== actualValue) {
+        return { success: false, error: "Flagsmith verification failed: default feature value does not match the requested mutation.", liveUpdated: false, verifiedState: verified.state };
+      }
+    }
+
+    if (Array.isArray(expectedMutation?.multivariate_feature_state_values)) {
+      const actualOptions = verified.state.multivariate_feature_state_values || [];
+      const actualById = new Map<number, number>();
+      for (const item of actualOptions) {
+        const optionId = multivariateOptionId(item);
+        if (optionId !== undefined) actualById.set(optionId, Number(item.percentage_allocation));
+      }
+      for (const expected of expectedMutation.multivariate_feature_state_values) {
+        const optionId = multivariateOptionId(expected);
+        if (optionId === undefined || !actualById.has(optionId) ||
+            Math.abs((actualById.get(optionId) || 0) - Number(expected.percentage_allocation)) > 0.01) {
+          return { success: false, error: "Flagsmith verification failed: one or more multivariate allocations do not match the requested values.", liveUpdated: false, verifiedState: verified.state };
+        }
+      }
+    }
+
+    return { success: true, liveUpdated: true, verifiedState: verified.state };
   } catch (err: any) {
     return {
       success: false,
-      error: `Network error during Flagsmith ${mutationDescription}: ${err.message}`,
+      error: `Network error during Flagsmith ${mutationDescription}: ${err?.message || "Unknown error"}`,
       liveUpdated: false,
     };
   }
 }
 
 /**
- * Promotes a winning variant to 100% of production traffic in Flagsmith.
- * Performs read-after-write verification.
+ * Promotes one existing multivariate option to 100%.
+ * The default value and all other options receive 0% of the allocation.
  */
 export async function rolloutFlagsmithWinner(
   featureName: string,
   winningVariantValue: string
 ): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "rollout winner", (draft) => ({
-    enabled: true,
-    feature_state_value:
-      typeof winningVariantValue === "string"
-        ? { type: "unicode", string_value: winningVariantValue }
-        : winningVariantValue,
-    multivariate_feature_state_values: (draft.multivariate_feature_state_values || []).map((mv: any) => ({
-      ...mv,
-      percentage_allocation: 0,
-    })),
-  }));
-}
-
-/**
- * Updates gradual canary stage allocations on the remote Flagsmith feature.
- * Performs read-after-write verification.
- */
-export async function updateFlagsmithCanaryStage(
-  featureName: string,
-  winningVariantKey: string,
-  stagePercentage: number
-): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "canary update", (draft) => {
-    const currentMvs = draft.multivariate_feature_state_values || [];
+  return mutateRemoteFeatureState(featureName, "rollout winner", (draft) => {
+    const options = draft.multivariate_feature_state_values || [];
+    const target = options.find((item: any) =>
+      optionFeatureValue(item.multivariate_feature_option) === winningVariantValue
+    );
+    if (!target) {
+      throw new Error("The requested winning variant does not exist in the Flagsmith multivariate options.");
+    }
+    const targetId = multivariateOptionId(target);
     return {
       enabled: true,
-      multivariate_feature_state_values: currentMvs.map((mv: any) => ({
-        ...mv,
-        percentage_allocation: stagePercentage,
+      // The winning treatment must retain a real 100% multivariate weight.
+      // Changing only the default value would bypass the experiment bucketing engine.
+      multivariate_feature_state_values: options.map((item: any) => ({
+        ...item,
+        percentage_allocation: multivariateOptionId(item) === targetId ? 100 : 0,
       })),
     };
   });
 }
 
 /**
- * Triggers an instant emergency kill-switch on the remote Flagsmith feature (< 50ms).
- * Performs read-after-write verification.
+ * Allocates the requested percentage to one treatment and the remainder to
+ * the default/control value. All non-winning treatments are set to zero.
  */
+export async function updateFlagsmithCanaryStage(
+  featureName: string,
+  winningVariantValue: string,
+  stagePercentage: number
+): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
+  if (!Number.isFinite(stagePercentage) || stagePercentage < 0 || stagePercentage > 100) {
+    return { success: false, error: "Canary percentage must be between 0 and 100.", liveUpdated: false };
+  }
+
+  return mutateRemoteFeatureState(featureName, "canary update", (draft) => {
+    const options = draft.multivariate_feature_state_values || [];
+    if (!options.length) throw new Error("Flagsmith returned no multivariate options for this feature.");
+
+    const target = options.find((item: any) =>
+      optionFeatureValue(item.multivariate_feature_option) === winningVariantValue
+    );
+    if (!target) {
+      throw new Error("The requested canary variant does not exist in the Flagsmith multivariate options.");
+    }
+
+    const targetId = multivariateOptionId(target);
+    return {
+      enabled: true,
+      multivariate_feature_state_values: options.map((item: any) => ({
+        ...item,
+        percentage_allocation: multivariateOptionId(item) === targetId ? stagePercentage : 0,
+      })),
+    };
+  });
+}
+
+/** Disable a feature immediately and verify the new remote state. */
 export async function triggerFlagsmithKillSwitch(
   featureName: string
 ): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return mutateRemoteFeatureState(featureName, "kill-switch", () => ({
-    enabled: false,
-  }));
+  return mutateRemoteFeatureState(featureName, "kill-switch", () => ({ enabled: false }));
 }
 
-/**
- * Safely reverts the remote feature flag to 100% Control.
- */
+/** Revert the default/control value to 100% by removing all treatment allocation. */
 export async function rollbackFlagsmithToControl(
   featureName: string,
-  controlValue: string = "control"
+  controlValue: string
 ): Promise<{ success: boolean; error?: string; liveUpdated?: boolean; verifiedState?: any }> {
-  return rolloutFlagsmithWinner(featureName, controlValue);
+  return mutateRemoteFeatureState(featureName, "rollback to control", (draft) => ({
+    enabled: true,
+    feature_state_value: { type: "unicode", string_value: controlValue },
+    multivariate_feature_state_values: (draft.multivariate_feature_state_values || []).map((item: any) => ({
+      ...item,
+      percentage_allocation: 0,
+    })),
+  }));
 }
 
 /**

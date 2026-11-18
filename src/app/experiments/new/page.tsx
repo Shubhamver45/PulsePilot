@@ -32,6 +32,7 @@ import {
   ExperimentStrategy,
   ReadinessReview,
   MetricItemSchema,
+  validateExperimentStrategy,
 } from "@/lib/ai/schemas";
 
 const selectableObjectives = [
@@ -82,10 +83,23 @@ export default function AIExperimentStudioPage() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [strategy, setStrategy] = useState<ExperimentStrategy | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [generationMeta, setGenerationMeta] = useState<{
+    provider: "gemini" | "deterministic";
+    model: string;
+    fallbackUsed: boolean;
+    fallbackReason?: string;
+  } | null>(null);
 
   // Step 5: Readiness Review State
   const [isReviewing, setIsReviewing] = useState<boolean>(false);
   const [readinessReview, setReadinessReview] = useState<ReadinessReview | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewMeta, setReviewMeta] = useState<{
+    provider: "gemini" | "deterministic";
+    model: string;
+    fallbackUsed: boolean;
+    fallbackReason?: string;
+  } | null>(null);
 
   // Step 7: Flags Mapping / Creation State
   const [isDeploying, setIsDeploying] = useState<boolean>(false);
@@ -110,6 +124,10 @@ export default function AIExperimentStudioPage() {
     try {
       setIsGenerating(true);
       setGenerationError(null);
+      setReviewError(null);
+      setReadinessReview(null);
+      setDeploymentResult(null);
+      setDeploymentError(null);
 
       const objectiveToUse =
         selectedObjective === "Custom objective"
@@ -126,11 +144,12 @@ export default function AIExperimentStudioPage() {
       });
 
       const data = await res.json();
-      if (!data.success) {
+      if (!res.ok || !data.success) {
         throw new Error(data.error || "Failed to formulate experiment spec");
       }
 
       setStrategy(data.strategy);
+      setGenerationMeta(data.generation || null);
       setCurrentStep(3); // Proceed to Step 3: Variant Configuration
     } catch (err: any) {
       setGenerationError(err.message || "Failed to contact AI Strategy Agent");
@@ -142,23 +161,33 @@ export default function AIExperimentStudioPage() {
   // Handle Step 5: Trigger Readiness Review
   const handleReviewReadiness = async () => {
     if (!strategy) return;
+    const validation = validateExperimentStrategy(strategy);
+    if (!validation.valid) {
+      setReviewError(validation.errors.join(" "));
+      setReadinessReview(null);
+      return;
+    }
+
     try {
       setIsReviewing(true);
+      setReviewError(null);
+      setReviewMeta(null);
       const res = await fetch("/api/agent/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ strategy }),
       });
       const data = await res.json();
-      if (!data.success) {
-        throw new Error(data.error || "Review failed");
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || data.error || "The readiness review could not be completed.");
       }
       setReadinessReview(data.review);
+      setReviewMeta(data.generation || null);
       setCurrentStep(5);
     } catch (err: any) {
       console.error("Readiness check error:", err);
-      // Fallback local review
-      setCurrentStep(5);
+      setReadinessReview(null);
+      setReviewError(err.message || "The experiment review failed. Fix the issue and retry; approval is blocked.");
     } finally {
       setIsReviewing(false);
     }
@@ -167,16 +196,22 @@ export default function AIExperimentStudioPage() {
   // Handle Step 7: Flags Mapping & Human Approval
   const handleApproveAndDeploy = async () => {
     if (!strategy) return;
+    const validation = validateExperimentStrategy(strategy);
+    if (!validation.valid) {
+      setDeploymentError(validation.errors.join(" "));
+      return;
+    }
+    if (!readinessReview?.isReadyForLaunch) {
+      setDeploymentError("The AI readiness review must pass before a workspace administrator can approve Flagsmith provisioning.");
+      return;
+    }
     try {
       setIsDeploying(true);
       setDeploymentError(null);
       const res = await fetch("/api/experiments/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          strategy,
-          approvedBy: "Sarah Lin (Product Lead)",
-        }),
+        body: JSON.stringify({ strategy }),
       });
       const data = await res.json();
       if (!data.success) {
@@ -195,6 +230,7 @@ export default function AIExperimentStudioPage() {
   const totalTrafficAllocation =
     (strategy?.control_variant.trafficAllocation || 0) +
     (strategy?.treatment_variants.reduce((acc, v) => acc + v.trafficAllocation, 0) || 0);
+  const planValidationErrors = strategy ? validateExperimentStrategy(strategy).errors : [];
 
   return (
     <div className="space-y-8 animate-in fade-in duration-150 pb-16">
@@ -301,7 +337,7 @@ export default function AIExperimentStudioPage() {
                 value={customObjective}
                 onChange={(e) => setCustomObjective(e.target.value)}
                 placeholder="Enter custom business objective (e.g. Increase Enterprise Demo Requests)"
-                className="w-full mt-3 p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-none focus:border-primary"
+                className="w-full mt-3 p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-hidden focus:border-primary"
               />
             )}
           </div>
@@ -316,7 +352,7 @@ export default function AIExperimentStudioPage() {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={`Tell PulsePilot what you want to improve...\n\nExample: I want to increase checkout conversions.\nTest a single-page checkout against my current multi-step checkout.`}
-              className="w-full p-4 text-xs bg-surface-subtle/50 border border-border rounded-lg text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary leading-relaxed"
+              className="w-full p-4 text-xs bg-surface-subtle/50 border border-border rounded-lg text-text focus:outline-hidden focus:border-primary focus:ring-1 focus:ring-primary leading-relaxed"
             />
           </div>
 
@@ -392,7 +428,7 @@ export default function AIExperimentStudioPage() {
 
           {generationError && (
             <div className="p-3 bg-danger-light border border-danger/30 rounded text-xs text-danger flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              <AlertTriangle className="w-4 h-4 shrink-0" />
               <span>{generationError}</span>
             </div>
           )}
@@ -423,6 +459,13 @@ export default function AIExperimentStudioPage() {
       {/* ===================================================================== */}
       {currentStep === 3 && strategy && (
         <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-6 animate-in fade-in">
+          {generationMeta && (
+            <div className={`rounded-md border px-3 py-2 text-xs ${generationMeta.fallbackUsed ? "border-amber-300 bg-amber-50 text-amber-950" : "border-emerald-200 bg-emerald-50 text-emerald-950"}`}>
+              <strong>{generationMeta.fallbackUsed ? "Deterministic strategy fallback" : "Gemini strategy generated"}</strong>
+              <span> · {generationMeta.model}</span>
+              {generationMeta.fallbackReason && <p className="mt-1 text-[11px]">{generationMeta.fallbackReason}</p>}
+            </div>
+          )}
           <div className="flex items-center justify-between pb-4 border-b border-border">
             <div>
               <h2 className="text-base font-bold text-text">Step 3: Variant Configuration</h2>
@@ -438,7 +481,7 @@ export default function AIExperimentStudioPage() {
                 onChange={(e) =>
                   setStrategy({ ...strategy, flagsmith_feature_name: e.target.value })
                 }
-                className="ml-2 font-mono text-xs px-2 py-1 bg-surface-subtle border border-border rounded text-text font-semibold focus:outline-none focus:border-primary"
+                className="ml-2 font-mono text-xs px-2 py-1 bg-surface-subtle border border-border rounded text-text font-semibold focus:outline-hidden focus:border-primary"
               />
             </div>
           </div>
@@ -631,6 +674,11 @@ export default function AIExperimentStudioPage() {
       {/* ===================================================================== */}
       {currentStep === 4 && strategy && (
         <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-6 animate-in fade-in">
+          {reviewError && (
+            <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+              <strong>Review blocked:</strong> {reviewError}
+            </div>
+          )}
           <div>
             <h2 className="text-base font-bold text-text">Step 4: Metric & Telemetry Configuration</h2>
             <p className="text-xs text-text-secondary mt-0.5">
@@ -650,7 +698,16 @@ export default function AIExperimentStudioPage() {
                   <button
                     key={metric.key}
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      const requiredEvents = strategy.required_events.some((event) => event.eventName === metric.key)
+                        ? strategy.required_events
+                        : [
+                            ...strategy.required_events,
+                            {
+                              eventName: metric.key,
+                              triggerPoint: `Record this event when the '${metric.name}' outcome occurs.`,
+                            },
+                          ];
                       setStrategy({
                         ...strategy,
                         primary_metric: {
@@ -659,8 +716,9 @@ export default function AIExperimentStudioPage() {
                           name: metric.name,
                           type: metric.type,
                         },
-                      })
-                    }
+                        required_events: requiredEvents,
+                      });
+                    }}
                     className={`p-3 rounded border text-left transition-colors flex items-center justify-between ${
                       isSelected
                         ? "bg-surface border-primary shadow-xs"
@@ -750,7 +808,25 @@ export default function AIExperimentStudioPage() {
                               description: guard.name,
                             },
                           ];
-                      setStrategy({ ...strategy, guardrail_metrics: newGuard });
+                      const retainedEvents = strategy.required_events.filter((event) =>
+                        event.eventName !== guard.key ||
+                        strategy.primary_metric.key === guard.key ||
+                        strategy.secondary_metrics.some((metric) => metric.key === guard.key)
+                      );
+                      const requiredEvents = isChecked
+                        ? retainedEvents
+                        : [
+                            ...retainedEvents,
+                            {
+                              eventName: guard.key,
+                              triggerPoint: `Record this event whenever the '${guard.name}' safety metric occurs.`,
+                            },
+                          ];
+                      setStrategy({
+                        ...strategy,
+                        guardrail_metrics: newGuard,
+                        required_events: requiredEvents,
+                      });
                     }}
                     className={`p-3 rounded border cursor-pointer transition-colors flex items-center justify-between ${
                       isChecked
@@ -810,8 +886,15 @@ export default function AIExperimentStudioPage() {
             <div>
               <h2 className="text-base font-bold text-text">Step 5: AI Readiness Report</h2>
               <p className="text-xs text-text-secondary mt-0.5">
-                Automated validation of statistical testability, event instrumentation, and safety guardrails.
+                Review of the experiment plan, Flagsmith configuration, metrics, event requirements and safety guardrails. This validates the plan; it does not inspect your product's source code.
               </p>
+              {reviewMeta && (
+                <p className={`mt-1 text-[10px] font-semibold ${reviewMeta.fallbackUsed ? "text-amber-700" : "text-emerald-700"}`}>
+                  {reviewMeta.fallbackUsed ? "Deterministic readiness review" : "Gemini AI readiness review"}
+                  {" · "}{reviewMeta.model}
+                  {reviewMeta.fallbackReason ? ` · ${reviewMeta.fallbackReason}` : ""}
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <div className="text-right">
@@ -822,7 +905,7 @@ export default function AIExperimentStudioPage() {
               </div>
               <StatusBadge
                 status={readinessReview.isReadyForLaunch ? "active" : "warning"}
-                label={readinessReview.isReadyForLaunch ? "READY FOR LAUNCH" : "NEEDS ADJUSTMENT"}
+                label={readinessReview.isReadyForLaunch ? "PLAN VALID · READY FOR APPROVAL" : "NEEDS ADJUSTMENT"}
               />
             </div>
           </div>
@@ -837,13 +920,15 @@ export default function AIExperimentStudioPage() {
                 }`}
               >
                 {check.pass ? (
-                  <CheckCircle2 className="w-4 h-4 text-success flex-shrink-0 mt-0.5" />
+                  <CheckCircle2 className="w-4 h-4 text-success shrink-0 mt-0.5" />
                 ) : (
-                  <AlertTriangle className="w-4 h-4 text-warning flex-shrink-0 mt-0.5" />
+                  <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
                 )}
                 <div>
                   <span className="font-bold text-text capitalize">
-                    {key.replace(/([A-Z])/g, " $1")}
+                    {key === "areEventsImplemented"
+                      ? "Event instrumentation specified"
+                      : key.replace(/([A-Z])/g, " $1")}
                   </span>
                   <p className="text-text-secondary text-[11px] mt-0.5 leading-relaxed">
                     {check.feedback}
@@ -891,7 +976,8 @@ export default function AIExperimentStudioPage() {
             </button>
             <button
               onClick={() => setCurrentStep(6)}
-              className="px-5 py-2.5 bg-primary hover:bg-primary-dark text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors"
+              disabled={!readinessReview.isReadyForLaunch}
+              className="px-5 py-2.5 bg-primary hover:bg-primary-dark text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Next: Human Approval Gate <ArrowRight className="w-4 h-4" />
             </button>
@@ -911,11 +997,23 @@ export default function AIExperimentStudioPage() {
                 <h2 className="text-base font-bold text-text">Step 6: Human Approval & Authorization</h2>
               </div>
               <p className="text-xs text-text-secondary mt-1">
-                Autonomous agents never deploy live feature flags without authenticated human review.
+                An authenticated workspace user must approve creating the remote Flagsmith experiment. This does not deploy application code or claim that event instrumentation is already implemented.
               </p>
             </div>
             <StatusBadge status="warning" label="APPROVAL REQUIRED" />
           </div>
+
+          {!readinessReview?.isReadyForLaunch && (
+            <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
+              Approval is disabled because the AI readiness review did not pass. Return to Metrics, address the recommendations, and run the review again.
+            </div>
+          )}
+          {planValidationErrors.length > 0 && (
+            <div role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-950">
+              <strong>Deterministic plan validation failed.</strong>
+              <ul className="mt-1 list-disc pl-4">{planValidationErrors.map((error) => <li key={error}>{error}</li>)}</ul>
+            </div>
+          )}
 
           {/* Full Experiment Specification Preview */}
           <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-3 text-xs">
@@ -991,7 +1089,7 @@ export default function AIExperimentStudioPage() {
             <div className="flex items-center gap-3">
               <button
                 onClick={handleApproveAndDeploy}
-                disabled={isDeploying}
+                disabled={isDeploying || !readinessReview?.isReadyForLaunch || planValidationErrors.length > 0}
                 className="px-5 py-2.5 bg-success hover:bg-success-text text-white text-xs font-semibold rounded-md shadow-xs flex items-center gap-2 transition-colors disabled:opacity-50"
               >
                 {isDeploying ? (
@@ -1001,7 +1099,7 @@ export default function AIExperimentStudioPage() {
                   </>
                 ) : (
                   <>
-                    <ShieldCheck className="w-4 h-4" /> Approve & Create Experiment
+                    <ShieldCheck className="w-4 h-4" /> Approve & Provision Flagsmith
                   </>
                 )}
               </button>
@@ -1016,13 +1114,13 @@ export default function AIExperimentStudioPage() {
       {currentStep === 7 && deploymentResult && strategy && (
         <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-6 animate-in fade-in">
           <div className="flex items-center gap-3 pb-4 border-b border-border">
-            <div className="w-10 h-10 rounded-full bg-success-light text-success flex items-center justify-center">
-              <CheckCircle2 className="w-6 h-6" />
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${deploymentResult.allocationVerification?.verified ? "bg-success-light text-success" : "bg-warning-light text-warning"}`}>
+              {deploymentResult.allocationVerification?.verified ? <CheckCircle2 className="w-6 h-6" /> : <AlertTriangle className="w-6 h-6" />}
             </div>
             <div>
-              <h2 className="text-base font-bold text-text">Step 7: Flagsmith Remote Verification Complete!</h2>
+              <h2 className="text-base font-bold text-text">Step 7: Flagsmith Provisioning Result</h2>
               <p className="text-xs text-text-secondary mt-0.5">
-                The multivariate feature flag has been provisioned remotely and verified in the Flagsmith environment.
+                {deploymentResult.allocationVerification?.verified ? "The keyed multivariate options and live environment allocations were read back and matched the requested experiment." : "Provisioning response received. Do not treat this as a verified experiment until live allocation evidence is present."}
               </p>
             </div>
           </div>
@@ -1038,18 +1136,37 @@ export default function AIExperimentStudioPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-text-secondary">Project / Environment:</span>
-              <span className="text-text">Project 53867 &bull; Development</span>
+              <span className="text-text">Project {deploymentResult.flagsmithProjectId || "not returned"} &bull; Environment {deploymentResult.flagsmithEnvironmentId ?? "not returned"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-secondary">Provisioning Status:</span>
-              <span className="text-success font-bold">
-                {deploymentResult.remoteCreated ? "LIVE REMOTE CREATED" : deploymentResult.isExisting ? "LIVE REMOTE VERIFIED (EXISTING)" : "ACTIVE"}
+              <span className={deploymentResult.allocationVerification?.verified ? "text-success font-bold" : "text-warning font-bold"}>
+                {deploymentResult.allocationVerification?.verified
+                  ? deploymentResult.remoteCreated ? "REMOTE CREATED · ALLOCATION VERIFIED" : "EXISTING FEATURE · ALLOCATION VERIFIED"
+                  : "REMOTE STATE NOT VERIFIED"}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-text-secondary">Read-After-Write Verification:</span>
-              <span className="text-success font-bold">&check; VERIFIED IN REMOTE ENVIRONMENT</span>
+              <span className="text-text-secondary">Live allocation verification:</span>
+              <span className={deploymentResult.allocationVerification?.verified ? "text-success font-bold" : "text-warning font-bold"}>
+                {deploymentResult.allocationVerification?.verified ? "VERIFIED · ALLOCATIONS MATCH" : "NOT VERIFIED"}
+              </span>
             </div>
+            {deploymentResult.allocationVerification && (
+              <div className="border-t border-border pt-2 space-y-1">
+                <p className="font-semibold text-text-secondary">Read-back allocation</p>
+                {deploymentResult.allocationVerification.variants.map((variant: any) => (
+                  <div key={variant.key} className="flex justify-between">
+                    <span>{variant.key} (expected {variant.expectedPercent}%)</span>
+                    <span>{variant.actualPercent == null ? "unknown" : `${variant.actualPercent}%`}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between font-bold border-t border-border pt-1">
+                  <span>Default/control residual</span>
+                  <span>{deploymentResult.allocationVerification.controlPercent == null ? "unknown" : `${deploymentResult.allocationVerification.controlPercent}%`}</span>
+                </div>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-text-secondary">Authorized By:</span>
               <span className="text-text">{deploymentResult.approvedBy}</span>

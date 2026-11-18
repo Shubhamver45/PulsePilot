@@ -21,7 +21,7 @@ export default function IntegrationsPage() {
       status: "connected",
       description: "Structured JSON schema output engine powering Hypothesis, Analyst, and Strategist agents.",
       icon: <Sparkles className="w-5 h-5 text-primary" />,
-      details: "Model: gemini-2.5-flash • Structured Outputs Enforced",
+      details: "Model: gemini-3.8-flash • Structured Outputs Enforced",
     },
     {
       name: "PostgreSQL Database",
@@ -57,7 +57,7 @@ export default function IntegrationsPage() {
             <div>
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-primary-light flex items-center justify-center flex-shrink-0">
+                  <div className="w-10 h-10 rounded-lg bg-primary-light flex items-center justify-center shrink-0">
                     {item.icon}
                   </div>
                   <div>

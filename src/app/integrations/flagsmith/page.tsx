@@ -1,135 +1,117 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  Flag,
-  CheckCircle2,
-  AlertTriangle,
-  RefreshCw,
-  Database,
-  Cpu,
-  Layers,
-  ArrowRight,
-  ExternalLink,
-  ShieldCheck,
-  Zap,
-  Info,
-  Clock,
-  Terminal,
   Activity,
-  Check,
-  Sliders,
-  Code2,
+  AlertTriangle,
+  CheckCircle2,
+  ExternalLink,
+  Flag,
+  Layers,
+  RefreshCw,
+  ShieldCheck,
+  Terminal,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
 interface HealthData {
   connected: boolean;
+  edgeConnected: boolean;
+  managementApiConnected: boolean;
   apiKeyConfigured: boolean;
   environmentKeyConfigured: boolean;
   environmentName: string;
-  environmentId: number | string;
-  environmentKeyPrefix: string;
-  projectId: string;
+  environmentId: number | string | null;
+  projectId: string | null;
   apiBaseUrl: string;
-  eventsBaseUrl: string;
   sdkStatus: string;
   experimentationReadiness: string;
-  warehouseStatus: string;
-  measuredLatencyMs: number;
-  lastSynchronizedAt: string;
+  measuredLatencyMs: number | null;
   liveFlagsCount: number;
-  activeExperimentFlag?: {
-    featureId: number;
-    stateId: number;
+  lastSynchronizedAt: string;
+  activeExperimentFlag: null | {
+    featureId: number | null;
+    stateId: number | null;
     name: string;
-    type: string;
-    enabled: boolean;
-    initialValue: string;
+    type: string | null;
+    enabled: boolean | null;
+    defaultValue: unknown;
     variants: Array<{
-      key: string;
-      name: string;
-      layout: string;
-      allocationPercent: number;
+      optionId: number | null;
+      value: string | null;
+      allocationPercent: number | null;
     }>;
-    readAfterWriteVerification: {
-      status: string;
-      verifiedAt: string;
-      endpoint: string;
-      latencyMs: number;
-    };
-    lastEvaluation: {
-      identity: string;
-      evaluatedVariant: string;
-      method: string;
-      status: string;
-      timestamp: string;
-    };
-    lastRemoteMutation: {
-      action: string;
-      protocol: string;
-      environmentId: number;
-      status: string;
-      timestamp: string;
-    };
+    allocationTotalPercent: number | null;
   };
-  cliAndMcpEvaluation?: {
-    cliSupport: string;
-    mcpSupport: string;
-    runtimeArchitecture: string;
-    architecturalRationale: string;
-  };
-  error?: string;
+  managementError?: string | null;
 }
 
 export default function FlagsmithIntegrationPage() {
   const [health, setHealth] = useState<HealthData | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const fetchHealth = async () => {
+  const fetchHealth = useCallback(async () => {
+    setIsRefreshing(true);
+    setLoadError(null);
     try {
-      setIsRefreshing(true);
-      const res = await fetch("/api/flagsmith/health");
-      const data = await res.json();
-      setHealth(data);
-    } catch (err) {
-      console.error("Health check error:", err);
+      const response = await fetch("/api/flagsmith/health", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.message || "Unable to read Flagsmith health.");
+      }
+      setHealth(data as HealthData);
+    } catch (error: any) {
+      setLoadError(error?.message || "Unable to read Flagsmith health.");
+      setHealth(null);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  };
-
-  useEffect(() => {
-    fetchHealth();
   }, []);
 
-  const flag = health?.activeExperimentFlag;
-  const latency = health?.measuredLatencyMs || 0;
+  useEffect(() => {
+    void fetchHealth();
+  }, [fetchHealth]);
+
+  const flag = health?.activeExperimentFlag ?? null;
+  const edgeReady = health?.edgeConnected === true;
+  const managementReady = health?.managementApiConnected === true;
+  const formatValue = (value: unknown) => {
+    if (value === undefined || value === null) return "Not returned";
+    if (typeof value === "string") return value;
+    try { return JSON.stringify(value); } catch { return String(value); }
+  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-150 pb-16">
       <PageHeader
-        title="Flagsmith Remote Actuation & Edge Engine"
-        description="Live telemetry, real-time edge latency, remote feature state verification, and architectural evaluation of Flagsmith Cloud integration."
+        title="Flagsmith Integration Status"
+        description="Live Edge evaluation and authoritative Management API state are shown independently. A successful Edge request does not imply that multivariate allocations or remote mutations are configured."
         badge={
           <StatusBadge
-            status={health?.connected ? "active" : "warning"}
-            label={health?.connected ? `LIVE EDGE CONNECTED (${latency}ms)` : "CONFIGURED (LOCAL / MOCK)"}
+            status={edgeReady && managementReady ? "active" : "warning"}
+            label={
+              edgeReady && managementReady
+                ? "EDGE + MANAGEMENT READY"
+                : edgeReady
+                  ? "EDGE CONNECTED · MANAGEMENT UNAVAILABLE"
+                  : "EDGE UNAVAILABLE"
+            }
           />
         }
         actions={
           <div className="flex items-center gap-2">
             <button
-              onClick={fetchHealth}
+              onClick={() => void fetchHealth()}
               disabled={isRefreshing}
-              className="px-3 py-1.5 rounded-md bg-surface border border-border hover:bg-surface-subtle text-xs font-semibold text-text flex items-center gap-1.5 shadow-xs transition-colors"
+              className="px-3 py-1.5 rounded-md bg-surface border border-border hover:bg-surface-subtle text-xs font-semibold text-text flex items-center gap-1.5 shadow-xs transition-colors disabled:opacity-50"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-primary" : "text-text-secondary"}`} />
-              Ping Flagsmith Edge
+              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+              Refresh status
             </button>
             <a
               href="https://app.flagsmith.com/project/53867"
@@ -137,240 +119,172 @@ export default function FlagsmithIntegrationPage() {
               rel="noreferrer"
               className="px-3.5 py-1.5 rounded-md bg-primary hover:bg-primary-dark text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
             >
-              Flagsmith Console (53867) <ExternalLink className="w-3.5 h-3.5" />
+              Flagsmith Console <ExternalLink className="w-3.5 h-3.5" />
             </a>
           </div>
         }
       />
 
-      {/* TOP SUMMARY BANNER */}
+      {loadError && (
+        <div role="alert" className="p-3 rounded-lg border border-red-300 bg-red-50 text-red-900 text-xs">
+          {loadError}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 text-xs">
+        <div className="p-4 rounded-lg bg-surface border border-border space-y-2">
+          <span className="text-text-secondary font-medium">Flagsmith Edge</span>
+          <p className={`font-bold text-sm ${edgeReady ? "text-emerald-700" : "text-amber-700"}`}>
+            {isLoading ? "Checking…" : edgeReady ? "Connected" : "Unavailable"}
+          </p>
+          <span className="text-[11px] text-text-muted">
+            {health?.measuredLatencyMs == null ? "Latency not measured" : `${health.measuredLatencyMs} ms response`}
+          </span>
+        </div>
+
+        <div className="p-4 rounded-lg bg-surface border border-border space-y-2">
+          <span className="text-text-secondary font-medium">Organisation Management API</span>
+          <p className={`font-bold text-sm ${managementReady ? "text-emerald-700" : "text-amber-700"}`}>
+            {isLoading ? "Checking…" : managementReady ? "Connected" : "Not configured"}
+          </p>
+          <span className="text-[11px] text-text-muted">
+            Organisation API token: {health?.apiKeyConfigured ? "configured" : "missing"}
+          </span>
+        </div>
+
+        <div className="p-4 rounded-lg bg-surface border border-border space-y-2">
+          <span className="text-text-secondary font-medium">Flags returned by Edge</span>
+          <p className="font-bold text-primary text-sm flex items-center gap-1.5">
+            <Layers className="w-4 h-4" /> {health?.liveFlagsCount ?? 0}
+          </p>
+          <span className="text-[11px] text-text-muted">Read-only `GET /flags/` response</span>
+        </div>
+
+        <div className="p-4 rounded-lg bg-surface border border-border space-y-2">
+          <span className="text-text-secondary font-medium">Experiment readiness</span>
+          <p className={`font-bold text-sm ${health?.experimentationReadiness === "READY" ? "text-emerald-700" : "text-amber-700"}`}>
+            {health?.experimentationReadiness || (isLoading ? "Checking…" : "Unknown")}
+          </p>
+          <span className="text-[11px] text-text-muted">Requires a verified Management feature state</span>
+        </div>
+      </div>
+
       <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-primary-light flex items-center justify-center text-primary">
-              <Flag className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-text">Flagsmith Cloud Edge Runtime</h2>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-100 text-violet-800 border border-violet-200">
-                  Track 02 Core Actuation Plane
-                </span>
-              </div>
-              <span className="text-xs text-text-secondary">
-                Project ID: <strong className="text-text font-mono">{health?.projectId || "53867"}</strong> • Environment:{" "}
-                <strong className="text-text">{health?.environmentName || "Development"} (ID: {health?.environmentId || "115953"})</strong>
-              </span>
-            </div>
+        <div className="flex items-center gap-3 pb-4 border-b border-border">
+          <div className="w-10 h-10 rounded-lg bg-primary-light flex items-center justify-center text-primary">
+            <Flag className="w-5 h-5" />
           </div>
-          <div className="flex items-center gap-2">
-            <span
-              className={`px-2.5 py-1 rounded text-xs font-mono font-bold flex items-center gap-1.5 border ${
-                latency < 300
-                  ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                  : "bg-amber-50 text-amber-800 border-amber-200"
-              }`}
-            >
-              <Zap className="w-3.5 h-3.5" /> Edge Latency: {latency}ms
-            </span>
+          <div>
+            <h2 className="text-base font-bold text-text">Configured Flagsmith environment</h2>
+            <p className="text-xs text-text-secondary">
+              Project {health?.projectId || "not configured"} · Environment {health?.environmentId ?? "not verified"}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+          <div className="p-3 rounded bg-surface-subtle border border-border">
+            <span className="text-[10px] text-text-secondary font-semibold uppercase block">Environment name</span>
+            <p className="font-semibold text-text mt-1">{health?.environmentName || "Not verified"}</p>
+          </div>
+          <div className="p-3 rounded bg-surface-subtle border border-border">
+            <span className="text-[10px] text-text-secondary font-semibold uppercase block">SDK status</span>
+            <p className="font-semibold text-text mt-1">{health?.sdkStatus || "Unknown"}</p>
+          </div>
+          <div className="p-3 rounded bg-surface-subtle border border-border">
+            <span className="text-[10px] text-text-secondary font-semibold uppercase block">Project ID</span>
+            <p className="font-semibold text-text mt-1">{health?.projectId || "Not configured"}</p>
+          </div>
+          <div className="p-3 rounded bg-surface-subtle border border-border">
+            <span className="text-[10px] text-text-secondary font-semibold uppercase block">Last Edge response</span>
+            <p className="font-semibold text-text mt-1">
+              {health?.lastSynchronizedAt ? new Date(health.lastSynchronizedAt).toLocaleString() : "Not available"}
+            </p>
+          </div>
+        </div>
+
+        <div className="border-t border-border pt-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-bold text-text">Authoritative feature state</h3>
             <StatusBadge
-              status={health?.sdkStatus === "READY" ? "active" : "draft"}
-              label={`SDK ${health?.sdkStatus || "READY"}`}
+              status={flag ? "active" : "warning"}
+              label={flag ? "MANAGEMENT STATE READ" : "NOT VERIFIED"}
             />
           </div>
-        </div>
 
-        {/* 6 Grid Metrics */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-1">
-            <span className="text-text-secondary font-medium">Remote Project & Environment</span>
-            <p className="font-bold text-text text-sm font-mono">
-              Project {health?.projectId || "53867"} / Env {health?.environmentId || "115953"}
-            </p>
-            <span className="text-[11px] text-text-muted">Target Flagsmith Cloud Org</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-1">
-            <span className="text-text-secondary font-medium">Live Edge Feature Flags</span>
-            <p className="font-bold text-primary text-sm font-mono flex items-center gap-1.5">
-              <Layers className="w-4 h-4" /> {health?.liveFlagsCount || 2} Remote Flags Active
-            </p>
-            <span className="text-[11px] text-text-muted">Retrieved via GET /api/v1/flags/</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-1">
-            <span className="text-text-secondary font-medium">Read-After-Write Verification</span>
-            <p className="font-bold text-emerald-700 text-sm flex items-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" /> VERIFIED AT EDGE
-            </p>
-            <span className="text-[11px] text-text-muted">3-retry exponential backoff check</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-1">
-            <span className="text-text-secondary font-medium">Edge API Base URL</span>
-            <p className="font-mono text-text text-xs truncate">{health?.apiBaseUrl || "https://api.flagsmith.com/api/v1"}</p>
-            <span className="text-[11px] text-text-muted">HTTPS REST Management & Edge</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-1">
-            <span className="text-text-secondary font-medium">Events Base URL</span>
-            <p className="font-mono text-text text-xs truncate">{health?.eventsBaseUrl || "https://events.flagsmith.com/api/v1"}</p>
-            <span className="text-[11px] text-text-muted">Telemetry & Exposure Ingestion</span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-subtle border border-border space-y-1">
-            <span className="text-text-secondary font-medium">Last Synchronized</span>
-            <p className="font-mono text-text text-xs">{new Date(health?.lastSynchronizedAt || Date.now()).toLocaleTimeString()}</p>
-            <span className="text-[11px] text-text-muted">Live edge response ping</span>
-          </div>
-        </div>
-      </div>
-
-      {/* TASK 1 SHOWCASE: LIVE REMOTE FEATURE DEEP-DIVE */}
-      <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-border">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-text">Active Remote Flagsmith Experiment Feature</h3>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-100 text-emerald-800 font-bold border border-emerald-200">
-                Remote ID #{flag?.featureId || 291896}
-              </span>
+          {flag ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 rounded bg-surface-subtle border border-border">
+                <span className="text-[10px] text-text-secondary font-semibold uppercase">Feature</span>
+                <p className="font-mono font-bold mt-1">{flag.name}</p>
+                <span className="text-[10px] text-text-muted">Type: {flag.type || "Unknown"}</span>
+              </div>
+              <div className="p-3 rounded bg-surface-subtle border border-border">
+                <span className="text-[10px] text-text-secondary font-semibold uppercase">Feature / state IDs</span>
+                <p className="font-mono font-bold mt-1">{flag.featureId ?? "Not returned"} / {flag.stateId ?? "Not returned"}</p>
+                <span className="text-[10px] text-text-muted">Enabled: {flag.enabled == null ? "Unknown" : String(flag.enabled)}</span>
+              </div>
+              <div className="p-3 rounded bg-surface-subtle border border-border">
+                <span className="text-[10px] text-text-secondary font-semibold uppercase">Default value</span>
+                <p className="font-mono font-bold mt-1 break-all">{formatValue(flag.defaultValue)}</p>
+              </div>
+              <div className="p-3 rounded bg-surface-subtle border border-border">
+                <span className="text-[10px] text-text-secondary font-semibold uppercase">Variant allocation total</span>
+                <p className="font-mono font-bold mt-1">{flag.allocationTotalPercent == null ? "Unknown" : `${flag.allocationTotalPercent}%`}</p>
+              </div>
             </div>
-            <p className="text-xs text-text-secondary mt-0.5">
-              Live multivariate feature flag provisioned in Flagsmith Cloud Project #{health?.projectId || 53867}.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link
-              href="/demo-store"
-              className="px-3 py-1.5 rounded bg-violet-50 text-violet-700 hover:bg-violet-100 border border-violet-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-            >
-              Test in Demo Store <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
-          <div className="p-3.5 rounded bg-surface-subtle border border-border">
-            <span className="text-[11px] text-text-secondary font-semibold uppercase block">Feature Key</span>
-            <p className="font-mono font-bold text-text text-sm mt-0.5">{flag?.name || "exp_checkout_layout_v2"}</p>
-            <span className="text-[10px] text-text-muted">Type: {flag?.type || "MULTIVARIATE"}</span>
-          </div>
-
-          <div className="p-3.5 rounded bg-surface-subtle border border-border">
-            <span className="text-[11px] text-text-secondary font-semibold uppercase block">Feature State ID</span>
-            <p className="font-mono font-bold text-text text-sm mt-0.5">#{flag?.stateId || 1826064}</p>
-            <span className="text-[10px] text-emerald-700 font-semibold">Enabled: {String(flag?.enabled ?? true)}</span>
-          </div>
-
-          <div className="p-3.5 rounded bg-surface-subtle border border-border">
-            <span className="text-[11px] text-text-secondary font-semibold uppercase block">Traffic Allocation</span>
-            <div className="flex items-center gap-1.5 mt-1 font-mono font-bold text-xs">
-              <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-800">Control: 50%</span>
-              <span className="px-1.5 py-0.5 rounded bg-violet-200 text-violet-800">Variant B: 50%</span>
+          ) : (
+            <div className="p-4 rounded-lg border border-amber-300 bg-amber-50 text-amber-950 space-y-2">
+              <div className="flex items-center gap-2 font-semibold text-sm">
+                <AlertTriangle className="w-4 h-4" /> Feature allocations are not available
+              </div>
+              <p className="text-xs leading-relaxed">
+                {health?.managementError || "The Flagsmith Organisation Management API token is not configured. Edge evaluation alone cannot verify feature IDs, keyed options or traffic allocations."}
+              </p>
             </div>
-            <span className="text-[10px] text-text-muted mt-0.5 block">Multivariate split</span>
-          </div>
+          )}
 
-          <div className="p-3.5 rounded bg-surface-subtle border border-border">
-            <span className="text-[11px] text-text-secondary font-semibold uppercase block">Edge Verification</span>
-            <p className="font-semibold text-emerald-700 flex items-center gap-1 mt-0.5 text-xs">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Verified at Edge ({latency}ms)
-            </p>
-            <span className="text-[10px] text-text-muted">Status: VERIFIED_AT_EDGE</span>
-          </div>
-        </div>
-
-        {/* Live Evaluation & Mutation Audit Proofs */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs pt-2">
-          <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                <Activity className="w-3.5 h-3.5 text-violet-600" /> Last Successful Identity Evaluation
-              </span>
-              <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono text-[10px] font-bold">
-                HTTP 200 OK
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-600 font-mono leading-relaxed bg-white p-2.5 rounded border border-slate-200">
-              GET /api/v1/identities/?identifier=user_alex_dev<br />
-              &rarr; Evaluated Variant: <strong className="text-violet-700">single_page</strong> (parsedValue: {`{"layout":"single_page"}`})
-            </p>
-            <div className="text-[10px] text-slate-500 flex items-center justify-between">
-              <span>Identity: user_alex_dev</span>
-              <span>Latency: {latency}ms</span>
-            </div>
-          </div>
-
-          <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Last Remote Mutation Protocol
-              </span>
-              <span className="px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 font-mono text-[10px] font-bold">
-                v2 Feature Versioning
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-600 font-mono leading-relaxed bg-white p-2.5 rounded border border-slate-200">
-              POST /environments/115953/features/291896/versions/<br />
-              PUT .../versions/{`{uuid}`}/featurestates/{`{id}`}/ &rarr; POST /publish/
-            </p>
-            <div className="text-[10px] text-slate-500 flex items-center justify-between">
-              <span>Environment ID: {health?.environmentId || 115953}</span>
-              <span>Edge Status: PUBLISHED</span>
-            </div>
+          <div className="space-y-2">
+            <h4 className="text-xs font-bold text-text">Multivariate options returned by Management API</h4>
+            {flag?.variants?.length ? (
+              <div className="overflow-x-auto border border-border rounded-lg">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-surface-subtle text-text-secondary">
+                    <tr>
+                      <th className="p-2.5">Option value</th>
+                      <th className="p-2.5">Option ID</th>
+                      <th className="p-2.5 text-right">Allocation</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {flag.variants.map((variant, index) => (
+                      <tr key={variant.optionId ?? variant.value ?? index} className="border-t border-border">
+                        <td className="p-2.5 font-mono break-all">{variant.value ?? "Unnamed option"}</td>
+                        <td className="p-2.5 font-mono">{variant.optionId ?? "Not returned"}</td>
+                        <td className="p-2.5 text-right font-mono">{variant.allocationPercent == null ? "Unknown" : `${variant.allocationPercent}%`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-xs text-text-muted">No authoritative multivariate allocation records are available.</p>
+            )}
           </div>
         </div>
       </div>
 
-      {/* TASK 1 INVESTIGATION: FLAGSMITH CLI & MCP EVALUATION */}
-      <div className="p-6 rounded-lg border border-border bg-surface shadow-xs space-y-4">
-        <div className="flex items-center gap-2 pb-2 border-b border-border">
+      <div className="p-5 rounded-lg border border-border bg-surface shadow-xs space-y-3">
+        <div className="flex items-center gap-2">
           <Terminal className="w-4 h-4 text-primary" />
-          <h3 className="text-sm font-bold text-text">
-            Flagsmith CLI & MCP Integration Investigation (Track 02 Evaluation)
-          </h3>
+          <h3 className="text-sm font-bold text-text">Integration design decision</h3>
         </div>
-
-        <div className="p-4 rounded-lg bg-violet-50/60 border border-violet-200 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="font-bold text-violet-950 flex items-center gap-1.5">
-              <Cpu className="w-4 h-4 text-violet-700" /> Architectural Decision: Direct REST API v2 vs. CLI/MCP Subprocesses
-            </span>
-            <span className="px-2 py-0.5 rounded bg-violet-200 text-violet-900 font-mono font-bold text-[10px]">
-              ENGINEERING JUSTIFICATION
-            </span>
-          </div>
-          <p className="text-violet-900 leading-relaxed">
-            {health?.cliAndMcpEvaluation?.architecturalRationale ||
-              "PulsePilot operates as an autonomous agent orchestrator running inside Next.js/Vercel serverless environments. Spawning external CLI/MCP subprocesses in serverless lambdas adds container cold-starts, lacks typed return validation, and adds unneeded binary dependencies. PulsePilot's direct HTTPS REST integration with Flagsmith v2 Feature Versioning provides deterministic, type-safe, sub-200ms mutations with immediate read-after-write verification."}
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-          <div className="p-3.5 rounded bg-surface-subtle border border-border space-y-1">
-            <span className="font-bold text-text block">1. Flagsmith REST API v2 (Chosen)</span>
-            <p className="text-text-secondary text-[11px] leading-relaxed">
-              Native HTTPS execution with draft/publish versioning lifecycles, sub-200ms edge latency, and zero serverless container cold-starts.
-            </p>
-            <span className="text-[10px] text-emerald-700 font-bold block pt-1">Active in PulsePilot &bull; Production Grade</span>
-          </div>
-
-          <div className="p-3.5 rounded bg-surface-subtle border border-border space-y-1">
-            <span className="font-bold text-text block">2. Flagsmith CLI (flagsmith-cli)</span>
-            <p className="text-text-secondary text-[11px] leading-relaxed">
-              Excellent for developer shell workflows and CI/CD pipelines, but subprocess execution in web route handlers adds latency and error parsing overhead.
-            </p>
-            <span className="text-[10px] text-text-muted font-bold block pt-1">Evaluated &bull; Best for CI/CD</span>
-          </div>
-
-          <div className="p-3.5 rounded bg-surface-subtle border border-border space-y-1">
-            <span className="font-bold text-text block">3. Flagsmith MCP (@flagsmith/mcp)</span>
-            <p className="text-text-secondary text-[11px] leading-relaxed">
-              Designed for desktop IDEs (Cursor/Claude Desktop). Since PulsePilot itself is the autonomous multi-agent platform, native server-side API calls are superior.
-            </p>
-            <span className="text-[10px] text-text-muted font-bold block pt-1">Evaluated &bull; Best for IDE Tooling</span>
-          </div>
+        <p className="text-xs text-text-secondary leading-relaxed">
+          PulsePilot uses a typed server-side REST client rather than spawning CLI/MCP subprocesses from a serverless route. This keeps application request handling explicit and testable. Remote feature creation and mutations still require a scoped Organisation Management API token and authoritative post-write verification; an Edge API response is not treated as a successful mutation.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/demo-store" className="text-xs font-semibold text-primary underline">Open Demo Store</Link>
+          <Link href="/release-center" className="text-xs font-semibold text-primary underline">Open Release Guardian</Link>
         </div>
       </div>
     </div>

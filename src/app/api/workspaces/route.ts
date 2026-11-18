@@ -1,40 +1,74 @@
 import { NextResponse } from "next/server";
-import {
-  createWorkspace,
-  listWorkspaces,
-  WorkspaceInputSchema,
-} from "@/lib/auth/auth-service";
+import { prisma } from "@/lib/db/prisma";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { WorkspaceInputSchema } from "@/lib/auth/auth-service";
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const organizationId = searchParams.get("organizationId") || "org_acme_growth";
-  const workspaces = await listWorkspaces(organizationId);
+  const user = await getAuthenticatedApplicationUser(request);
+  if (!user) {
+    return NextResponse.json({ success: false, error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+  }
 
-  return NextResponse.json({
-    success: true,
-    total: workspaces.length,
-    workspaces,
-  });
+  try {
+    const projects = await prisma.project.findMany({
+      where: { organizationId: user.organizationId },
+      orderBy: { createdAt: "asc" },
+    });
+
+    return NextResponse.json({
+      success: true,
+      total: projects.length,
+      workspaces: projects.map((project) => ({
+        id: project.id,
+        organizationId: project.organizationId,
+        name: project.name,
+        slug: project.id,
+        description: project.description || "",
+        createdAt: project.createdAt.toISOString(),
+      })),
+    });
+  } catch (error: any) {
+    console.error("[Workspace API] Failed to list workspace projects:", error?.message || error);
+    return NextResponse.json({ success: false, error: "WORKSPACE_LIST_UNAVAILABLE" }, { status: 503 });
+  }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const input = WorkspaceInputSchema.parse(body);
-    const orgId = body.organizationId || "org_acme_growth";
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ success: false, error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
+    if (user.role !== "ADMIN") {
+      return NextResponse.json({ success: false, error: "Only workspace administrators can create projects." }, { status: 403 });
+    }
 
-    const workspace = await createWorkspace(orgId, input.name, input.description);
+    const input = WorkspaceInputSchema.parse(await request.json());
+    const project = await prisma.project.create({
+      data: {
+        name: input.name.trim(),
+        description: input.description || null,
+        organizationId: user.organizationId,
+        flagsmithProjectId: process.env.FLAGSMITH_PROJECT_ID || undefined,
+      },
+    });
 
     return NextResponse.json({
       success: true,
-      workspace,
-      message: `Workspace '${workspace.name}' created successfully with isolated flag scope.`,
-    });
-  } catch (err: any) {
-    return NextResponse.json(
-      { success: false, error: err.errors ? err.errors[0].message : err.message },
-      { status: 400 }
-    );
+      workspace: {
+        id: project.id,
+        organizationId: project.organizationId,
+        name: project.name,
+        slug: project.id,
+        description: project.description || "",
+        createdAt: project.createdAt.toISOString(),
+      },
+      message: `Workspace '${project.name}' created successfully.`,
+    }, { status: 201 });
+  } catch (error: any) {
+    return NextResponse.json({
+      success: false,
+      error: error?.issues?.[0]?.message || error?.message || "WORKSPACE_CREATE_FAILED",
+    }, { status: 400 });
   }
 }
-

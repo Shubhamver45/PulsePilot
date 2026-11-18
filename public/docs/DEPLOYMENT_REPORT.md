@@ -35,8 +35,8 @@ Configure these variables in your **Vercel Project Settings &rarr; Environment V
 | `FLAGSMITH_PROJECT_ID` | Server-Only | Flagsmith Management | Numeric project identifier in Flagsmith Cloud. |
 | `FLAGSMITH_API_URL` | Server-Only | Flagsmith API | Flagsmith API root (Defaults to `https://api.flagsmith.com/api/v1/`). |
 | `FLAGSMITH_EVENTS_URL` | Server-Only | Flagsmith Telemetry | Flagsmith Event ingestion endpoint (`https://events.flagsmith.com/api/v1/`). |
-| `GEMINI_API_KEY` | Server-Only | Google AI Studio | Gemini 2.5 Flash / Pro API key for multi-agent reasoning. |
-| `GEMINI_MODEL` | Server-Only | Google AI Studio | Defaults to `gemini-2.5-flash` for high-velocity structured JSON generation. |
+| `GEMINI_API_KEY` | Server-Only | Google AI Studio | Gemini 3.8 Flash / Pro API key for multi-agent reasoning. |
+| `GEMINI_MODEL` | Server-Only | Google AI Studio | Defaults to `gemini-3.8-flash` for high-velocity structured JSON generation. |
 | `NEXT_PUBLIC_APP_URL` | Client + Server | Vercel Deployment | Canonical deployment URL (e.g. `https://pulsepilot.vercel.app`). |
 | `NODE_ENV` | Server-Only | Node Runtime | Set to `production` in live deployments. |
 

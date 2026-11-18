@@ -1,377 +1,162 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  Flag,
-  Sparkles,
-  Sliders,
-  CheckCircle2,
-  AlertTriangle,
-  Play,
-  ShieldCheck,
-  AlertOctagon,
-  TrendingUp,
-  RefreshCw,
-  Clock,
-  Activity,
-  Users,
-} from "lucide-react";
+import { useParams } from "next/navigation";
+import { AlertTriangle, ArrowLeft, ArrowRight, RefreshCw, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { StatusBadge } from "@/components/ui/StatusBadge";
-import { VariantComparison, VariantData } from "@/components/ui/VariantComparison";
-import { ConversionChart, ChartDataPoint } from "@/components/ui/ConversionChart";
-import { AIInsightCard } from "@/components/ui/AIInsightCard";
-import { ConfirmationModal } from "@/components/ui/ConfirmationModal";
 
-const initialChartData: ChartDataPoint[] = [
-  { date: "Day 1", control: 4.10, treatment: 4.22 },
-  { date: "Day 2", control: 4.05, treatment: 4.48 },
-  { date: "Day 3", control: 4.15, treatment: 4.60 },
-  { date: "Day 4", control: 4.12, treatment: 4.71 },
-  { date: "Day 5", control: 4.14, treatment: 4.82 },
-  { date: "Day 6", control: 4.11, treatment: 4.85 },
-  { date: "Day 7", control: 4.12, treatment: 4.88 },
-];
+interface Variant {
+  variantKey: string;
+  variantName: string;
+  isControl: boolean;
+  exposures: number;
+  conversions: number;
+  conversionRate: number;
+  expectedLiftPercent?: number;
+  chanceToWin?: number;
+  pValue?: number;
+  sampleRatioPValue?: number;
+  configuredAllocationPercent?: number;
+}
 
-export default function ExperimentDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const [flagName, setFlagName] = useState("exp_checkout_social_proof");
-  const [experimentStatus, setExperimentStatus] = useState<string>("active");
-  const [variants, setVariants] = useState<VariantData[]>([
-    {
-      id: "var-control",
-      key: "control",
-      name: "Control (Standard Checkout)",
-      description: "Existing multi-step sequence without social proof",
-      isControl: true,
-      trafficAllocation: 50,
-      exposures: 2400,
-      conversions: 99,
-      conversionRate: 0.0412,
-    },
-    {
-      id: "var-treatment",
-      key: "variant_social_proof",
-      name: "Variant B (Verified Reviews Quote)",
-      description: "Displaying G2 4.9/5 badge and authentic customer quote",
-      isControl: false,
-      trafficAllocation: 50,
-      exposures: 2400,
-      conversions: 117,
-      conversionRate: 0.0488,
-      relativeUplift: 18.4,
-      bayesianWinProb: 0.974,
-      isLeader: true,
-    },
-  ]);
-
-  // AI Analysis Execution State
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<any>(null);
-
-  // Rollout & Kill Switch Modal States
-  const [rolloutModalOpen, setRolloutModalOpen] = useState(false);
-  const [killSwitchModalOpen, setKillSwitchModalOpen] = useState(false);
-  const [isDeployingMutation, setIsDeployingMutation] = useState(false);
-  const [mutationFeedback, setMutationFeedback] = useState<string | null>(null);
-
-  // Execute Live AI Statistical Analysis using the Analytics Agent
-  const handleRunLiveAIAnalysis = async () => {
-    setIsAnalyzing(true);
-    try {
-      const res = await fetch("/api/agent/orchestrate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: `Analyse my checkout experiment and explain the statistical confidence of variant B.`,
-          context: {
-            experimentId: params.id,
-            experimentName: "Checkout Social Proof vs Control",
-            flagsmithFeature: flagName,
-            control: variants[0],
-            treatment: variants[1],
-          },
-        }),
-      });
-
-      const json = await res.json();
-      if (json.status === "SUCCESS") {
-        setAiAnalysisResult(json.data);
-      }
-    } catch (err) {
-      console.error("AI Analysis error:", err);
-    } finally {
-      setIsAnalyzing(false);
-    }
+interface Scorecard {
+  name: string;
+  featureFlagName: string;
+  status: string;
+  sampleSizeTarget?: number;
+  sampleSizeCurrent?: number;
+  lastRefreshedAt: string;
+  primaryMetric: { name: string; key: string };
+  summary: {
+    totalExposures: number;
+    totalConversions: number;
+    leadingVariationKey: string | null;
+    statisticalCertaintyReached: boolean;
   };
+  variations: Variant[];
+}
 
-  // Execute 100% Rollout of Winner via Flagsmith API
-  const handleConfirmRollout = async () => {
-    setIsDeployingMutation(true);
+export default function ExperimentDetailPage() {
+  const params = useParams<{ id: string }>();
+  const featureName = decodeURIComponent(params.id);
+  const [scorecard, setScorecard] = useState<Scorecard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setRefreshing(true);
+    setError(null);
     try {
-      const res = await fetch("/api/flagsmith/rollout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          flagsmithFeatureName: flagName,
-          action: "ROLLOUT_WINNER",
-          winningVariantKey: "variant_social_proof",
-          authorizer: "Sarah Lin (Product Lead)",
-          rationale: "Statistically verified +18.4% lift with 97.4% Bayesian win probability.",
-        }),
-      });
-
-      const data = await res.json();
-      if (data.success) {
-        setExperimentStatus("completed");
-        setVariants((prev) =>
-          prev.map((v) => ({
-            ...v,
-            trafficAllocation: v.key === "variant_social_proof" ? 100 : 0,
-          }))
-        );
-        setMutationFeedback("Variant B successfully rolled out to 100% in Flagsmith!");
-        setTimeout(() => {
-          setRolloutModalOpen(false);
-          setMutationFeedback(null);
-        }, 1500);
-      }
-    } catch (err) {
-      console.error("Rollout mutation error:", err);
+      const response = await fetch(`/api/flagsmith/experiment?flag=${encodeURIComponent(featureName)}`, { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || payload.error || `Scorecard request failed (HTTP ${response.status}).`);
+      if (!Array.isArray(payload.variations) || !payload.summary) throw new Error("No valid persisted experiment scorecard was returned.");
+      setScorecard(payload as Scorecard);
+    } catch (err: any) {
+      setScorecard(null);
+      setError(err?.message || "Persisted experiment scorecard unavailable.");
     } finally {
-      setIsDeployingMutation(false);
+      setLoading(false);
+      setRefreshing(false);
     }
-  };
+  }, [featureName]);
 
-  // Execute Emergency Kill Switch via Flagsmith API
-  const handleConfirmKillSwitch = async () => {
-    setIsDeployingMutation(true);
-    try {
-      const res = await fetch("/api/flagsmith/rollout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          flagsmithFeatureName: flagName,
-          action: "EMERGENCY_KILL_SWITCH",
-          authorizer: "Sarah Lin (Product Lead)",
-          rationale: "Manual emergency disable triggered by user.",
-        }),
-      });
+  useEffect(() => { void load(); }, [load]);
 
-      const data = await res.json();
-      if (data.success) {
-        setExperimentStatus("paused");
-        setMutationFeedback("Feature flag disabled in Flagsmith (< 50ms latency).");
-        setTimeout(() => {
-          setKillSwitchModalOpen(false);
-          setMutationFeedback(null);
-        }, 1500);
-      }
-    } catch (err) {
-      console.error("Kill switch error:", err);
-    } finally {
-      setIsDeployingMutation(false);
-    }
-  };
+  const control = scorecard?.variations.find((variant) => variant.isControl);
+  const treatments = scorecard?.variations.filter((variant) => !variant.isControl) ?? [];
+  const leader = treatments.find((variant) => variant.variantKey === scorecard?.summary.leadingVariationKey)
+    || [...treatments].sort((a, b) => (b.chanceToWin ?? 0) - (a.chanceToWin ?? 0))[0];
+  const hasStatisticalEvidence = Boolean(
+    scorecard &&
+    scorecard.summary.totalExposures >= (scorecard.sampleSizeTarget ?? Number.POSITIVE_INFINITY) &&
+    leader &&
+    (leader.pValue ?? 1) < 0.05 &&
+    (leader.chanceToWin ?? 0) >= 0.95 &&
+    (leader.sampleRatioPValue ?? 0) > 0.01 &&
+    (leader.expectedLiftPercent ?? 0) > 0
+  );
 
   return (
     <div className="space-y-8 animate-in fade-in duration-150 pb-16">
-      {/* Navigation & Header */}
-      <div>
-        <Link
-          href="/experiments"
-          className="inline-flex items-center gap-1.5 text-xs text-text-secondary hover:text-text mb-3 transition-colors"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" /> Back to Experiments
-        </Link>
+      <PageHeader
+        title="Experiment Detail"
+        description={`Persisted scorecard for Flagsmith feature '${featureName}'. All displayed metrics are loaded from the authenticated workspace scorecard API.`}
+        badge={
+          <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase ${scorecard ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+            {scorecard ? "PERSISTED SCORECARD" : "NO VERIFIED SCORECARD"}
+          </span>
+        }
+        actions={
+          <div className="flex items-center gap-2">
+            <Link href="/experiments" className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-semibold text-text-secondary"><span className="inline-flex items-center gap-1"><ArrowLeft className="h-3.5 w-3.5" /> Experiments</span></Link>
+            <button onClick={() => void load()} disabled={refreshing} className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-semibold text-text disabled:opacity-50"><span className="inline-flex items-center gap-1"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh</span></button>
+          </div>
+        }
+      />
 
-        <PageHeader
-          title="Checkout Social Proof vs Control"
-          description="Hypothesis: Adding verified customer testimonials and review badges on the checkout card will reduce cart abandonment and increase transaction completion."
-          badge={
-            <StatusBadge
-              status={
-                experimentStatus === "completed"
-                  ? "completed"
-                  : experimentStatus === "paused"
-                  ? "paused"
-                  : "active"
-              }
-              label={
-                experimentStatus === "completed"
-                  ? "ROLLED OUT (100% FLAGSMITH)"
-                  : experimentStatus === "paused"
-                  ? "DISABLED VIA KILL-SWITCH"
-                  : "ACTIVE IN FLAGSMITH"
-              }
-            />
-          }
-          actions={
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setKillSwitchModalOpen(true)}
-                className="px-3 py-1.5 rounded-md text-xs font-semibold text-danger hover:bg-danger-light border border-danger/20 transition-colors flex items-center gap-1.5"
-              >
-                <AlertOctagon className="w-3.5 h-3.5" /> Emergency Kill-Switch
-              </button>
+      {loading && <div className="rounded-lg border border-border bg-surface p-5 text-sm text-text-secondary">Loading workspace experiment scorecard…</div>}
+      {!loading && error && (
+        <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-5 text-amber-950 space-y-2">
+          <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" /> Experiment evidence unavailable</div>
+          <p className="text-sm">{error}</p>
+          <p className="text-xs">No sample conversion rates, traffic volumes, winning variants or guardrail results are substituted.</p>
+          <Link href="/analytics" className="inline-flex items-center gap-1 text-xs font-semibold underline">Open Analytics <ArrowRight className="h-3 w-3" /></Link>
+        </div>
+      )}
 
-              <button
-                onClick={handleRunLiveAIAnalysis}
-                disabled={isAnalyzing}
-                className="px-3 py-1.5 rounded-md bg-surface border border-border hover:bg-surface-subtle text-xs font-semibold text-text flex items-center gap-1.5 transition-colors shadow-xs"
-              >
-                {isAnalyzing ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" /> Analyzing...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5 text-primary" /> Run Live AI Analysis
-                  </>
-                )}
-              </button>
-
-              <button
-                onClick={() => setRolloutModalOpen(true)}
-                className="px-3.5 py-1.5 rounded-md bg-success hover:bg-success-text text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
-              >
-                <CheckCircle2 className="w-4 h-4" /> Rollout Winner (100%)
-              </button>
+      {scorecard && (
+        <>
+          <section className="rounded-lg border border-border bg-surface p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-bold text-text">{scorecard.name}</h2>
+                <p className="mt-1 text-xs font-mono text-text-secondary">{scorecard.featureFlagName}</p>
+              </div>
+              <span className="rounded-full border border-border px-2.5 py-1 text-[10px] font-semibold uppercase">{scorecard.status}</span>
             </div>
-          }
-        />
-      </div>
-
-      {/* Flagsmith Feature Context Card */}
-      <div className="p-4 rounded-lg bg-surface border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-md bg-primary-light text-primary flex items-center justify-center flex-shrink-0">
-            <Flag className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-sm font-bold text-text">{flagName}</span>
-              <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-surface-muted text-text-secondary border border-border">
-                MULTIVARIATE
-              </span>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                ["Exposures", scorecard.summary.totalExposures.toLocaleString()],
+                ["Conversions", scorecard.summary.totalConversions.toLocaleString()],
+                ["Target", scorecard.sampleSizeTarget?.toLocaleString() ?? "Not configured"],
+                ["Metric", scorecard.primaryMetric.name],
+              ].map(([label, value]) => <div key={label} className="rounded-md border border-border bg-surface-subtle p-3"><p className="text-[10px] uppercase text-text-muted">{label}</p><p className="mt-1 text-sm font-bold text-text">{value}</p></div>)}
             </div>
-            <span className="text-xs text-text-secondary">
-              Flagsmith Environment: <strong className="text-text">Production</strong> • Traffic Split:{" "}
-              {variants[0].trafficAllocation}% / {variants[1].trafficAllocation}%
-            </span>
-          </div>
-        </div>
+          </section>
 
-        <div className="flex items-center gap-4 text-xs font-mono">
-          <div>
-            <span className="text-text-secondary block text-[10px] uppercase">Evaluated Visitors</span>
-            <span className="font-bold text-text text-sm">4,800</span>
-          </div>
-          <div className="h-6 w-px bg-border" />
-          <div>
-            <span className="text-text-secondary block text-[10px] uppercase">Bayesian Win Prob</span>
-            <span className="font-bold text-success text-sm">97.4%</span>
-          </div>
-          <div className="h-6 w-px bg-border" />
-          <div>
-            <span className="text-text-secondary block text-[10px] uppercase">p-Value</span>
-            <span className="font-bold text-text text-sm">0.026</span>
-          </div>
-        </div>
-      </div>
+          <section className="rounded-lg border border-border bg-surface p-5 space-y-3">
+            <h3 className="text-sm font-bold text-text">Persisted variant performance</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-surface-subtle text-text-secondary"><tr><th className="p-2.5">Variant</th><th className="p-2.5 text-right">Allocation</th><th className="p-2.5 text-right">Exposures</th><th className="p-2.5 text-right">Conversions</th><th className="p-2.5 text-right">Rate</th></tr></thead>
+                <tbody>
+                  {scorecard.variations.map((variant) => <tr key={variant.variantKey} className="border-t border-border">
+                    <td className="p-2.5 font-semibold">{variant.variantName}{variant.isControl ? " · Control" : ""}<span className="block font-mono text-[10px] text-text-muted">{variant.variantKey}</span></td>
+                    <td className="p-2.5 text-right font-mono">{variant.configuredAllocationPercent == null ? "Unknown" : `${variant.configuredAllocationPercent}%`}</td>
+                    <td className="p-2.5 text-right font-mono">{variant.exposures.toLocaleString()}</td>
+                    <td className="p-2.5 text-right font-mono">{variant.conversions.toLocaleString()}</td>
+                    <td className="p-2.5 text-right font-mono">{(variant.conversionRate * 100).toFixed(2)}%</td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>
+            {control && leader && <div className="rounded-md border border-border p-3 text-xs space-y-1">
+              <p>Leading treatment: <strong>{leader.variantName}</strong></p>
+              <p>Relative uplift: <strong>{leader.expectedLiftPercent == null ? "Not calculated" : `${leader.expectedLiftPercent.toFixed(1)}%`}</strong></p>
+              <p>p-value: <strong>{leader.pValue == null ? "Not calculated" : leader.pValue.toFixed(4)}</strong> · Bayesian probability: <strong>{leader.chanceToWin == null ? "Not calculated" : `${(leader.chanceToWin * 100).toFixed(1)}%`}</strong></p>
+            </div>}
+          </section>
 
-      {/* Dynamic AI Statistical Synthesis Card */}
-      <AIInsightCard
-        title={
-          aiAnalysisResult?.executive_summary
-            ? "Live Agent Synthesis: Winner Established"
-            : "Statistical Significance Reached: Variant B (+18.4% Lift)"
-        }
-        summary={
-          aiAnalysisResult?.executive_summary ||
-          "With 4,800 visitors evaluated across 7 days, Variant B demonstrates a statistically significant +18.4% relative uplift in completed checkouts (p = 0.026, Bayes win prob = 97.4%). All guardrails are healthy."
-        }
-        confidenceScore={0.974}
-        impact="high"
-        type="winner_detected"
-        observations={[
-          "Conversion rate: Control 4.12% vs Variant B 4.88%.",
-          "Calculated via deterministic two-sample Z-test; zero LLM arithmetic fabrication.",
-          "Secondary guardrail metric 'refund_rate' did not exceed tolerance (< 0.5% shift).",
-        ]}
-        recommendedAction="Promote Variant B to 100% in Flagsmith"
-        onActionClick={() => setRolloutModalOpen(true)}
-      />
-
-      {/* Conversion Rate Trend Chart */}
-      <ConversionChart
-        title="Cumulative Conversion Rate Trajectory"
-        subtitle="Daily comparison of Control baseline vs Treatment Variant B over 7-day test run"
-        data={initialChartData}
-      />
-
-      {/* Multivariate Performance Table */}
-      <VariantComparison
-        variants={variants}
-        primaryMetricName="checkout_completed"
-        onSelectWinner={() => setRolloutModalOpen(true)}
-      />
-
-      {/* Human-in-the-Loop Rollout Modal */}
-      <ConfirmationModal
-        isOpen={rolloutModalOpen}
-        onClose={() => setRolloutModalOpen(false)}
-        onConfirm={handleConfirmRollout}
-        title="Authorize 100% Winner Rollout"
-        description="This human-in-the-loop authorization will instruct the Flagsmith Management API to allocate 100% of production traffic to Variant B (Social Proof Testimonials)."
-        confirmLabel={
-          mutationFeedback
-            ? mutationFeedback
-            : isDeployingMutation
-            ? "Executing in Flagsmith..."
-            : "Approve & Rollout to 100%"
-        }
-        isLoading={isDeployingMutation}
-        variant="success"
-      >
-        <div className="p-3 bg-surface-subtle border border-border rounded text-xs space-y-1.5 mt-2">
-          <div className="flex justify-between">
-            <span className="text-text-secondary">Flagsmith Feature:</span>
-            <span className="font-mono font-semibold text-text">{flagName}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-text-secondary">Winning Variant:</span>
-            <span className="font-semibold text-success">Variant B (+18.4% Uplift)</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-text-secondary">Authorizer:</span>
-            <span className="font-semibold text-text">Sarah Lin (Product Lead)</span>
-          </div>
-        </div>
-      </ConfirmationModal>
-
-      {/* Emergency Kill Switch Modal */}
-      <ConfirmationModal
-        isOpen={killSwitchModalOpen}
-        onClose={() => setKillSwitchModalOpen(false)}
-        onConfirm={handleConfirmKillSwitch}
-        title="Trigger Emergency Kill-Switch"
-        description={`This will instantly disable the feature flag '${flagName}' in Flagsmith. All production users will immediately revert to the default control behavior in < 50ms.`}
-        confirmLabel={
-          mutationFeedback
-            ? mutationFeedback
-            : isDeployingMutation
-            ? "Disabling Flag..."
-            : "Disable Flag Immediately"
-        }
-        isLoading={isDeployingMutation}
-        variant="danger"
-      />
+          <section className={`rounded-lg border p-4 ${hasStatisticalEvidence ? "border-amber-300 bg-amber-50 text-amber-950" : "border-amber-300 bg-amber-50 text-amber-950"}`}>
+            <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck className="h-4 w-4" /> Statistical evidence does not authorize release by itself</div>
+            <p className="mt-1 text-xs leading-relaxed">{hasStatisticalEvidence ? "The persisted scorecard meets the statistical checks, but operational guardrails and the live Flagsmith Management API must still be verified by the Release Guardian." : "This experiment has not met every required statistical gate. Keep collecting data and do not declare a winner. The Release Guardian also requires verified operational guardrails and a live Management API state."}</p>
+            <Link href="/release-center" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold underline">Open Release Guardian <ArrowRight className="h-3 w-3" /></Link>
+          </section>
+        </>
+      )}
     </div>
   );
 }

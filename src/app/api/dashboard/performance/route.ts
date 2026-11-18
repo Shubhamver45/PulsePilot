@@ -1,19 +1,31 @@
 import { NextResponse } from "next/server";
-import { demoPerformanceData } from "@/lib/db/repository";
+import { getProductionDashboardData } from "@/lib/analytics/dashboard-data";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const range = searchParams.get("range") || "7D";
-
-  const data = demoPerformanceData[range] || demoPerformanceData["7D"];
-
-  return NextResponse.json({
-    range,
-    data,
-    totalExposures: data.reduce((acc, d) => acc + d.exposures, 0),
-    totalConversions: data.reduce((acc, d) => acc + d.conversions, 0),
-    averageConversionRate:
-      data.reduce((acc, d) => acc + d.conversionRate, 0) / (data.length || 1),
-  });
+  try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
+    const { searchParams } = new URL(request.url);
+    const dashboard = await getProductionDashboardData(searchParams.get("range") || "7D", user.organizationId);
+    const data = dashboard.performance.data;
+    return NextResponse.json({
+      range: dashboard.performance.range,
+      data,
+      totalExposures: data.reduce((sum, point) => sum + point.exposures, 0),
+      totalConversions: data.reduce((sum, point) => sum + point.conversions, 0),
+      averageConversionRate: data.length
+        ? data.reduce((sum, point) => sum + point.conversionRate, 0) / data.length
+        : 0,
+      isDemoData: false,
+    });
+  } catch (error: any) {
+    console.error("[Dashboard Performance] Failed to read persisted telemetry:", error?.message || error);
+    return NextResponse.json({
+      error: "PERSISTENT_PERFORMANCE_UNAVAILABLE",
+      message: "The performance chart could not read persisted telemetry. No sample chart data was substituted.",
+    }, { status: 503 });
+  }
 }
-

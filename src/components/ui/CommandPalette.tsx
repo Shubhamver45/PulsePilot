@@ -137,7 +137,7 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Type a command or search experiments..."
-            className="w-full text-sm bg-transparent border-0 text-text placeholder-text-muted focus:outline-none"
+            className="w-full text-sm bg-transparent border-0 text-text placeholder-text-muted focus:outline-hidden"
           />
           <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono rounded bg-surface-muted border border-border text-text-secondary">
             ESC
@@ -160,7 +160,7 @@ export function CommandPalette({ isOpen, onClose }: CommandPaletteProps) {
                 className="w-full flex items-center justify-between p-2.5 rounded-md hover:bg-surface-subtle text-left transition-colors group"
               >
                 <div className="flex items-center gap-3">
-                  <div className="w-7 h-7 rounded-md bg-surface-subtle border border-border-subtle flex items-center justify-center flex-shrink-0 group-hover:border-primary/40">
+                  <div className="w-7 h-7 rounded-md bg-surface-subtle border border-border-subtle flex items-center justify-center shrink-0 group-hover:border-primary/40">
                     {item.icon}
                   </div>
                   <div>

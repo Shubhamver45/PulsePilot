@@ -88,7 +88,7 @@ export function NotificationPanel({
                     !item.read && "bg-primary-light/10"
                   )}
                 >
-                  <div className="w-8 h-8 rounded-md bg-surface-subtle border border-border flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <div className="w-8 h-8 rounded-md bg-surface-subtle border border-border flex items-center justify-center shrink-0 mt-0.5">
                     {getIcon(item.type)}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -103,7 +103,7 @@ export function NotificationPanel({
                     </p>
                   </div>
                   {!item.read && (
-                    <span className="w-2 h-2 rounded-full bg-primary flex-shrink-0 mt-1.5" />
+                    <span className="w-2 h-2 rounded-full bg-primary shrink-0 mt-1.5" />
                   )}
                 </div>
               ))

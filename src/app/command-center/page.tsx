@@ -198,7 +198,7 @@ export default function AICommandCenterPage() {
               <p className="text-[11px] text-text-secondary mt-1 line-clamp-1">{agent.desc}</p>
             </div>
             <div className="mt-3 pt-2 border-t border-border-subtle flex items-center justify-between text-[10px] font-mono text-text-muted">
-              <span>gemini-2.5-flash</span>
+              <span>gemini-3.8-flash</span>
               <span className="text-success font-semibold">Active</span>
             </div>
           </div>
@@ -212,7 +212,7 @@ export default function AICommandCenterPage() {
             <Activity className="w-4 h-4 text-primary" /> Multi-Agent Handoff & Governance Chain
           </span>
           <span className="text-[11px] font-mono text-text-muted flex items-center gap-1">
-            <Cpu className="w-3.5 h-3.5 text-primary" /> Gemini 2.5 Flash &bull; Sub-second dispatch &bull; Zod Strict
+            <Cpu className="w-3.5 h-3.5 text-primary" /> Gemini 3.8 Flash &bull; Sub-second dispatch &bull; Zod Strict
           </span>
         </div>
         <div className="flex items-center gap-2 overflow-x-auto py-1">
@@ -266,7 +266,7 @@ export default function AICommandCenterPage() {
                 if (e.key === "Enter" && !isExecuting) handleExecute();
               }}
               placeholder="e.g. Analyse my checkout experiment or Prepare a rollout plan for variant B..."
-              className="w-full p-3.5 pr-28 text-xs bg-surface-subtle border border-border rounded-lg text-text focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary shadow-xs"
+              className="w-full p-3.5 pr-28 text-xs bg-surface-subtle border border-border rounded-lg text-text focus:outline-hidden focus:border-primary focus:ring-1 focus:ring-primary shadow-xs"
             />
             <button
               onClick={handleExecute}
@@ -305,7 +305,7 @@ export default function AICommandCenterPage() {
         {/* Error State Banner */}
         {errorMessage && (
           <div className="p-4 rounded-lg bg-danger-light border border-danger/30 text-xs text-danger flex items-start gap-2.5">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <div>
               <span className="font-bold">Orchestrator Execution Failure:</span>
               <p className="mt-0.5 text-danger-text">{errorMessage}</p>
@@ -408,7 +408,7 @@ export default function AICommandCenterPage() {
                   </div>
 
                   <div className="p-3 rounded bg-warning-light/30 border border-warning/30 text-text-secondary flex items-start gap-2">
-                    <ShieldCheck className="w-4 h-4 text-warning flex-shrink-0 mt-0.5" />
+                    <ShieldCheck className="w-4 h-4 text-warning shrink-0 mt-0.5" />
                     <div>
                       <strong className="text-text">Safety Handshake:</strong>{" "}
                       {(response.data as any).safety_handshake?.warningNotice}

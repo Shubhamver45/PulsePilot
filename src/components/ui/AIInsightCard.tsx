@@ -39,7 +39,7 @@ export function AIInsightCard({
         <div className="flex items-center gap-2.5">
           <div
             className={cn(
-              "w-8 h-8 rounded-md flex items-center justify-center flex-shrink-0",
+              "w-8 h-8 rounded-md flex items-center justify-center shrink-0",
               type === "winner_detected"
                 ? "bg-success-light text-success"
                 : type === "guardrail_warning"
@@ -87,7 +87,7 @@ export function AIInsightCard({
         <ul className="mt-3 space-y-1.5 text-xs text-text-secondary">
           {observations.map((obs, idx) => (
             <li key={idx} className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary mt-1 flex-shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-primary mt-1 shrink-0" />
               <span>{obs}</span>
             </li>
           ))}

@@ -1,42 +1,32 @@
 import { NextResponse } from "next/server";
-import {
-  demoWorkspaceKPIs,
-  demoPerformanceData,
-  demoActiveExperiments,
-  demoAIRecommendations,
-  demoAgentActivities,
-  demoRecentActivities,
-} from "@/lib/db/repository";
+import { getProductionDashboardData } from "@/lib/analytics/dashboard-data";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 
 export async function GET(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
     const { searchParams } = new URL(request.url);
     const range = searchParams.get("range") || "7D";
-
-    const performance = demoPerformanceData[range] || demoPerformanceData["7D"];
-
+    const dashboard = await getProductionDashboardData(range, user.organizationId);
+    const geminiConfigured = Boolean(
+      process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "mock"
+    );
     return NextResponse.json({
-      workspace: {
-        name: "Acme Growth (Production)",
-        environment: "production",
-        isDemoData: true,
-        flagsmithConnected: true,
+      ...dashboard,
+      aiCopilot: {
+        configured: geminiConfigured,
+        provider: "Google Gemini",
+        model: "Configured server-side",
       },
-      kpis: demoWorkspaceKPIs,
-      performance: {
-        range,
-        data: performance,
-      },
-      activeExperiments: demoActiveExperiments,
-      aiRecommendations: demoAIRecommendations,
-      agentActivities: demoAgentActivities,
-      recentActivities: demoRecentActivities,
     });
   } catch (error: any) {
-    return NextResponse.json(
-      { error: "Failed to fetch dashboard data", message: error.message },
-      { status: 500 }
-    );
+    console.error("[Dashboard] Failed to read persisted experiment telemetry:", error?.message || error);
+    return NextResponse.json({
+      error: "PERSISTENT_DASHBOARD_UNAVAILABLE",
+      message: "The live dashboard could not read persisted experiment telemetry. No sample metrics were substituted.",
+    }, { status: 503 });
   }
 }
-

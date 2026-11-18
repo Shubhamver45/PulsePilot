@@ -1,290 +1,199 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  Sparkles,
-  FlaskConical,
-  Flag,
-  TrendingUp,
-  Users,
-  ShieldCheck,
+  Activity,
   ArrowRight,
-  ExternalLink,
-  Plus,
+  ArrowUpRight,
+  BrainCircuit,
+  Database,
+  Flag,
+  FlaskConical,
+  ShieldCheck,
+  Sparkles,
+  Workflow,
 } from "lucide-react";
-import { PageHeader } from "@/components/ui/PageHeader";
-import { MetricCard } from "@/components/ui/MetricCard";
-import { AgentStatusCard } from "@/components/ui/AgentStatusCard";
-import { AIInsightCard } from "@/components/ui/AIInsightCard";
-import { ExperimentCard } from "@/components/ui/ExperimentCard";
-import { ActivityTimeline } from "@/components/ui/ActivityTimeline";
-import { StatusBadge } from "@/components/ui/StatusBadge";
-import { ConfirmationModal } from "@/components/ui/ConfirmationModal";
 
-export default function OverviewPage() {
-  const [rolloutModalOpen, setRolloutModalOpen] = useState(false);
-  const [rolloutSuccess, setRolloutSuccess] = useState(false);
+type FlagsmithHealth = {
+  edgeConnected?: boolean;
+  managementApiConnected?: boolean;
+  liveFlagsCount?: number;
+  experimentationReadiness?: string;
+  measuredLatencyMs?: number | null;
+  activeExperimentFlag?: {
+    name?: string;
+    controlPercent?: number | null;
+    allocationTotalPercent?: number | null;
+    variants?: Array<{ key?: string | null; allocationPercent?: number | null }>;
+  } | null;
+};
+
+export default function HomePage() {
+  const [health, setHealth] = useState<FlagsmithHealth | null>(null);
+  const [healthState, setHealthState] = useState<"checking" | "connected" | "partial" | "unavailable">("checking");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHealth() {
+      try {
+        const response = await fetch("/api/flagsmith/health", { cache: "no-store" });
+        const data = await response.json();
+        if (cancelled) return;
+        setHealth(data);
+        setHealthState(data.edgeConnected && data.managementApiConnected ? "connected" : "partial");
+      } catch {
+        if (!cancelled) setHealthState("unavailable");
+      }
+    }
+    void loadHealth();
+    return () => { cancelled = true; };
+  }, []);
+
+  const healthLabel = healthState === "connected"
+    ? "Flagsmith APIs reachable"
+    : healthState === "partial"
+    ? "Partial connectivity"
+    : healthState === "checking"
+    ? "Checking live connection"
+    : "Connection unavailable";
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-150">
-      {/* Page Header */}
-      <PageHeader
-        title="Experimentation & Growth Overview"
-        description="Autonomous experimentation co-pilot powered by Flagsmith and Google Gemini."
-        badge={
-          <StatusBadge
-            status="active"
-            label="FLAGSMITH SYNCED"
-            className="hidden sm:inline-flex"
-          />
-        }
-        actions={
-          <div className="flex items-center gap-2">
-            <Link
-              href="/studio"
-              className="px-3.5 py-2 rounded-md bg-primary hover:bg-primary-dark text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
-            >
-              <Plus className="w-4 h-4" /> New AI Experiment
-            </Link>
-          </div>
-        }
-      />
-
-      {/* Top Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          title="Active Experiments"
-          value="4"
-          change="+1 this week"
-          changeType="positive"
-          icon={<FlaskConical className="w-4 h-4" />}
-          badge="Live Flagsmith"
-        />
-        <MetricCard
-          title="Aggregate Lift"
-          value="+16.8%"
-          change="+3.4% vs baseline"
-          changeType="positive"
-          icon={<TrendingUp className="w-4 h-4" />}
-        />
-        <MetricCard
-          title="Active Identities"
-          value="48,290"
-          change="+12.5% volume"
-          changeType="positive"
-          icon={<Users className="w-4 h-4" />}
-          changeLabel="total tracked"
-        />
-        <MetricCard
-          title="Flagsmith Flags"
-          value="12"
-          change="100% healthy"
-          changeType="neutral"
-          icon={<Flag className="w-4 h-4" />}
-          badge="Production"
-        />
-      </div>
-
-      {/* AI Agents Squad Section */}
-      <div>
-        <div className="flex items-center justify-between mb-3.5">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-primary" />
-            <h2 className="text-sm font-bold text-text uppercase tracking-wide">
-              Autonomous AI Agent Squad
-            </h2>
-          </div>
-          <Link
-            href="/command-center"
-            className="text-xs font-semibold text-primary hover:text-primary-dark transition-colors flex items-center gap-1"
-          >
-            Open Command Center <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <AgentStatusCard
-            name="Hypothesis Architect"
-            role="Natural language to Flagsmith feature spec"
-            status="ready"
-            model="gemini-2.5-flash"
-            lastAction="Formulated 'Pricing Annual Badge' experiment"
-          />
-          <AgentStatusCard
-            name="Statistical Analyst"
-            role="Z-test, p-value & Bayes synthesis"
-            status="running"
-            model="gemini-2.5-flash"
-            lastAction="Evaluated 14,200 events on checkout flow"
-          />
-          <AgentStatusCard
-            name="Rollout Strategist"
-            role="Canary gates & safe rollout recommendations"
-            status="awaiting_approval"
-            model="gemini-2.5-flash"
-            lastAction="Proposed 100% rollout for 'Social Proof CTA'"
-          />
-        </div>
-      </div>
-
-      {/* High-Impact AI Insight Hero Card */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-text uppercase tracking-wide">
-              Featured Growth Breakthrough
-            </h2>
-            <Link
-              href="/insights"
-              className="text-xs font-semibold text-primary hover:text-primary-dark transition-colors flex items-center gap-1"
-            >
-              All AI Insights <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
-          </div>
-
-          <AIInsightCard
-            title="Winner Detected: Social Proof Testimonial (exp_checkout_social_proof)"
-            summary="Statistical significance reached with 97.4% Bayesian confidence for concluded test 'exp_checkout_social_proof'. Note: Active checkout layout test (exp_checkout_layout_v2, p = 0.134) is underpowered and collecting data in Analytics."
-            confidenceScore={0.974}
-            impact="high"
-            type="winner_detected"
-            observations={[
-              "Concluded Benchmark: exp_checkout_social_proof (p = 0.026 < 0.05).",
-              "Sample size reached 2,400 visitors per variant (target was 2,000).",
-              "Conversion rate surged from 4.12% (Control) to 4.88% (Social Proof).",
-              "Refund rate and checkout friction guardrails remained completely stable.",
-            ]}
-            recommendedAction="Execute 100% rollout in Flagsmith"
-            onActionClick={() => setRolloutModalOpen(true)}
-          />
-
-          {/* Active Experiments Grid */}
-          <div>
-            <div className="flex items-center justify-between mb-3.5">
-              <h2 className="text-sm font-bold text-text uppercase tracking-wide">
-                Active Experiments
-              </h2>
-              <Link
-                href="/experiments"
-                className="text-xs font-semibold text-primary hover:text-primary-dark transition-colors flex items-center gap-1"
-              >
-                View All <ArrowRight className="w-3.5 h-3.5" />
+    <div className="min-h-screen bg-[#f7f8fc] text-slate-950">
+      <section className="relative overflow-hidden border-b border-slate-200 bg-white">
+        <div className="pointer-events-none absolute -right-36 -top-40 h-[34rem] w-[34rem] rounded-full bg-violet-100/80 blur-3xl" />
+        <div className="pointer-events-none absolute -left-32 bottom-0 h-72 w-72 rounded-full bg-indigo-50 blur-3xl" />
+        <div className="relative mx-auto grid max-w-7xl gap-12 px-5 py-16 sm:px-8 sm:py-20 lg:grid-cols-[1.12fr_0.88fr] lg:items-center lg:gap-16 lg:py-24">
+          <div className="space-y-7">
+            <div className="inline-flex items-center gap-2 rounded-full border border-violet-200 bg-violet-50 px-3 py-1.5 text-[11px] font-bold tracking-[0.12em] text-violet-800">
+              <span className="h-1.5 w-1.5 rounded-full bg-violet-600" />
+              AI AGENTS · FEATURE FLAGS · EXPERIMENT GOVERNANCE
+            </div>
+            <div className="space-y-5">
+              <h1 className="max-w-3xl text-4xl font-semibold leading-[1.08] tracking-tight sm:text-5xl lg:text-[3.8rem]">
+                Ship better product decisions, not just more experiments.
+              </h1>
+              <p className="max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
+                PulsePilot turns a product hypothesis into a governed Flagsmith experiment—then connects live assignments, persisted telemetry, statistical evidence and human-approved releases.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Link href="/demo-store" className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-violet-200 transition hover:bg-violet-800">
+                Explore the live checkout demo <ArrowUpRight className="h-4 w-4" />
+              </Link>
+              <Link href="/register" className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 py-3.5 text-sm font-semibold text-slate-800 transition hover:border-violet-300 hover:bg-violet-50">
+                Create a workspace <ArrowRight className="h-4 w-4" />
               </Link>
             </div>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1.5"><Flag className="h-3.5 w-3.5 text-violet-600" /> Flagsmith Cloud</span>
+              <span className="inline-flex items-center gap-1.5"><BrainCircuit className="h-3.5 w-3.5 text-violet-600" /> AI experiment agents</span>
+              <span className="inline-flex items-center gap-1.5"><Database className="h-3.5 w-3.5 text-violet-600" /> PostgreSQL evidence</span>
+              <span className="inline-flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5 text-violet-600" /> Human approval</span>
+            </div>
+          </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <ExperimentCard
-                id="exp-1"
-                title="Checkout Social Proof vs Control"
-                hypothesis="Adding verified customer testimonials on the checkout card will reduce cart abandonment."
-                status="active"
-                flagsmithFeatureName="exp_checkout_social_proof"
-                primaryMetric="checkout_completed"
-                sampleSizeCurrent={4800}
-                sampleSizeTarget={4000}
-                upliftPercent={18.4}
-                confidencePercent={97.4}
-              />
-              <ExperimentCard
-                id="exp-2"
-                title="Annual vs Monthly Default Pricing"
-                hypothesis="Defaulting the pricing toggle to Annual with a 'Save 20%' badge will lift ARR."
-                status="running"
-                flagsmithFeatureName="exp_pricing_annual_default"
-                primaryMetric="annual_subscription"
-                sampleSizeCurrent={1850}
-                sampleSizeTarget={3000}
-                upliftPercent={8.2}
-                confidencePercent={84.6}
-              />
+          <div className="relative">
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_24px_80px_-36px_rgba(36,31,80,0.35)] sm:p-7">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Live integration check</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-900">Flagsmith control plane</p>
+                </div>
+                <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-bold ${healthState === "connected" ? "bg-emerald-50 text-emerald-700" : healthState === "partial" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${healthState === "connected" ? "bg-emerald-500" : healthState === "partial" ? "bg-amber-500" : "bg-slate-400"}`} />
+                  {healthLabel}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 py-5">
+                <div className="rounded-2xl bg-slate-50 p-4">
+                  <div className="flex items-center gap-2 text-slate-500"><Activity className="h-4 w-4" /><span className="text-xs font-medium">Edge evaluation</span></div>
+                  <p className="mt-3 text-lg font-semibold text-slate-900">{health?.edgeConnected ? "Reachable" : healthState === "checking" ? "Checking…" : "Unavailable"}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">Identity and flag reads</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 p-4">
+                  <div className="flex items-center gap-2 text-slate-500"><Workflow className="h-4 w-4" /><span className="text-xs font-medium">Management API</span></div>
+                  <p className="mt-3 text-lg font-semibold text-slate-900">{health?.managementApiConnected ? "Reachable" : healthState === "checking" ? "Checking…" : "Unavailable"}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">Feature and environment state</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between border-t border-slate-100 pt-4 text-xs">
+                <span className="text-slate-500">Flags available in connected environment</span>
+                <span className="font-mono font-semibold text-slate-900">{health?.liveFlagsCount ?? "—"}</span>
+              </div>
+              <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/70 p-3 text-[11px] leading-5 text-violet-950">
+                {health?.experimentationReadiness === "READY" && health.activeExperimentFlag ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2 font-semibold">
+                      <span>Live assignment configuration verified</span>
+                      <span>{health.activeExperimentFlag.allocationTotalPercent}% allocated</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className="rounded-md bg-white px-2 py-1">Control {health.activeExperimentFlag.controlPercent}%</span>
+                      {health.activeExperimentFlag.variants?.map((variant) => (
+                        <span key={variant.key} className="rounded-md bg-white px-2 py-1">
+                          {variant.key} {variant.allocationPercent}%
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-violet-800">This verifies live allocation configuration, not statistical significance. Outcome evidence comes from persisted demo telemetry.</p>
+                  </>
+                ) : (
+                  <>Live Flagsmith connectivity is available, but experiment allocation has not passed verification.</>
+                )}
+              </div>
+            </div>
+            <div className="absolute -bottom-5 -left-5 hidden items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-lg sm:flex">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-100 text-violet-700"><ShieldCheck className="h-5 w-5" /></span>
+              <span><span className="block text-xs font-semibold text-slate-900">Human-in-the-loop releases</span><span className="block text-[10px] text-slate-500">Evidence before actuation</span></span>
             </div>
           </div>
         </div>
+      </section>
 
-        {/* Right Column: Live Activity & Audit Trail */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-text uppercase tracking-wide">
-              Live Audit Stream
-            </h2>
-            <Link
-              href="/activity"
-              className="text-xs font-semibold text-text-secondary hover:text-text transition-colors"
-            >
-              Audit Log
-            </Link>
+      <section className="mx-auto max-w-7xl px-5 py-16 sm:px-8 lg:py-20">
+        <div className="max-w-2xl">
+          <p className="text-xs font-bold uppercase tracking-[0.15em] text-violet-700">The operating model</p>
+          <h2 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">One workflow from hypothesis to safe rollout.</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-600">Agents help with the work. Flagsmith controls the experience. Persisted evidence—not an LLM opinion—governs the release decision.</p>
+        </div>
+        <div className="mt-9 grid gap-4 md:grid-cols-3">
+          {[
+            { n: "01", icon: <Sparkles className="h-5 w-5" />, title: "Design the experiment", body: "Translate a product goal into a hypothesis, variants, success metrics and guardrails. Validate the plan before it reaches Flagsmith." },
+            { n: "02", icon: <Flag className="h-5 w-5" />, title: "Evaluate real assignments", body: "Use Flagsmith identity evaluation for stable control/treatment assignment and record exposure before accepting a conversion." },
+            { n: "03", icon: <ShieldCheck className="h-5 w-5" />, title: "Release with evidence", body: "Calculate results from persisted telemetry, check rollout gates, and require an authorized human to approve live flag changes." },
+          ].map((item) => (
+            <article key={item.n} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-bold text-violet-700">{item.n}</span>
+                <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50 text-violet-700">{item.icon}</span>
+              </div>
+              <h3 className="mt-6 text-base font-semibold text-slate-900">{item.title}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{item.body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="border-y border-slate-200 bg-white">
+        <div className="mx-auto grid max-w-7xl gap-8 px-5 py-14 sm:px-8 lg:grid-cols-[1fr_auto] lg:items-center lg:py-16">
+          <div className="max-w-2xl">
+            <p className="text-xs font-bold uppercase tracking-[0.15em] text-violet-700">Try the judge walkthrough</p>
+            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">See a feature-flagged checkout before opening the workspace.</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">The public storefront uses named demo personas and a simulated checkout. It is a product walkthrough, not real customer traffic or a payment flow.</p>
           </div>
-
-          <div className="p-4 rounded-lg bg-surface border border-border shadow-xs">
-            <ActivityTimeline
-              activities={[
-                {
-                  id: "act-1",
-                  action: "ROLLOUT_RECOMMENDED",
-                  actor: { name: "Rollout Strategist", type: "agent" },
-                  details: "Generated recommendation for 'exp_checkout_social_proof' (97.4% confidence)",
-                  timestamp: "12m ago",
-                },
-                {
-                  id: "act-2",
-                  action: "FLAGSMITH_SYNC",
-                  actor: { name: "Sarah Lin", type: "human" },
-                  details: "Approved multivariate traffic allocation (50/50 split)",
-                  timestamp: "2h ago",
-                },
-                {
-                  id: "act-3",
-                  action: "EXPERIMENT_FORMULATED",
-                  actor: { name: "Hypothesis Architect", type: "agent" },
-                  details: "Created experiment spec from natural language prompt",
-                  timestamp: "4h ago",
-                },
-                {
-                  id: "act-4",
-                  action: "FLAG_CREATED",
-                  actor: { name: "Flagsmith API", type: "system" },
-                  details: "Feature 'exp_pricing_annual_default' provisioned",
-                  timestamp: "1d ago",
-                },
-              ]}
-            />
+          <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
+            <Link href="/demo-store" className="inline-flex items-center justify-center gap-2 rounded-xl bg-violet-700 px-5 py-3 text-sm font-semibold text-white hover:bg-violet-800">Run the storefront demo <ArrowUpRight className="h-4 w-4" /></Link>
+            <Link href="/demo-results" className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50">View live scorecard <ArrowRight className="h-4 w-4" /></Link>
+            <Link href="/login" className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50">Sign in to workspace <ArrowRight className="h-4 w-4" /></Link>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Confirmation Modal for Human-in-the-Loop Rollout */}
-      <ConfirmationModal
-        isOpen={rolloutModalOpen}
-        onClose={() => setRolloutModalOpen(false)}
-        onConfirm={() => {
-          setRolloutSuccess(true);
-          setTimeout(() => {
-            setRolloutSuccess(false);
-            setRolloutModalOpen(false);
-          }, 1500);
-        }}
-        title="Human-in-the-Loop Rollout Authorization"
-        description="You are authorizing PulsePilot to update the Flagsmith feature 'exp_checkout_social_proof' to allocate 100% of production traffic to Variant B (Social Proof Testimonial)."
-        confirmLabel={rolloutSuccess ? "Rollout Executed in Flagsmith!" : "Approve & Rollout to 100%"}
-        variant="success"
-      >
-        <div className="p-3 bg-surface-subtle border border-border rounded text-xs space-y-1">
-          <div className="flex justify-between">
-            <span className="text-text-secondary">Feature Flag:</span>
-            <span className="font-mono font-semibold text-text">exp_checkout_social_proof</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-text-secondary">Winning Variant:</span>
-            <span className="font-semibold text-success">Variant B (+18.4% Uplift)</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-text-secondary">Approver:</span>
-            <span className="font-semibold text-text">Sarah Lin (Product Lead)</span>
-          </div>
-        </div>
-      </ConfirmationModal>
+      <footer className="mx-auto flex max-w-7xl flex-col gap-2 px-5 py-8 text-xs text-slate-500 sm:px-8 sm:flex-row sm:items-center sm:justify-between">
+        <span>PulsePilot · AI experimentation and release governance</span>
+        <span>Demo identities and checkout events are labelled as demonstration data.</span>
+      </footer>
     </div>
   );
 }
-

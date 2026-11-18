@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { z } from "zod";
 import { orchestrateAgentRequest } from "@/lib/agents/orchestrator";
 import { sanitizeUserInput, assertZeroSecretLeakage } from "@/lib/security/input-sanitizer";
@@ -6,11 +7,18 @@ import { checkRateLimit } from "@/lib/security/rate-limiter";
 
 const OrchestrateRequestSchema = z.object({
   prompt: z.string().min(2),
-  context: z.record(z.any()).optional(),
+  context: z.record(z.string(), z.any()).optional(),
 });
 
 export async function POST(request: Request) {
   try {
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ success: false, error: "AUTHENTICATION_REQUIRED" }, { status: 401 });
+    }
+    if (user.role === "VIEWER") {
+      return NextResponse.json({ success: false, error: "INSUFFICIENT_PERMISSIONS" }, { status: 403 });
+    }
     // Rate Limiting by client IP or header
     const ip = request.headers.get("x-forwarded-for") || "127.0.0.1";
     const rateCheck = checkRateLimit(`agent_${ip}`, { maxRequests: 60, windowMs: 60000 });

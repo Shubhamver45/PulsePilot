@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -33,11 +33,33 @@ interface NavItem {
 
 export function Sidebar({ className }: { className?: string }) {
   const pathname = usePathname();
-  const [workspace, setWorkspace] = useState("Acme Growth (Production)");
-  const [workspacesList, setWorkspacesList] = useState([
-    "Acme Growth (Production)",
-    "Acme Growth (Staging)",
-  ]);
+  const [workspace, setWorkspace] = useState("Loading workspace…");
+  const [workspacesList, setWorkspacesList] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadWorkspace() {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
+        const data = await response.json();
+        const name = data?.user?.activeWorkspaceName || data?.user?.organizationName;
+        if (response.ok && data?.authenticated && name && !cancelled) {
+          setWorkspace(name);
+          setWorkspacesList([name]);
+        } else if (!cancelled) {
+          setWorkspace("PulsePilot Workspace");
+          setWorkspacesList([]);
+        }
+      } catch {
+        if (!cancelled) {
+          setWorkspace("PulsePilot Workspace");
+          setWorkspacesList([]);
+        }
+      }
+    }
+    void loadWorkspace();
+    return () => { cancelled = true; };
+  }, []);
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [newWorkspaceModalOpen, setNewWorkspaceModalOpen] = useState(false);
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
@@ -212,10 +234,10 @@ export function Sidebar({ className }: { className?: string }) {
             className="w-full flex items-center justify-between p-2 rounded-md bg-surface border border-border shadow-xs hover:border-primary/40 transition-colors text-left"
           >
             <div className="flex items-center gap-2 min-w-0">
-              <Building2 className="w-3.5 h-3.5 text-text-secondary flex-shrink-0" />
+              <Building2 className="w-3.5 h-3.5 text-text-secondary shrink-0" />
               <span className="text-xs font-medium text-text truncate">{workspace}</span>
             </div>
-            <ChevronDown className={`w-3.5 h-3.5 text-text-muted flex-shrink-0 transition-transform ${workspaceDropdownOpen ? "rotate-180" : ""}`} />
+            <ChevronDown className={`w-3.5 h-3.5 text-text-muted shrink-0 transition-transform ${workspaceDropdownOpen ? "rotate-180" : ""}`} />
           </button>
 
           {workspaceDropdownOpen && (
@@ -263,7 +285,7 @@ export function Sidebar({ className }: { className?: string }) {
             <div className="bg-surface border border-border rounded-xl p-5 w-full max-w-sm space-y-4 shadow-xl">
               <h3 className="text-sm font-bold text-text">Create Isolated Workspace</h3>
               <p className="text-xs text-text-secondary">
-                Each workspace has its own Flagsmith project key, experiments, and telemetry partition.
+                Create a separate workspace to organize experiments, team access and telemetry.
               </p>
               <form onSubmit={handleCreateWorkspace} className="space-y-3 text-xs">
                 <div>
@@ -362,22 +384,12 @@ export function Sidebar({ className }: { className?: string }) {
         </nav>
       </div>
 
-      {/* Footer System Status */}
+      {/* Service status is reported on the Integrations screen rather than hard-coded here. */}
       <div className="p-3 border-t border-border bg-surface-subtle/50 text-xs">
-        <div className="p-2.5 rounded-md bg-surface border border-border shadow-xs space-y-1.5">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="text-text-secondary flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-success animate-pulse" /> Flagsmith Engine
-            </span>
-            <span className="font-mono text-text font-medium">Connected</span>
-          </div>
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="text-text-secondary flex items-center gap-1.5">
-              <Sparkles className="w-3 h-3 text-primary" /> Gemini 2.5 Flash
-            </span>
-            <span className="font-mono text-primary font-medium">Ready</span>
-          </div>
-        </div>
+        <Link href="/integrations" className="flex items-center justify-between rounded-md bg-surface border border-border p-2.5 text-text-secondary hover:text-primary hover:border-primary/40 transition-colors">
+          <span className="flex items-center gap-2"><Activity className="w-3.5 h-3.5" /> Service connections</span>
+          <ExternalLink className="w-3 h-3" />
+        </Link>
       </div>
     </aside>
   );

@@ -205,7 +205,7 @@ export default function CustomerSandboxPage() {
       {/* Synthetic Traffic Simulator Notice Banner */}
       {simulationLog && (
         <div className="p-3.5 rounded-lg bg-surface-subtle border border-primary/30 text-xs text-text flex items-start gap-2.5 animate-in fade-in">
-          <Info className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
+          <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
           <div className="flex-1">
             <span className="font-bold text-primary">Interactive Synthetic Telemetry Generated:</span>
             <p className="mt-0.5 text-text-secondary">{simulationLog}</p>

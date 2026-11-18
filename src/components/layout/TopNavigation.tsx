@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -14,38 +14,26 @@ import {
   ExternalLink,
   LogOut,
   ChevronDown,
+  Sparkles,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { CommandPalette } from "../ui/CommandPalette";
 import { NotificationPanel, NotificationItem } from "../ui/NotificationPanel";
 
-const initialNotifications: NotificationItem[] = [
-  {
-    id: "notif-1",
-    title: "Winner Detected (+18.4% Uplift)",
-    message: "Statistical significance reached on 'exp_checkout_social_proof'. 97.2% confidence.",
-    timestamp: "10m ago",
-    read: false,
-    type: "ai_insight",
-  },
-  {
-    id: "notif-2",
-    title: "Flagsmith Sync Complete",
-    message: "Multivariate splits active across 3 variants in Production environment.",
-    timestamp: "45m ago",
-    read: false,
-    type: "flag_update",
-  },
-  {
-    id: "notif-3",
-    title: "Rollout Approval Required",
-    message: "Gemini Rollout Strategist proposed 100% rollout for Variant B. HITL authorization required.",
-    timestamp: "2h ago",
-    read: true,
-    type: "rollout_pending",
-  },
-];
+const initialNotifications: NotificationItem[] = [];
+
+function isPublicRoute(pathname: string): boolean {
+  return pathname === "/" ||
+    pathname === "/login" ||
+    pathname === "/register" ||
+    pathname === "/auth/callback" ||
+    pathname === "/demo-store" ||
+    pathname === "/demo-results" ||
+    pathname.startsWith("/demo-store/") ||
+    pathname === "/docs" ||
+    pathname.startsWith("/docs/");
+}
 
 export function TopNavigation({
   onMobileMenuToggle,
@@ -59,12 +47,53 @@ export function TopNavigation({
 
   const router = useRouter();
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [isGuest, setIsGuest] = useState(true);
   const [currentUser, setCurrentUser] = useState({
-    name: "Sarah Lin",
-    email: "sarah@pulsepilot.ai",
-    role: "Product Lead (Admin)",
-    initials: "SL",
+    name: "Demo visitor",
+    email: "",
+    role: "Public demo",
+    initials: "PV",
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCurrentUser() {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok || !data.authenticated || !data.user) {
+          if (isPublicRoute(pathname)) {
+            if (!cancelled) setIsGuest(true);
+          } else {
+            router.replace("/login");
+          }
+          return;
+        }
+        if (cancelled) return;
+        const name = data.user.fullName || data.user.email;
+        const role = data.user.role === "ADMIN"
+          ? "Administrator"
+          : data.user.role === "EDITOR"
+          ? "Editor"
+          : "Viewer";
+        const initials = name.split(/\\s+/).slice(0, 2).map((part: string) => part[0]).join("").toUpperCase();
+        setIsGuest(false);
+        setCurrentUser({
+          name,
+          email: data.user.email,
+          role,
+          initials: initials || "U",
+        });
+      } catch {
+        if (!cancelled) {
+          if (isPublicRoute(pathname)) setIsGuest(true);
+          else router.replace("/login");
+        }
+      }
+    }
+    loadCurrentUser();
+    return () => { cancelled = true; };
+  }, [router, pathname]);
 
   const handleLogout = async () => {
     try {
@@ -83,6 +112,35 @@ export function TopNavigation({
       return { label, href };
     }),
   ];
+
+  if (isPublicRoute(pathname)) {
+    return (
+      <header className="h-16 w-full px-4 sm:px-6 lg:px-8 border-b border-border/80 bg-white/95 backdrop-blur flex items-center justify-between sticky top-0 z-30">
+        <Link href="/" className="flex items-center gap-2.5 shrink-0">
+          <span className="h-9 w-9 rounded-xl bg-primary text-white flex items-center justify-center shadow-sm">
+            <Sparkles className="h-4.5 w-4.5" />
+          </span>
+          <span>
+            <span className="block text-sm font-bold tracking-tight text-text">PulsePilot</span>
+            <span className="block text-[10px] text-text-secondary leading-tight">AI experimentation platform</span>
+          </span>
+        </Link>
+        <nav className="flex items-center gap-2 sm:gap-5 text-xs font-semibold">
+          <Link href="/demo-store" className="hidden sm:inline text-text-secondary hover:text-primary transition-colors">Live demo</Link>
+          <Link href="/demo-results" className="hidden md:inline text-text-secondary hover:text-primary transition-colors">Results</Link>
+          <Link href="/docs/PRD.md" target="_blank" className="hidden md:inline text-text-secondary hover:text-primary transition-colors">Product brief</Link>
+          {isGuest ? (
+            <>
+              <Link href="/login" className="px-2.5 py-2 text-text-secondary hover:text-text transition-colors">Sign in</Link>
+              <Link href="/register" className="rounded-lg bg-primary px-3.5 py-2.5 text-white hover:bg-primary-dark shadow-sm transition-colors">Create workspace</Link>
+            </>
+          ) : (
+            <Link href="/dashboard" className="rounded-lg bg-primary px-3.5 py-2.5 text-white hover:bg-primary-dark shadow-sm transition-colors">Open workspace</Link>
+          )}
+        </nav>
+      </header>
+    );
+  }
 
   return (
     <>

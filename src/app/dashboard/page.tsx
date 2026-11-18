@@ -83,6 +83,12 @@ export default function DashboardPage() {
   const [aiRecommendations, setAiRecommendations] = useState<AIRecommendationItem[]>([]);
   const [agentActivities, setAgentActivities] = useState<AgentActivityItem[]>([]);
   const [recentActivities, setRecentActivities] = useState<RecentActivityItem[]>([]);
+  const [workspaceName, setWorkspaceName] = useState("PulsePilot Workspace");
+  const [displayName, setDisplayName] = useState("there");
+  const [isDemoData, setIsDemoData] = useState(false);
+  const [flagsmithConnected, setFlagsmithConnected] = useState(false);
+  const [aiCopilotConfigured, setAiCopilotConfigured] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
 
   // Modals & Interaction States
   const [selectedRecommendation, setSelectedRecommendation] = useState<AIRecommendationItem | null>(null);
@@ -96,11 +102,24 @@ export default function DashboardPage() {
     async function fetchDashboard() {
       try {
         setLoading(true);
-        const res = await fetch(`/api/dashboard?range=${selectedRange}`);
+        const [res, profileRes] = await Promise.all([
+          fetch(`/api/dashboard?range=${selectedRange}`, { cache: "no-store" }),
+          fetch("/api/auth/me", { cache: "no-store" }),
+        ]);
         if (!res.ok) throw new Error("Failed to load dashboard data");
         const json = await res.json();
 
+        if (profileRes.ok) {
+          const profile = await profileRes.json();
+          const fullName = profile?.user?.fullName || profile?.user?.email || "";
+          if (fullName) setDisplayName(fullName.trim().split(/\s+/)[0]);
+        }
+        setAiCopilotConfigured(Boolean(json.aiCopilot?.configured));
         setKpis(json.kpis);
+        setWorkspaceName(json.workspace?.name || "PulsePilot Workspace");
+        setIsDemoData(Boolean(json.workspace?.isDemoData));
+        setFlagsmithConnected(Boolean(json.workspace?.flagsmithConnected));
+        setDashboardError(null);
         setChartData(json.performance.data);
         setActiveExperiments(json.activeExperiments);
         setAiRecommendations(json.aiRecommendations);
@@ -108,6 +127,13 @@ export default function DashboardPage() {
         setRecentActivities(json.recentActivities);
       } catch (err) {
         console.error("Dashboard fetch error:", err);
+        setDashboardError("Live telemetry is currently unavailable. No sample figures are being displayed.");
+        setKpis(null);
+        setChartData([]);
+        setActiveExperiments([]);
+        setAiRecommendations([]);
+        setAgentActivities([]);
+        setRecentActivities([]);
       } finally {
         setLoading(false);
       }
@@ -115,17 +141,52 @@ export default function DashboardPage() {
     fetchDashboard();
   }, [selectedRange]);
 
-  // Handle Ask AI interaction
-  const handleAskAISubmit = (e: React.FormEvent) => {
+  // Route copilot prompts through the authenticated server-side agent orchestrator.
+  const handleAskAISubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!aiQuestion.trim()) return;
+    const prompt = aiQuestion.trim();
+    if (!prompt || !aiCopilotConfigured || isAskingAI) return;
+
     setIsAskingAI(true);
-    setTimeout(() => {
-      setIsAskingAI(false);
+    setAiResponse(null);
+    try {
+      const response = await fetch("/api/agent/orchestrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          context: {
+            workspaceName,
+            selectedRange,
+            persistedMetrics: kpis,
+            activeExperiments: activeExperiments.slice(0, 8),
+            flagsmithConnected,
+          },
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.status !== "SUCCESS") {
+        throw new Error(result.error || result.details || "The agent orchestrator could not complete this request.");
+      }
+
+      const output = result.data;
+      const readableOutput =
+        typeof output === "string"
+          ? output
+          : output?.summary || output?.analysis || output?.recommendation
+          ? String(output.summary || output.analysis || output.recommendation)
+          : JSON.stringify(output, null, 2);
+
       setAiResponse(
-        `Based on our current telemetry across 6 active Flagsmith feature flags, your overall conversion rate is up +0.48% (to 4.62%). The primary growth opportunity right now is Variant B on 'exp_checkout_social_proof', which reached 97.4% Bayesian confidence with an expected +18.4% lift. Would you like to review the rollout authorization?`
+        `${result.agentName || "PulsePilot Agent"} · ${result.executionTimeMs ?? "—"} ms\n\n${readableOutput || "The agent returned no response content."}`
       );
-    }, 1200);
+    } catch (error: any) {
+      setAiResponse(
+        `The AI request did not complete. ${error?.message || "Please retry after checking the agent configuration."}\n\nNo fallback answer or sample analysis was substituted.`
+      );
+    } finally {
+      setIsAskingAI(false);
+    }
   };
 
   return (
@@ -140,25 +201,28 @@ export default function DashboardPage() {
               Workspace Overview
             </span>
             <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-surface-muted text-text-secondary border border-border">
-              Interactive Demo Workspace
+              {isDemoData ? "Sample Data" : "Persisted Workspace Data"}
             </span>
           </div>
 
           <h1 className="text-2xl sm:text-3xl font-bold text-text tracking-tight">
-            {greeting}, Sarah
+            {greeting}, {displayName}
           </h1>
 
           <div className="flex flex-wrap items-center gap-3 mt-1.5 text-xs text-text-secondary">
-            <span className="font-semibold text-text">Acme Growth (Production)</span>
+            <span className="font-semibold text-text">{workspaceName}</span>
             <span>•</span>
             <span className="flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5 text-text-muted" />
-              {currentDateFormatted || "Monday, November 9, 2026"}
+              {currentDateFormatted || "Today"}
             </span>
             <span>•</span>
-            <span className="text-success font-medium flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              Flagsmith Sync Healthy
+            <span className={`font-medium flex items-center gap-1 ${flagsmithConnected ? "text-success" : "text-text-secondary"}`}>
+              <span className={`w-2 h-2 rounded-full ${flagsmithConnected ? "bg-success animate-pulse" : "bg-text-muted"}`} />
+              {flagsmithConnected ? "Flagsmith configured" : "Flagsmith status unavailable"}
+            </span>
+            <span className={`font-medium ${aiCopilotConfigured ? "text-success" : "text-amber-700"}`}>
+              {aiCopilotConfigured ? "Gemini AI ready" : "Gemini AI needs setup"}
             </span>
           </div>
         </div>
@@ -167,10 +231,12 @@ export default function DashboardPage() {
         <div className="flex items-center gap-2.5 flex-wrap">
           <button
             onClick={() => setAskAIModalOpen(true)}
-            className="px-3.5 py-2 rounded-md bg-surface border border-border hover:bg-surface-subtle text-text text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors"
+            disabled={!aiCopilotConfigured}
+            title={!aiCopilotConfigured ? "Configure GEMINI_API_KEY in the Preview environment to enable live AI agents." : "Ask the authenticated PulsePilot agent orchestrator"}
+            className="px-3.5 py-2 rounded-md bg-surface border border-border hover:bg-surface-subtle text-text text-xs font-semibold flex items-center gap-2 shadow-xs transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Sparkles className="w-4 h-4 text-primary" />
-            Ask AI Copilot
+            {aiCopilotConfigured ? "Ask AI Copilot" : "AI Copilot setup required"}
           </button>
 
           <Link
@@ -182,6 +248,12 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {dashboardError && (
+        <div role="alert" className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          {dashboardError}
+        </div>
+      )}
+
       {/* ===================================================================== */}
       {/* SECTION 2: KPI CARDS (6 CARDS WITH TOOLTIPS & TRENDS)                 */}
       {/* ===================================================================== */}
@@ -192,10 +264,10 @@ export default function DashboardPage() {
               Core Experimentation Metrics
             </h2>
             <span className="text-[10px] text-text-secondary font-mono">
-              (Sample Workspace Telemetry)
+              (Persisted PostgreSQL telemetry)
             </span>
           </div>
-          <span className="text-xs text-text-secondary">Updated real-time from Flagsmith SDK</span>
+          <span className="text-xs text-text-secondary">Calculated from persisted experiment events</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
@@ -211,11 +283,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight">
-              {kpis?.activeExperiments.value ?? 6}
+              {kpis?.activeExperiments.value ?? 0}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.activeExperiments.change ?? "+2 from last week"}</span>
+              <span>{kpis?.activeExperiments.change ?? "No persisted status data"}</span>
             </div>
           </div>
 
@@ -231,11 +303,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight">
-              {kpis?.totalExposures.displayValue ?? "148.9k"}
+              {kpis?.totalExposures.displayValue ?? "0"}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.totalExposures.change ?? "+14.3% vs 30d"}</span>
+              <span>{kpis?.totalExposures.change ?? "No persisted events"}</span>
             </div>
           </div>
 
@@ -251,11 +323,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight font-mono">
-              {kpis?.overallConversionRate.displayValue ?? "4.62%"}
+              {kpis?.overallConversionRate.displayValue ?? "0.00%"}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.overallConversionRate.change ?? "+0.48% vs baseline"}</span>
+              <span>{kpis?.overallConversionRate.change ?? "No conversion evidence"}</span>
             </div>
           </div>
 
@@ -271,11 +343,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-success tracking-tight font-mono">
-              {kpis?.averageExpectedLift.displayValue ?? "+17.4%"}
+              {kpis?.averageExpectedLift.displayValue ?? "+0.0%"}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-success font-medium">
               <TrendingUp className="w-3 h-3" />
-              <span>{kpis?.averageExpectedLift.change ?? "+3.2% vs Q3"}</span>
+              <span>{kpis?.averageExpectedLift.change ?? "No statistically significant tests"}</span>
             </div>
           </div>
 
@@ -291,11 +363,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-text tracking-tight">
-              {kpis?.successfulExperiments.value ?? 14}
+              {kpis?.successfulExperiments.value ?? 0}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-text-secondary font-medium">
               <CheckCircle2 className="w-3 h-3 text-success" />
-              <span>{kpis?.successfulExperiments.change ?? "77.8% win rate"}</span>
+              <span>{kpis?.successfulExperiments.change ?? "No successful tests recorded"}</span>
             </div>
           </div>
 
@@ -311,11 +383,11 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl font-bold text-primary tracking-tight">
-              {kpis?.featuresReadyForRollout.value ?? 2}
+              {kpis?.featuresReadyForRollout.value ?? 0}
             </div>
             <div className="mt-2 text-[11px] flex items-center gap-1 text-warning font-medium">
               <ShieldCheck className="w-3 h-3 text-warning" />
-              <span>{kpis?.featuresReadyForRollout.change ?? "Requires human review"}</span>
+              <span>{kpis?.featuresReadyForRollout.change ?? "No experiments meet the evidence gate"}</span>
             </div>
           </div>
         </div>
@@ -413,7 +485,7 @@ export default function DashboardPage() {
                           <span>Treatment Rate:</span>
                           <span className="font-mono">{data.treatmentRate}%</span>
                         </div>
-                        <div className="text-[#777D8D] flex justify-between gap-4">
+                        <div className="text-text-secondary flex justify-between gap-4">
                           <span>Control Baseline:</span>
                           <span className="font-mono">{data.controlRate}%</span>
                         </div>
@@ -515,7 +587,7 @@ export default function DashboardPage() {
 
                   <td className="py-3.5 px-4 font-mono text-xs text-text-secondary">
                     <div className="flex items-center gap-1.5">
-                      <Flag className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                      <Flag className="w-3.5 h-3.5 text-primary shrink-0" />
                       <span className="truncate max-w-[150px]">{exp.flagsmithFeature}</span>
                     </div>
                   </td>
@@ -656,7 +728,7 @@ export default function DashboardPage() {
                 className="p-3 rounded-lg bg-surface-subtle/60 border border-border flex items-center justify-between gap-3 text-xs"
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-8 h-8 rounded-md bg-primary-light text-primary flex items-center justify-center flex-shrink-0">
+                  <div className="w-8 h-8 rounded-md bg-primary-light text-primary flex items-center justify-center shrink-0">
                     <Sparkles className="w-4 h-4" />
                   </div>
                   <div className="min-w-0">
@@ -672,7 +744,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                <div className="text-right flex-shrink-0">
+                <div className="text-right shrink-0">
                   <StatusBadge
                     status={agent.status === "awaiting_approval" ? "warning" : "active"}
                     label={agent.status === "awaiting_approval" ? "PENDING HITL" : "ACTIVE"}
@@ -794,17 +866,24 @@ export default function DashboardPage() {
           router.push("/command-center");
         }}
         title="Ask PulsePilot AI Copilot"
-        description="Query your active experiment telemetry, ask for hypothesis ideas, or check statistical significance in plain English."
+        description={aiCopilotConfigured
+          ? "Your prompt is routed to the appropriate authenticated PulsePilot agent, using the selected workspace context."
+          : "Google Gemini is not configured for this Preview deployment. Add GEMINI_API_KEY to enable live AI orchestration."}
         confirmLabel="Open Full Command Center"
         cancelLabel="Done"
       >
         <form onSubmit={handleAskAISubmit} className="space-y-3 mt-3">
+          {!aiCopilotConfigured && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950">
+              Live Gemini agents are disabled until <code>GEMINI_API_KEY</code> is configured in the Preview environment. PulsePilot will not show a canned response as AI output.
+            </div>
+          )}
           <input
             type="text"
             value={aiQuestion}
             onChange={(e) => setAiQuestion(e.target.value)}
             placeholder="e.g. Which experiment has the highest conversion lift?"
-            className="w-full p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-none focus:border-primary"
+            className="w-full p-2.5 text-xs bg-surface-subtle border border-border rounded text-text focus:outline-hidden focus:border-primary"
           />
           <div className="flex justify-end">
             <button

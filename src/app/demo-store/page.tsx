@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import {
@@ -193,8 +193,8 @@ export default function DemoStorePage() {
   const [currentView, setCurrentView] = useState<StoreView>("CATALOG");
   const [selectedProduct, setSelectedProduct] = useState<Product>(PRODUCTS[0]);
 
-  // Active Experiment Flag Name (Supports exp_checkout_layout_v2 and query param override)
-  const [activeFlag, setActiveFlag] = useState<string>("exp_checkout_layout_v2");
+  // Active Experiment Flag Name (Supports exp_pulsepilot_judge_checkout_v1 and query param override)
+  const [activeFlag, setActiveFlag] = useState<string>("exp_pulsepilot_judge_checkout_v1");
 
   // Shopping Cart State
   const [cart, setCart] = useState<CartItem[]>([
@@ -245,17 +245,22 @@ export default function DemoStorePage() {
   });
 
   // Mode: Distinguishes Live Flagsmith Edge from Sandbox Mock Mode
-  const [evaluationSource, setEvaluationSource] = useState<string>("flagsmith_remote_api");
+  const [evaluationSource, setEvaluationSource] = useState<string>("loading");
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
 
   // Telemetry Tracking State
   const [exposureLogged, setExposureLogged] = useState(false);
+  const [isTrackingExposure, setIsTrackingExposure] = useState(false);
+  const exposureRequestStarted = useRef(false);
   const [conversionLogged, setConversionLogged] = useState(false);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [orderFeedback, setOrderFeedback] = useState<string | null>(null);
   const [lastOrderDetails, setLastOrderDetails] = useState<{
     orderId: string;
     total: number;
     itemsCount: number;
     variantUsed: string;
+    experimentFlag: string;
     userId: string;
     timestamp: string;
   } | null>(null);
@@ -278,7 +283,7 @@ export default function DemoStorePage() {
 
   // Traffic Simulator State
   const [simulatorEnabled, setSimulatorEnabled] = useState(true);
-  const [simulatorCount, setSimulatorCount] = useState<number>(25);
+  const [simulatorCount, setSimulatorCount] = useState<number>(20);
   const [simulatorScenario, setSimulatorScenario] = useState<"SINGLE_PAGE_WINS" | "EXPRESS_WINS" | "FLAT">("SINGLE_PAGE_WINS");
   const [isSimulating, setIsSimulating] = useState(false);
   const [simProgress, setSimProgress] = useState(0);
@@ -288,23 +293,22 @@ export default function DemoStorePage() {
     conversions: number;
     lift: number;
   } | null>(null);
+  const [simError, setSimError] = useState<string | null>(null);
 
   // 1. Evaluate Flag on Identity Change (Checks active experiment in Flagsmith)
   const evaluateFlagsmith = async (identity: string) => {
     setIsEvaluating(true);
+    setEvaluationSource("loading");
+    setEvaluationError(null);
+    setExposureLogged(false);
+    setOrderFeedback(null);
     try {
-      const res = await fetch(`/api/flagsmith/evaluate?flag=${encodeURIComponent(activeFlag)}&identity=${encodeURIComponent(identity)}`);
-      let data = await res.json();
-
-      // If activeFlag is not found, fallback to checkout_experience
-      if (!data.value && activeFlag !== "checkout_experience") {
-        const fallbackRes = await fetch(`/api/flagsmith/evaluate?flag=checkout_experience&identity=${encodeURIComponent(identity)}`);
-        if (fallbackRes.ok) {
-          const fallbackData = await fallbackRes.json();
-          if (fallbackData.value) {
-            data = fallbackData;
-          }
-        }
+      const res = await fetch(`/api/flagsmith/evaluate?flag=${encodeURIComponent(activeFlag)}&identity=${encodeURIComponent(identity)}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || data.error || !data.value) {
+        throw new Error(data.message || data.error || `Flagsmith did not return a value for '${activeFlag}'.`);
       }
 
       let parsedValue: any = {};
@@ -314,10 +318,15 @@ export default function DemoStorePage() {
         parsedValue = {};
       }
 
+      // Render the actual Flagsmith-evaluated remote value first. A generic
+      // option key named "treatment" is not enough to infer a UI variant.
+      const remoteLayout = typeof parsedValue === "string"
+        ? parsedValue
+        : parsedValue?.layout;
       const layout =
-        parsedValue?.layout === "single_page" || data.variantKey === "variant_single_page" || data.variantKey === "treatment"
+        remoteLayout === "single_page" || data.variantKey === "variant_single_page"
           ? "single_page"
-          : parsedValue?.layout === "express" || data.variantKey === "variant_express"
+          : remoteLayout === "express" || data.variantKey === "variant_express"
           ? "express"
           : "multi_step";
 
@@ -337,6 +346,9 @@ export default function DemoStorePage() {
 
       if (data.source) {
         setEvaluationSource(data.source);
+      } else {
+        setEvaluationSource("error");
+        throw new Error("The feature evaluation response did not identify its source.");
       }
 
       if (Array.isArray(data.traits) && data.traits.length > 0) {
@@ -348,8 +360,11 @@ export default function DemoStorePage() {
 
       // Reset step
       setMultiStepIndex(1);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Flagsmith evaluation failed:", err);
+      setEvaluationSource("error");
+      setEvaluationError(err?.message || "Flagsmith feature evaluation failed.");
+      setExposureLogged(false);
     } finally {
       setIsEvaluating(false);
     }
@@ -407,6 +422,8 @@ export default function DemoStorePage() {
     setDistinctUserId(userId);
     setExposureLogged(false);
     setConversionLogged(false);
+    setEvaluationError(null);
+    setOrderFeedback(null);
     if (userId === "user_alex_dev") {
       setShippingForm((prev) => ({
         ...prev,
@@ -427,30 +444,68 @@ export default function DemoStorePage() {
     evaluateFlagsmith(distinctUserId);
   }, [distinctUserId, activeFlag]);
 
-  // 2. Record Exposure when entering Checkout
+  // 2. Persist the first-touch exposure before enabling conversion recording.
   useEffect(() => {
-    if (currentView === "CHECKOUT" && !exposureLogged) {
-      fetch("/api/telemetry/track", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          experimentFlag: activeFlag,
-          distinctUserId,
-          eventType: "experiment_exposure",
-          variantKey: evaluatedVariant.variantKey,
-          properties: {
-            cartItems: cart.length,
-            cartSubtotal: calculateSubtotal(),
-            assignedLayout: evaluatedVariant.layout,
-            isSynthetic: false,
-            traits: identityTraits,
-            segments: identitySegments,
-          },
-        }),
-      }).catch((e) => console.warn("Exposure tracking error:", e));
-      setExposureLogged(true);
+    if (
+      currentView !== "CHECKOUT" ||
+      exposureLogged ||
+      exposureRequestStarted.current ||
+      isEvaluating ||
+      evaluationSource !== "flagsmith_remote_api" ||
+      evaluationError
+    ) {
+      return;
     }
-  }, [currentView, distinctUserId, evaluatedVariant.variantKey, exposureLogged, activeFlag]);
+
+    exposureRequestStarted.current = true;
+    setIsTrackingExposure(true);
+
+    const trackExposure = async () => {
+      try {
+        const response = await fetch("/api/telemetry/track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            experimentFlag: activeFlag,
+            distinctUserId,
+            eventType: "experiment_exposure",
+            variantKey: evaluatedVariant.variantKey,
+            properties: {
+              cartItems: cart.length,
+              cartSubtotal: calculateSubtotal(),
+              assignedLayout: evaluatedVariant.layout,
+              traits: identityTraits,
+              segments: identitySegments,
+            },
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || result.error || "Exposure could not be persisted.");
+        }
+        setExposureLogged(true);
+        setOrderFeedback(null);
+      } catch (error: any) {
+        console.warn("Exposure tracking failed:", error);
+        setOrderFeedback(`Checkout is blocked because the exposure was not recorded: ${error?.message || "telemetry unavailable"}`);
+      } finally {
+        exposureRequestStarted.current = false;
+        setIsTrackingExposure(false);
+      }
+    };
+
+    void trackExposure();
+  }, [
+    currentView,
+    distinctUserId,
+    evaluatedVariant.variantKey,
+    evaluatedVariant.layout,
+    exposureLogged,
+    activeFlag,
+    isEvaluating,
+    evaluationSource,
+    evaluationError,
+  ]);
 
   // Calculations
   const calculateSubtotal = () =>
@@ -493,49 +548,56 @@ export default function DemoStorePage() {
     setCart((prev) => prev.filter((item) => item.product.id !== productId));
   };
 
-  // 3. Complete Checkout (Record Conversion with EXACT SAME Identity)
+  // 3. Simulate checkout completion only after the exposure is persisted.
   const handleCompleteOrder = async () => {
+    if (!exposureLogged || isTrackingExposure || evaluationSource !== "flagsmith_remote_api") {
+      setOrderFeedback("Checkout is unavailable until a live Flagsmith assignment and persisted exposure are confirmed.");
+      return;
+    }
+
     setIsSubmittingOrder(true);
+    setOrderFeedback(null);
     try {
       const orderId = `ORD-${Math.floor(100000 + Math.random() * 900000)}`;
-
-      // Send conversion telemetry to Flagsmith with IDENTICAL distinctUserId
       const res = await fetch("/api/telemetry/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           experimentFlag: activeFlag,
-          distinctUserId, // CRITICAL: Must match exposure distinctUserId
+          distinctUserId,
           eventType: "checkout_completed",
           variantKey: evaluatedVariant.variantKey,
           metricKey: "checkout_completed",
           properties: {
             orderId,
             revenue: calculateTotal(),
-            itemsCount: cart.reduce((c, i) => c + i.quantity, 0),
+            itemsCount: cart.reduce((sum, item) => sum + item.quantity, 0),
             variantLayout: evaluatedVariant.layout,
-            isSynthetic: false,
             traits: identityTraits,
             segments: identitySegments,
           },
         }),
       });
-
-      if (res.ok) {
-        setConversionLogged(true);
-        setLastOrderDetails({
-          orderId,
-          total: calculateTotal(),
-          itemsCount: cart.reduce((c, i) => c + i.quantity, 0),
-          variantUsed: evaluatedVariant.variantName,
-          userId: distinctUserId,
-          timestamp: new Date().toLocaleTimeString(),
-        });
-        setCart([]); // Clear cart
-        setCurrentView("CONFIRMATION");
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        throw new Error(result.message || result.error || "Conversion telemetry was not persisted.");
       }
-    } catch (err) {
-      console.error("Order completion failed:", err);
+
+      setConversionLogged(true);
+      setLastOrderDetails({
+        orderId,
+        total: calculateTotal(),
+        itemsCount: cart.reduce((sum, item) => sum + item.quantity, 0),
+        variantUsed: evaluatedVariant.variantName,
+        experimentFlag: activeFlag,
+        userId: distinctUserId,
+        timestamp: new Date().toLocaleTimeString(),
+      });
+      setCart([]);
+      setCurrentView("CONFIRMATION");
+    } catch (error: any) {
+      console.error("Order completion failed:", error);
+      setOrderFeedback(error?.message || "Checkout telemetry could not be saved. No order confirmation was generated.");
     } finally {
       setIsSubmittingOrder(false);
     }
@@ -545,6 +607,7 @@ export default function DemoStorePage() {
   const handleRunSimulation = async () => {
     if (!simulatorEnabled) return;
     setIsSimulating(true);
+    setSimError(null);
     setSimProgress(10);
 
     try {
@@ -571,11 +634,14 @@ export default function DemoStorePage() {
           totalSimulated: data.result.syntheticVisitorsGenerated,
           exposures: data.result.exposures,
           conversions: data.result.conversions,
-          lift: simulatorScenario === "SINGLE_PAGE_WINS" ? 20.3 : simulatorScenario === "EXPRESS_WINS" ? 14.5 : 0.8,
+          lift: data.result.observedLiftPercent ?? 0,
         });
+      } else {
+        setSimError(data.message || data.error || "Synthetic traffic could not be generated.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Simulation failed:", err);
+      setSimError(err?.message || "Synthetic traffic could not be generated.");
     } finally {
       setTimeout(() => setIsSimulating(false), 500);
     }
@@ -608,7 +674,7 @@ export default function DemoStorePage() {
               )}
             </button>
             <Link
-              href="/analytics"
+              href="/demo-results"
               className="px-3 py-1.5 rounded-md bg-primary hover:bg-primary-dark text-white text-xs font-semibold flex items-center gap-1.5 shadow-xs transition-colors"
             >
               <BarChart3 className="w-3.5 h-3.5" /> View Experiment Intelligence
@@ -617,8 +683,24 @@ export default function DemoStorePage() {
         }
       />
 
+      <div className="rounded-lg border border-border bg-surface-subtle px-3 py-2 text-xs text-text-secondary">
+        Demo checkout only: purchase buttons record experiment telemetry. No payment is processed and no card is charged.
+      </div>
+
+      {(evaluationError || orderFeedback) && (
+        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+          {evaluationError || orderFeedback}
+        </div>
+      )}
+
+      {isTrackingExposure && currentView === "CHECKOUT" && (
+        <div className="rounded-lg border border-border bg-surface px-3 py-2 text-xs text-text-secondary">
+          Recording the visitor's first-touch exposure before enabling checkout…
+        </div>
+      )}
+
       {/* IDENTITY TARGETING & FLAGSMITH TRAITS PANEL */}
-      <div className="p-4 rounded-xl border border-violet-200 bg-gradient-to-br from-white via-violet-50/20 to-white shadow-xs space-y-3.5">
+      <div className="p-4 rounded-xl border border-violet-200 bg-linear-to-br from-white via-violet-50/20 to-white shadow-xs space-y-3.5">
         {/* Header Row */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-violet-100">
           <div className="flex items-center gap-2.5">
@@ -719,21 +801,9 @@ export default function DemoStorePage() {
               >
                 <option value="user_alex_dev">user_alex_dev (Alex)</option>
                 <option value="user_elena_ai">user_elena_ai (Elena)</option>
-                <option value="user_control_1">user_control_1 (QA Control)</option>
-                <option value="user_sarah_prod">user_sarah_prod (QA Treatment)</option>
-                <option value="user_david_lead">user_david_lead (QA Lead)</option>
               </select>
 
-              <button
-                onClick={() => {
-                  const randomId = `visitor_${Math.random().toString(36).slice(2, 8)}`;
-                  handleSelectIdentity(randomId);
-                }}
-                className="p-1 rounded border border-border bg-white hover:bg-surface-subtle text-text-secondary shrink-0"
-                title="Generate Random Visitor ID"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isEvaluating ? "animate-spin" : ""}`} />
-              </button>
+
             </div>
           </div>
 
@@ -870,7 +940,7 @@ export default function DemoStorePage() {
                 </span>
               </div>
               <p className="text-[11px] text-text-secondary">
-                Generate batches of realistic visitors, stream Flagsmith exposures, and trigger conversions.
+                Generate labelled synthetic identities evaluated by live Flagsmith. Events are persisted for QA but excluded from real scorecards and release gates.
               </p>
             </div>
           </div>
@@ -911,9 +981,9 @@ export default function DemoStorePage() {
                 onChange={(e) => setSimulatorScenario(e.target.value as any)}
                 className="w-full mt-1 p-1.5 rounded bg-surface-subtle border border-border text-text text-xs font-semibold"
               >
-                <option value="SINGLE_PAGE_WINS">Variant A (Single-Page) Wins (+20% Lift)</option>
-                <option value="EXPRESS_WINS">Variant B (Express) Wins (+15% Lift)</option>
-                <option value="FLAT">Neutral Flat Baseline (0% Lift)</option>
+                <option value="SINGLE_PAGE_WINS">Single-Page wins (synthetic scenario)</option>
+                <option value="EXPRESS_WINS">Express wins (synthetic scenario)</option>
+                <option value="FLAT">Neutral baseline (synthetic scenario)</option>
               </select>
             </div>
 
@@ -946,6 +1016,12 @@ export default function DemoStorePage() {
           </div>
         )}
 
+        {simError && (
+          <div role="alert" className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            {simError}
+          </div>
+        )}
+
         {simResults && !isSimulating && (
           <div className="p-2.5 rounded bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -956,7 +1032,7 @@ export default function DemoStorePage() {
               </span>
             </div>
             <span className="font-mono font-bold text-amber-800">
-              +{simResults.lift}% Lift Attributed
+              +{simResults.lift}% Synthetic uplift (not measured)
             </span>
           </div>
         )}
@@ -968,7 +1044,7 @@ export default function DemoStorePage() {
       {currentView === "CATALOG" && (
         <div className="space-y-6">
           {/* Hero Banner */}
-          <div className="p-8 rounded-2xl bg-gradient-to-r from-violet-700 via-purple-700 to-indigo-800 text-white shadow-md relative overflow-hidden">
+          <div className="p-8 rounded-2xl bg-linear-to-r from-violet-700 via-purple-700 to-indigo-800 text-white shadow-md relative overflow-hidden">
             <div className="relative z-10 max-w-xl space-y-2">
               <span className="text-xs uppercase tracking-wider font-mono px-2.5 py-0.5 rounded-full bg-white/20 text-white">
                 Developer & AI Workstation Gear
@@ -1526,7 +1602,7 @@ export default function DemoStorePage() {
                     </button>
                     <button
                       onClick={handleCompleteOrder}
-                      disabled={isSubmittingOrder}
+                      disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                       className="w-2/3 py-3 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2"
                     >
                       <Lock className="w-3.5 h-3.5" />
@@ -1648,7 +1724,7 @@ export default function DemoStorePage() {
 
                   <button
                     onClick={handleCompleteOrder}
-                    disabled={isSubmittingOrder}
+                    disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                     className="w-full py-3 rounded-lg bg-primary hover:bg-primary-dark text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-xs transition-colors"
                   >
                     <Lock className="w-3.5 h-3.5" />
@@ -1678,7 +1754,7 @@ export default function DemoStorePage() {
               <div className="space-y-2">
                 <button
                   onClick={handleCompleteOrder}
-                  disabled={isSubmittingOrder}
+                  disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                   className="w-full py-3 rounded-lg bg-black hover:bg-zinc-800 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-colors"
                 >
                   <CreditCard className="w-4 h-4" />
@@ -1687,7 +1763,7 @@ export default function DemoStorePage() {
 
                 <button
                   onClick={handleCompleteOrder}
-                  disabled={isSubmittingOrder}
+                  disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                   className="w-full py-3 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-colors"
                 >
                   <Zap className="w-4 h-4 text-amber-400" />
@@ -1722,7 +1798,7 @@ export default function DemoStorePage() {
 
                 <button
                   onClick={handleCompleteOrder}
-                  disabled={isSubmittingOrder}
+                  disabled={isSubmittingOrder || isTrackingExposure || !exposureLogged || evaluationSource !== "flagsmith_remote_api"}
                   className="w-full py-2.5 mt-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
                 >
                   <Check className="w-3.5 h-3.5" />
@@ -1745,7 +1821,7 @@ export default function DemoStorePage() {
 
           <div className="space-y-1">
             <span className="text-[11px] font-mono uppercase px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold">
-              Conversion Event Recorded in Flagsmith
+              Conversion Event Persisted & Attributed
             </span>
             <h2 className="text-2xl font-bold text-text tracking-tight mt-1">
               Thank You for Your Order!
@@ -1763,7 +1839,7 @@ export default function DemoStorePage() {
             <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
               <div>
                 <span className="text-text-muted block text-[10px]">Experiment Flag:</span>
-                <span className="text-text font-bold">checkout_experience</span>
+                <span className="text-text font-bold">{lastOrderDetails.experimentFlag}</span>
               </div>
               <div>
                 <span className="text-text-muted block text-[10px]">Assigned Variant:</span>
@@ -1791,10 +1867,10 @@ export default function DemoStorePage() {
               Back to Demo Store
             </button>
             <Link
-              href="/analytics"
+              href="/demo-results"
               className="px-4 py-2 rounded-md bg-primary hover:bg-primary-dark text-white font-bold text-xs flex items-center gap-1.5 transition-colors shadow-xs"
             >
-              <BarChart3 className="w-3.5 h-3.5" /> Inspect Experiment Analytics & Lift
+              <BarChart3 className="w-3.5 h-3.5" /> Inspect Live Experiment Results
             </Link>
           </div>
         </div>

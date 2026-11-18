@@ -8,6 +8,7 @@ import crypto from "crypto";
 
 export interface AuditRecord {
   id: string;
+  organizationId?: string;
   timestamp: string;
   signature?: string;
   previousSignature?: string;
@@ -111,7 +112,7 @@ if (!globalAuditStore.auditLogsStore) {
       entityType: "EXPERIMENT",
       entityId: "exp_pricing_annual_default",
       details: "Synthesized experiment specification from natural language growth intent.",
-      metadata: { model: "gemini-2.5-flash", tokens: 580 },
+      metadata: { model: "gemini-3.8-flash", tokens: 580 },
     },
     {
       id: "audit-2",
@@ -239,9 +240,11 @@ export async function recordAuditLog(
                 sequenceNumber,
               };
 
-              const org = await tx.organization.findFirst();
+              const org = record.organizationId
+                ? await tx.organization.findUnique({ where: { id: record.organizationId } })
+                : await tx.organization.findFirst();
               if (!org) {
-                throw new Error("Cannot persist audit log: No organization found in database.");
+                throw new Error("Cannot persist audit log: The target organization does not exist.");
               }
 
               // 3. Insert record within the same transaction
@@ -322,13 +325,14 @@ export function getAuditLogs(): AuditRecord[] {
 /**
  * Returns latest audit logs from PostgreSQL if configured, falling back to memory.
  */
-export async function getPersistedAuditLogs(): Promise<AuditRecord[]> {
+export async function getPersistedAuditLogs(organizationId?: string): Promise<AuditRecord[]> {
   const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
 
   if (isDbConfigured) {
     try {
       const prisma = await getPrisma();
       const dbLogs = await prisma.auditLog.findMany({
+        where: organizationId ? { organizationId } : undefined,
         orderBy: [{ sequenceNumber: "desc" }, { createdAt: "desc" }],
       });
 
@@ -357,7 +361,9 @@ export async function getPersistedAuditLogs(): Promise<AuditRecord[]> {
     }
   }
 
-  return [...auditLogsStore];
+  return organizationId
+    ? auditLogsStore.filter((log) => log.organizationId === organizationId)
+    : [...auditLogsStore];
 }
 
 export interface AuditIntegrityReport {

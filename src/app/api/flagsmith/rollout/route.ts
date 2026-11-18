@@ -2,39 +2,280 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { flagsmithMockStore } from "@/lib/flagsmith/flagsmith-mock";
 import {
+  getLiveRemoteFeatureState,
+  getManagementAuthHeader,
   rolloutFlagsmithWinner,
   updateFlagsmithCanaryStage,
   triggerFlagsmithKillSwitch,
   rollbackFlagsmithToControl,
-  getLiveRemoteFeatureState,
 } from "@/lib/flagsmith/flagsmith-admin";
 import { recordAuditLog } from "@/lib/audit/audit-logger";
 import { checkProductionRolloutGuard } from "@/lib/flagsmith/production-guards";
+import { prisma } from "@/lib/db/prisma";
+import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
+import { compareVariants } from "@/lib/analytics/stats";
 
 const RolloutRequestSchema = z.object({
   flagsmithFeatureName: z.string().min(1),
   action: z.enum(["ROLLOUT_WINNER", "GRADUAL_STAGE", "ROLLBACK_TO_CONTROL", "EMERGENCY_KILL_SWITCH"]),
   winningVariantKey: z.string().optional(),
   stagePercentage: z.number().min(0).max(100).optional(),
-  authorizer: z.string().default("Sarah Lin (Product Lead)"),
-  rationale: z.string().optional(),
+  rationale: z.string().trim().max(2000).optional(),
 });
 
 function hasFlagsmithRemoteCredentials(): boolean {
-  const orgToken =
-    process.env.FLAGSMITH_ORG_API_TOKEN ||
-    process.env.FLAGSMITH_ADMIN_TOKEN ||
-    process.env.FLAGSMITH_MANAGEMENT_KEY;
-  const serverKey = process.env.FLAGSMITH_SERVER_SIDE_API_KEY;
-  return Boolean((orgToken && orgToken !== "mock") || (serverKey && serverKey !== "mock"));
+  return Boolean(getManagementAuthHeader().Authorization);
+}
+
+function normaliseFeatureValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+async function syncExperimentAllocations(
+  featureName: string,
+  allocation: { variants: Array<{ value: string; percentageAllocation: number }>; defaultValue?: string | null },
+  finalStatus?: "CONCLUDED_ROLLED_OUT" | "CONCLUDED_ROLLED_BACK"
+) {
+  const experiment = await prisma.experiment.findUnique({
+    where: { flagsmithFeatureName: featureName },
+    include: { variants: true },
+  });
+  if (!experiment) return;
+
+  const defaultValue = allocation.defaultValue == null ? null : String(allocation.defaultValue);
+  await prisma.$transaction(async (tx) => {
+    for (const variant of experiment.variants) {
+        const configuredValue = normaliseFeatureValue(variant.featureValue);
+      const matchingOption = allocation.variants.find((item: any) =>
+        item.key === variant.key || item.value === configuredValue
+      );
+      const isDefault = defaultValue !== null && (
+        defaultValue === configuredValue ||
+        defaultValue === variant.key ||
+        (variant.isControl && (defaultValue === "control" || defaultValue === ""))
+      );
+      const percentage = matchingOption?.percentageAllocation ?? (isDefault ? 100 : 0);
+      await tx.experimentVariant.update({
+        where: { id: variant.id },
+        data: { trafficAllocation: Math.max(0, Math.min(100, Math.round(percentage))) },
+      });
+    }
+    if (finalStatus) {
+      await tx.experiment.update({
+        where: { id: experiment.id },
+        data: { status: finalStatus },
+      });
+    }
+  });
+}
+
+async function getWorkspaceExperiment(featureName: string, organizationId: string) {
+  return prisma.experiment.findFirst({
+    where: {
+      flagsmithFeatureName: featureName,
+      project: { organizationId },
+    },
+    include: { variants: true },
+  });
+}
+
+async function getPersistedRolloutEvidence(experimentId: string, sampleSizeTarget: number) {
+  const [exposureEvents, conversionEvents] = await Promise.all([
+    prisma.telemetryEvent.findMany({
+      where: { experimentId, eventType: "EXPOSURE" },
+      select: { distinctUserId: true, variantId: true, properties: true, timestamp: true },
+      orderBy: { timestamp: "asc" },
+    }),
+    prisma.telemetryEvent.findMany({
+      where: { experimentId, eventType: "CONVERSION" },
+      select: { distinctUserId: true, metricKey: true, properties: true },
+    }),
+  ]);
+
+  const realExposures = exposureEvents.filter((event: any) => event.properties?.isSynthetic !== true);
+  const realConversions = conversionEvents.filter((event: any) => event.properties?.isSynthetic !== true);
+  const assignment = new Map<string, string>();
+  const exposureUsersByVariant = new Map<string, Set<string>>();
+  for (const event of realExposures) {
+    const previous = assignment.get(event.distinctUserId);
+    if (!previous) assignment.set(event.distinctUserId, event.variantId);
+    if (!exposureUsersByVariant.has(event.variantId)) exposureUsersByVariant.set(event.variantId, new Set());
+    exposureUsersByVariant.get(event.variantId)!.add(event.distinctUserId);
+  }
+
+  const convertedUsersByVariant = new Map<string, Set<string>>();
+  for (const event of realConversions) {
+    const variantId = assignment.get(event.distinctUserId);
+    if (!variantId) continue;
+    if (!convertedUsersByVariant.has(variantId)) convertedUsersByVariant.set(variantId, new Set());
+    convertedUsersByVariant.get(variantId)!.add(event.distinctUserId);
+  }
+
+  const totalExposures = [...exposureUsersByVariant.values()].reduce((sum, users) => sum + users.size, 0);
+  return {
+    totalExposures,
+    sampleSizeTarget,
+    exposureUsersByVariant,
+    convertedUsersByVariant,
+    guardrailMetricKeys: [...new Set(realConversions.map((event: any) => event.metricKey).filter(Boolean))] as string[],
+  };
+}
+
+function getRolloutEvidenceBlockers(experiment: any, evidence: Awaited<ReturnType<typeof getPersistedRolloutEvidence>>, winningVariantKey: string) {
+  const blockers: string[] = [];
+  const variants = experiment.variants || [];
+  const control = variants.find((variant: any) => variant.isControl);
+  const treatment = variants.find((variant: any) => variant.key === winningVariantKey);
+
+  if (!control) blockers.push("A configured control variant is required.");
+  if (!treatment || treatment.isControl) blockers.push("The requested winner must be a configured treatment variant.");
+  if (variants.length !== 2) blockers.push("The release gate currently requires a two-arm control/treatment experiment so its allocation and SRM checks are unambiguous.");
+
+  if (evidence.totalExposures < evidence.sampleSizeTarget) {
+    blockers.push(`Insufficient real exposure sample: ${evidence.totalExposures}/${evidence.sampleSizeTarget}.`);
+  }
+
+  if (control && treatment) {
+    const controlExposureCount = evidence.exposureUsersByVariant.get(control.id)?.size || 0;
+    const treatmentExposureCount = evidence.exposureUsersByVariant.get(treatment.id)?.size || 0;
+    const controlConversions = evidence.convertedUsersByVariant.get(control.id)?.size || 0;
+    const treatmentConversions = evidence.convertedUsersByVariant.get(treatment.id)?.size || 0;
+
+    if (controlExposureCount === 0 || treatmentExposureCount === 0) {
+      blockers.push("Both control and treatment require real exposure events.");
+    } else {
+      const result = compareVariants(
+        { key: control.key, name: control.name, isControl: true, exposures: controlExposureCount, conversions: controlConversions },
+        { key: treatment.key, name: treatment.name, isControl: false, exposures: treatmentExposureCount, conversions: treatmentConversions },
+        [Number(control.trafficAllocation || 0), Number(treatment.trafficAllocation || 0)]
+      );
+      if (!result.isSignificant || result.pValue > 0.05) {
+        blockers.push(`The primary metric is not statistically significant (p=${result.pValue.toFixed(4)}; required p<=0.05).`);
+      }
+      if (result.bayesianProbabilityToBeatControl < 0.95) {
+        blockers.push(`Bayesian win probability is ${(result.bayesianProbabilityToBeatControl * 100).toFixed(1)}% (required >=95%).`);
+      }
+      if (result.sampleRatioMismatch.srmDetected) {
+        blockers.push(`Sample-ratio mismatch detected (p=${result.sampleRatioMismatch.pValue.toFixed(4)}).`);
+      }
+      if (result.relativeUpliftPercent <= 0) {
+        blockers.push("The treatment does not currently show positive conversion uplift.");
+      }
+    }
+  }
+
+  // Guardrail names alone are not measurable thresholds. Do not claim they
+  // have passed until metric thresholds and corresponding persisted event data
+  // are both configured for this experiment.
+  if (!Array.isArray(experiment.guardrailMetrics) || experiment.guardrailMetrics.length === 0) {
+    blockers.push("No operational guardrail metrics are configured for this experiment.");
+  } else {
+    const missing = experiment.guardrailMetrics.filter((metric: string) =>
+      !evidence.guardrailMetricKeys.includes(metric)
+    );
+    if (missing.length > 0) {
+      blockers.push(`Missing persisted operational guardrail telemetry: ${missing.join(", ")}.`);
+    }
+    blockers.push("Guardrail thresholds are not stored in the experiment configuration, so guardrail safety cannot be certified.");
+  }
+
+  return blockers;
+}
+
+function optionValue(item: any): string {
+  const option = item?.multivariate_feature_option || {};
+  return String(option.string_value ?? option.value ?? "");
+}
+
+function optionKey(item: any): string | null {
+  const option = item?.multivariate_feature_option || {};
+  const key = option.key;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
+function allocationSnapshot(state: any) {
+  const options = Array.isArray(state?.multivariate_feature_state_values)
+    ? state.multivariate_feature_state_values
+    : [];
+  const variants = options.map((item: any) => ({
+    key: optionKey(item),
+    value: optionValue(item),
+    percentageAllocation: Number(item.percentage_allocation ?? 0),
+  }));
+  const allocated = variants.reduce((sum: number, item: any) => sum + item.percentageAllocation, 0);
+
+  return {
+    variants,
+    defaultValue: state?.feature_state_value ?? null,
+    defaultAllocationPercent: Math.max(0, 100 - allocated),
+    totalAllocationPercent: allocated + Math.max(0, 100 - allocated),
+  };
+}
+
+function serialiseFeatureValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+async function resolveVariantValue(featureName: string, variantKey: string, state: any): Promise<string> {
+  const direct = (state?.multivariate_feature_state_values || []).find(
+    (item: any) => optionKey(item) === variantKey || optionValue(item) === variantKey
+  );
+  if (direct) return optionValue(direct) || variantKey;
+
+  // The UI speaks in experiment variant keys; Flagsmith stores the variant's
+  // configured value. Resolve the key through the experiment record.
+  const experiment = await prisma.experiment.findUnique({
+    where: { flagsmithFeatureName: featureName },
+    include: { variants: true },
+  });
+  const variant = experiment?.variants.find((item) => item.key === variantKey);
+  if (!variant) {
+    throw new Error(`Variant '${variantKey}' is not configured for feature '${featureName}'.`);
+  }
+
+  const configuredValue = serialiseFeatureValue(variant.featureValue);
+  const exists = (state?.multivariate_feature_state_values || []).some(
+    (item: any) => optionKey(item) === variantKey || optionValue(item) === configuredValue
+  );
+  if (!exists) {
+    throw new Error(`Variant '${variantKey}' has no matching option in the live Flagsmith feature.`);
+  }
+  return configuredValue;
+}
+
+async function resolveControlValue(featureName: string, state: any): Promise<string> {
+  const experiment = await prisma.experiment.findUnique({
+    where: { flagsmithFeatureName: featureName },
+    include: { variants: true },
+  });
+  const control = experiment?.variants.find((item) => item.isControl);
+  // The live default value in Flagsmith is the control baseline. Prefer it to
+  // the application JSON because the option's value may be a compact string key.
+  if (state?.feature_state_value !== undefined && state?.feature_state_value !== null) {
+    return typeof state.feature_state_value === "string"
+      ? state.feature_state_value
+      : serialiseFeatureValue(state.feature_state_value);
+  }
+  if (control) return serialiseFeatureValue(control.featureValue);
+  return "control";
 }
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url);
-    const featureName = searchParams.get("featureName") || "exp_checkout_social_proof";
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ success: false, error: "Authentication required." }, { status: 401 });
+    }
 
-    // Attempt live remote lookup if remote credentials configured
+    const { searchParams } = new URL(request.url);
+    const featureName = searchParams.get("featureName") || "exp_checkout_layout_v2";
+    const workspaceExperiment = await getWorkspaceExperiment(featureName, user.organizationId);
+    if (!workspaceExperiment) {
+      return NextResponse.json({ success: false, error: "EXPERIMENT_NOT_FOUND_IN_WORKSPACE" }, { status: 404 });
+    }
+
     if (hasFlagsmithRemoteCredentials()) {
       const remote = await getLiveRemoteFeatureState(featureName);
       if (remote.success && remote.state) {
@@ -43,16 +284,30 @@ export async function GET(request: Request) {
           source: "flagsmith_remote_api",
           flag: {
             id: remote.state.id,
+            featureId: remote.state.feature?.id ?? null,
             name: remote.state.feature?.name || featureName,
             enabled: remote.state.enabled,
             value: remote.state.feature_state_value,
-            multivariateOptions: remote.state.multivariate_feature_state_values || [],
+            ...allocationSnapshot(remote.state),
           },
         });
       }
+
+      return NextResponse.json({
+        success: false,
+        source: "flagsmith_remote_api",
+        error: remote.error || "Unable to retrieve live Flagsmith feature state.",
+      }, { status: 502 });
     }
 
-    // Fallback to local store
+    if (process.env.NODE_ENV === "production" || process.env.VERCEL === "1") {
+      return NextResponse.json({
+        success: false,
+        source: "flagsmith_management_api",
+        error: "Remote Flagsmith Management API credentials are not configured for this deployment. Local mock data is not accepted as live state.",
+      }, { status: 503 });
+    }
+
     const flag = flagsmithMockStore.getFlag(featureName);
     if (!flag) {
       return NextResponse.json({ success: false, error: "Feature flag not found" }, { status: 404 });
@@ -60,293 +315,337 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       success: true,
-      source: "local_cache",
+      source: "local_mock",
       flag: {
         name: flag.name,
         enabled: flag.enabled,
         value: flag.value,
         type: flag.type,
-        multivariateOptions: flag.multivariateOptions,
+        variants: flag.multivariateOptions.map((item) => ({
+          value: item.value,
+          percentageAllocation: item.trafficAllocation,
+        })),
       },
     });
   } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    return NextResponse.json({ success: false, error: error?.message || "Flag lookup failed." }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const req = RolloutRequestSchema.parse(body);
-    const isRemoteConfigured = hasFlagsmithRemoteCredentials();
-    const rolloutGuard = checkProductionRolloutGuard(isRemoteConfigured);
-
-    if (!rolloutGuard.allowed) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: rolloutGuard.error,
-          code: rolloutGuard.code,
-          isConfigError: true,
-        },
-        { status: rolloutGuard.statusCode || 503 }
-      );
+    const user = await getAuthenticatedApplicationUser(request);
+    if (!user) {
+      return NextResponse.json({ success: false, error: "Authentication required." }, { status: 401 });
+    }
+    if (user.role !== "ADMIN") {
+      return NextResponse.json({ success: false, error: "Only workspace administrators can authorize remote flag mutations." }, { status: 403 });
     }
 
-    const existingFlag = flagsmithMockStore.getFlag(req.flagsmithFeatureName);
-    const previousAllocations = existingFlag
-      ? existingFlag.multivariateOptions.map((o) => `${o.key}: ${o.trafficAllocation}%`).join(", ")
-      : "Unknown";
+    const req = RolloutRequestSchema.parse(await request.json());
+    const workspaceExperiment = await getWorkspaceExperiment(req.flagsmithFeatureName, user.organizationId);
+    if (!workspaceExperiment) {
+      return NextResponse.json({ success: false, error: "EXPERIMENT_NOT_FOUND_IN_WORKSPACE" }, { status: 404 });
+    }
 
-    // 1. GRADUAL CANARY STAGE
-    if (req.action === "GRADUAL_STAGE") {
+    const isRemoteConfigured = hasFlagsmithRemoteCredentials();
+    if (!isRemoteConfigured) {
+      return NextResponse.json({
+        success: false,
+        error: "Flagsmith Management API credentials are not configured. No local mock mutation will be reported as a remote release.",
+        code: "FLAGSMITH_MANAGEMENT_NOT_CONFIGURED",
+      }, { status: 503 });
+    }
+    const guard = checkProductionRolloutGuard(isRemoteConfigured);
+
+    if (!guard.allowed) {
+      return NextResponse.json({
+        success: false,
+        error: guard.error,
+        code: guard.code,
+        isConfigError: true,
+      }, { status: guard.statusCode || 503 });
+    }
+
+    const actorName = user.fullName || user.email;
+    const current = isRemoteConfigured
+      ? await getLiveRemoteFeatureState(req.flagsmithFeatureName)
+      : { success: false as const, error: "Remote Flagsmith is not configured." };
+
+    if (isRemoteConfigured && (!current.success || !current.state)) {
+      return NextResponse.json({
+        success: false,
+        error: current.error || "Unable to read the current remote feature state.",
+      }, { status: 502 });
+    }
+
+    const before = isRemoteConfigured
+      ? allocationSnapshot(current.state)
+      : null;
+
+    if (req.action === "GRADUAL_STAGE" || req.action === "ROLLOUT_WINNER") {
       if (!req.winningVariantKey) {
-        return NextResponse.json(
-          { success: false, error: "winningVariantKey is required for GRADUAL_STAGE" },
-          { status: 400 }
-        );
+        return NextResponse.json({ success: false, error: "winningVariantKey is required." }, { status: 400 });
       }
-      const pct = req.stagePercentage ?? 25;
+
+      const evidence = await getPersistedRolloutEvidence(workspaceExperiment.id, workspaceExperiment.sampleSizeTarget);
+      const blockers = getRolloutEvidenceBlockers(workspaceExperiment, evidence, req.winningVariantKey);
+      if (blockers.length > 0) {
+        return NextResponse.json({
+          success: false,
+          error: "ROLLOUT_EVIDENCE_GATE_BLOCKED",
+          message: "The server-side release gate rejected this mutation. Client-side demo scenarios cannot override persisted evidence.",
+          blockers,
+          evidence: {
+            realExposures: evidence.totalExposures,
+            sampleSizeTarget: evidence.sampleSizeTarget,
+          },
+        }, { status: 409 });
+      }
+
+      const pct = req.action === "ROLLOUT_WINNER" ? 100 : (req.stagePercentage ?? 25);
+      let result: any;
 
       if (isRemoteConfigured) {
-        const remoteRes = await updateFlagsmithCanaryStage(
+        const variantValue = await resolveVariantValue(
           req.flagsmithFeatureName,
           req.winningVariantKey,
-          pct
+          current.state
         );
+        result = req.action === "ROLLOUT_WINNER"
+          ? await rolloutFlagsmithWinner(req.flagsmithFeatureName, variantValue)
+          : await updateFlagsmithCanaryStage(req.flagsmithFeatureName, variantValue, pct);
 
-        if (!remoteRes.success) {
+        if (!result.success || !result.verifiedState) {
           await recordAuditLog({
-            action: "GRADUAL_STAGE_FAILED",
-            actor: { name: req.authorizer, type: "human" },
+            action: req.action === "ROLLOUT_WINNER" ? "ROLLOUT_FAILED" : "GRADUAL_STAGE_FAILED",
+            organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
             entityType: "FLAGSMITH_FLAG",
             entityId: req.flagsmithFeatureName,
-            details: `Failed to update Flagsmith remote canary: ${remoteRes.error}`,
-            metadata: {
-              status: "FAILED_REMOTE_ACTUATION",
-              error: remoteRes.error,
-              targetPercentage: pct,
-              variant: req.winningVariantKey,
-            },
+            details: result.error || "Flagsmith did not return a verifiable post-mutation state.",
+            metadata: { status: "FAILED_REMOTE_VERIFICATION", winningVariantKey: req.winningVariantKey },
           });
-          return NextResponse.json(
-            { success: false, error: remoteRes.error, details: "Remote Flagsmith update failed." },
-            { status: 502 }
-          );
+          return NextResponse.json({ success: false, error: result.error || "Remote verification failed." }, { status: 502 });
+        }
+      } else {
+        if (req.action === "ROLLOUT_WINNER") {
+          flagsmithMockStore.rolloutWinner(req.flagsmithFeatureName, req.winningVariantKey);
+        } else {
+          flagsmithMockStore.updateGradualRollout(req.flagsmithFeatureName, req.winningVariantKey, pct);
         }
       }
 
-      flagsmithMockStore.updateGradualRollout(req.flagsmithFeatureName, req.winningVariantKey, pct);
-      const updatedFlag = flagsmithMockStore.getFlag(req.flagsmithFeatureName);
-      const newAllocations = updatedFlag
-        ? updatedFlag.multivariateOptions.map((o) => `${o.key}: ${o.trafficAllocation}%`).join(", ")
-        : `${req.winningVariantKey}: ${pct}%`;
+      const after: {
+        variants: Array<{ value: string; percentageAllocation: number }>;
+        defaultValue?: string | null;
+        defaultAllocationPercent: number;
+        totalAllocationPercent: number;
+      } = isRemoteConfigured
+        ? allocationSnapshot(result.verifiedState)
+        : (() => {
+            const updated = flagsmithMockStore.getFlag(req.flagsmithFeatureName);
+            const variants = updated?.multivariateOptions.map((item) => ({
+              value: item.key,
+              percentageAllocation: item.trafficAllocation,
+            })) || [];
+            const allocationTotal = variants.reduce((sum, item) => sum + item.percentageAllocation, 0);
+            return {
+              variants,
+              defaultValue: updated?.value ?? null,
+              defaultAllocationPercent: Math.max(0, 100 - allocationTotal),
+              totalAllocationPercent: allocationTotal + Math.max(0, 100 - allocationTotal),
+            };
+          })();
 
+      const validTotal = after.variants.reduce((sum: number, item: any) => sum + item.percentageAllocation, 0)
+        + (isRemoteConfigured ? after.defaultAllocationPercent : 0);
+      if (isRemoteConfigured && Math.abs(validTotal - 100) > 0.01) {
+        return NextResponse.json({
+          success: false,
+          error: `Allocation invariant failed after mutation: expected 100%, received ${validTotal}%.`,
+          actualAllocation: after,
+        }, { status: 502 });
+      }
+
+      try {
+        await syncExperimentAllocations(
+          req.flagsmithFeatureName,
+          after,
+          req.action === "ROLLOUT_WINNER" ? "CONCLUDED_ROLLED_OUT" : undefined
+        );
+      } catch (syncError: any) {
+        console.error("[Flagsmith] Remote rollout succeeded but PostgreSQL allocation sync failed:", syncError?.message || syncError);
+        return NextResponse.json({
+          success: false,
+          remoteActuation: true,
+          remoteVerified: true,
+          error: "Flagsmith accepted and verified the remote rollout, but the experiment allocation record could not be synchronized. Do not retry blindly; inspect the live flag first.",
+          details: syncError?.message,
+          trafficAllocation: after,
+        }, { status: 503 });
+      }
+
+      const action = req.action === "ROLLOUT_WINNER" ? "ROLLOUT_APPROVED_EXECUTED" : "GRADUAL_STAGE_UPDATED";
       await recordAuditLog({
-        action: "GRADUAL_STAGE_UPDATED",
-        actor: { name: req.authorizer, type: "human" },
+        action,
+        organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
         entityType: "FLAGSMITH_FLAG",
         entityId: req.flagsmithFeatureName,
-        details: `Gradual rollout stage set to ${pct}% for variant '${req.winningVariantKey}'. Previous: [${previousAllocations}] -> New: [${newAllocations}].`,
+        details: `${req.action} verified against Flagsmith. Previous: ${JSON.stringify(before)}; New: ${JSON.stringify(after)}.`,
         metadata: {
-          authorizer: req.authorizer,
-          previousValue: previousAllocations,
-          newValue: newAllocations,
-          stagePercentage: pct,
-          rationale: req.rationale || `Canary ramp to ${pct}% following safety validation.`,
+          authorizer: actorName,
+          authenticatedUserId: user.id,
+          authenticatedUserEmail: user.email,
+          authenticatedRole: user.role,
+          winningVariantKey: req.winningVariantKey,
+          requestedPercentage: pct,
+          previousAllocation: before,
+          verifiedAllocation: after,
           status: "SUCCESS_VERIFIED",
           remoteActuation: isRemoteConfigured,
+          rationale: req.rationale || null,
         },
       });
 
       return NextResponse.json({
         success: true,
-        action: "GRADUAL_STAGE",
+        action: req.action,
+        source: isRemoteConfigured ? "flagsmith_remote_api" : "local_mock",
         flagsmithFeatureName: req.flagsmithFeatureName,
         winningVariantKey: req.winningVariantKey,
-        stagePercentage: pct,
-        trafficAllocation: updatedFlag?.multivariateOptions,
+        trafficAllocation: after,
         remoteActuation: isRemoteConfigured,
-        message: `Flagsmith traffic updated: ${pct}% allocated to '${req.winningVariantKey}'. Verified in Flagsmith engine.`,
+        message: `Verified ${req.action === "ROLLOUT_WINNER" ? "100% winner rollout" : `canary allocation to ${pct}%`} for '${req.winningVariantKey}'.`,
       });
     }
 
-    // 2. ROLLBACK TO CONTROL
     if (req.action === "ROLLBACK_TO_CONTROL") {
+      let result: any;
       if (isRemoteConfigured) {
-        const remoteRes = await rollbackFlagsmithToControl(req.flagsmithFeatureName);
-        if (!remoteRes.success) {
+        const controlValue = await resolveControlValue(req.flagsmithFeatureName, current.state);
+        result = await rollbackFlagsmithToControl(req.flagsmithFeatureName, controlValue);
+        if (!result.success || !result.verifiedState) {
           await recordAuditLog({
             action: "ROLLBACK_FAILED",
-            actor: { name: req.authorizer, type: "human" },
+            organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
             entityType: "FLAGSMITH_FLAG",
             entityId: req.flagsmithFeatureName,
-            details: `Failed to rollback Flagsmith remote feature: ${remoteRes.error}`,
-            metadata: {
-              status: "FAILED_REMOTE_ACTUATION",
-              error: remoteRes.error,
-            },
+            details: result.error || "Flagsmith did not return a verifiable rollback state.",
+            metadata: { status: "FAILED_REMOTE_VERIFICATION" },
           });
-          return NextResponse.json(
-            { success: false, error: remoteRes.error, details: "Remote Flagsmith rollback failed." },
-            { status: 502 }
-          );
+          return NextResponse.json({ success: false, error: result.error || "Remote rollback verification failed." }, { status: 502 });
         }
+      } else {
+        flagsmithMockStore.rollbackToControl(req.flagsmithFeatureName);
       }
 
-      flagsmithMockStore.rollbackToControl(req.flagsmithFeatureName);
-      const updatedFlag = flagsmithMockStore.getFlag(req.flagsmithFeatureName);
-      const newAllocations = updatedFlag
-        ? updatedFlag.multivariateOptions.map((o) => `${o.key}: ${o.trafficAllocation}%`).join(", ")
-        : "control: 100%";
+      const after = isRemoteConfigured
+        ? allocationSnapshot(result.verifiedState)
+        : { variants: [{ value: "control", percentageAllocation: 100 }] };
+
+      try {
+        await syncExperimentAllocations(req.flagsmithFeatureName, after, "CONCLUDED_ROLLED_BACK");
+      } catch (syncError: any) {
+        console.error("[Flagsmith] Remote rollback succeeded but PostgreSQL allocation sync failed:", syncError?.message || syncError);
+        return NextResponse.json({
+          success: false,
+          remoteActuation: true,
+          remoteVerified: true,
+          error: "Flagsmith rollback was verified, but the experiment allocation record could not be synchronized. Inspect the remote flag before retrying.",
+          details: syncError?.message,
+          trafficAllocation: after,
+        }, { status: 503 });
+      }
 
       await recordAuditLog({
         action: "ROLLBACK_EXECUTED",
-        actor: { name: req.authorizer, type: "human" },
+        organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
         entityType: "FLAGSMITH_FLAG",
         entityId: req.flagsmithFeatureName,
-        details: `Safe rollback executed: Traffic reverted to 100% Control. Previous: [${previousAllocations}] -> New: [${newAllocations}].`,
+        details: `Rollback verified against Flagsmith. Previous: ${JSON.stringify(before)}; New: ${JSON.stringify(after)}.`,
         metadata: {
-          authorizer: req.authorizer,
-          previousValue: previousAllocations,
-          newValue: newAllocations,
-          reason: req.rationale || "Guardrail breach threshold triggered or manual rollback requested.",
+          authorizer: actorName,
+          authenticatedUserId: user.id,
+          authenticatedUserEmail: user.email,
+          authenticatedRole: user.role,
+          previousAllocation: before,
+          verifiedAllocation: after,
           status: "SUCCESS_VERIFIED",
           remoteActuation: isRemoteConfigured,
+          rationale: req.rationale || null,
         },
       });
 
       return NextResponse.json({
         success: true,
-        action: "ROLLBACK_TO_CONTROL",
+        action: req.action,
+        source: isRemoteConfigured ? "flagsmith_remote_api" : "local_mock",
         flagsmithFeatureName: req.flagsmithFeatureName,
-        trafficAllocation: updatedFlag?.multivariateOptions,
+        trafficAllocation: after,
         remoteActuation: isRemoteConfigured,
-        message: `Flagsmith flag '${req.flagsmithFeatureName}' safely rolled back to 100% Control. Changes verified in Flagsmith engine.`,
+        message: "Control rollback completed and verified.",
       });
     }
 
-    // 3. ROLLOUT WINNER 100%
-    if (req.action === "ROLLOUT_WINNER") {
-      if (!req.winningVariantKey) {
-        return NextResponse.json(
-          { success: false, error: "winningVariantKey is required for ROLLOUT_WINNER" },
-          { status: 400 }
-        );
-      }
-
-      if (isRemoteConfigured) {
-        const remoteRes = await rolloutFlagsmithWinner(
-          req.flagsmithFeatureName,
-          req.winningVariantKey
-        );
-        if (!remoteRes.success) {
-          await recordAuditLog({
-            action: "ROLLOUT_FAILED",
-            actor: { name: req.authorizer, type: "human" },
-            entityType: "FLAGSMITH_FLAG",
-            entityId: req.flagsmithFeatureName,
-            details: `Failed to rollout winner to Flagsmith remote: ${remoteRes.error}`,
-            metadata: {
-              status: "FAILED_REMOTE_ACTUATION",
-              error: remoteRes.error,
-              winningVariantKey: req.winningVariantKey,
-            },
-          });
-          return NextResponse.json(
-            { success: false, error: remoteRes.error, details: "Remote Flagsmith winner rollout failed." },
-            { status: 502 }
-          );
-        }
-      }
-
-      flagsmithMockStore.rolloutWinner(req.flagsmithFeatureName, req.winningVariantKey);
-      const updatedFlag = flagsmithMockStore.getFlag(req.flagsmithFeatureName);
-      const newAllocations = `${req.winningVariantKey}: 100%`;
-
-      await recordAuditLog({
-        action: "ROLLOUT_APPROVED_EXECUTED",
-        actor: { name: req.authorizer, type: "human" },
-        entityType: "FLAGSMITH_FLAG",
-        entityId: req.flagsmithFeatureName,
-        details: `Human authorized 100% rollout of '${req.winningVariantKey}' for flag '${req.flagsmithFeatureName}'. Previous: [${previousAllocations}] -> New: [${newAllocations}].`,
-        metadata: {
-          authorizer: req.authorizer,
-          previousValue: previousAllocations,
-          newValue: newAllocations,
-          rationale: req.rationale || "Achieved >= 95% statistical confidence with all guardrails clear.",
-          status: "SUCCESS_VERIFIED",
-          remoteActuation: isRemoteConfigured,
-        },
-      });
-
-      return NextResponse.json({
-        success: true,
-        action: "ROLLOUT_WINNER",
-        flagsmithFeatureName: req.flagsmithFeatureName,
-        winningVariantKey: req.winningVariantKey,
-        trafficAllocation: updatedFlag?.multivariateOptions,
-        remoteActuation: isRemoteConfigured,
-        message: `Flagsmith feature '${req.flagsmithFeatureName}' successfully rolled out to 100% traffic on variant '${req.winningVariantKey}'. Verified in Flagsmith engine.`,
-      });
-    }
-
-    // 4. EMERGENCY KILL SWITCH
     if (req.action === "EMERGENCY_KILL_SWITCH") {
+      let result: any;
       if (isRemoteConfigured) {
-        const remoteRes = await triggerFlagsmithKillSwitch(req.flagsmithFeatureName);
-        if (!remoteRes.success) {
+        result = await triggerFlagsmithKillSwitch(req.flagsmithFeatureName);
+        if (!result.success || result.verifiedState?.enabled !== false) {
           await recordAuditLog({
             action: "KILL_SWITCH_FAILED",
-            actor: { name: req.authorizer, type: "human" },
+            organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
             entityType: "FLAGSMITH_FLAG",
             entityId: req.flagsmithFeatureName,
-            details: `Failed to trigger Flagsmith remote kill-switch: ${remoteRes.error}`,
-            metadata: {
-              status: "FAILED_REMOTE_ACTUATION",
-              error: remoteRes.error,
-            },
+            details: result.error || "Flagsmith did not verify the disabled state.",
+            metadata: { status: "FAILED_REMOTE_VERIFICATION" },
           });
-          return NextResponse.json(
-            { success: false, error: remoteRes.error, details: "Remote Flagsmith kill-switch failed." },
-            { status: 502 }
-          );
+          return NextResponse.json({ success: false, error: result.error || "Kill-switch verification failed." }, { status: 502 });
         }
+      } else {
+        flagsmithMockStore.toggleKillSwitch(req.flagsmithFeatureName, false);
       }
 
-      flagsmithMockStore.toggleKillSwitch(req.flagsmithFeatureName, false);
-
+      // The kill switch disables the flag but does not mark the experiment complete:
+      // the operator may re-enable it after the incident has been resolved.
       await recordAuditLog({
         action: "KILL_SWITCH_TRIGGERED",
-        actor: { name: req.authorizer, type: "human" },
+        organizationId: user.organizationId,
+        actor: { name: actorName, type: "human" },
         entityType: "FLAGSMITH_FLAG",
         entityId: req.flagsmithFeatureName,
-        details: `Emergency kill-switch executed for flag '${req.flagsmithFeatureName}'. Flag disabled in Flagsmith.`,
+        details: "Emergency kill-switch verified.",
         metadata: {
-          authorizer: req.authorizer,
-          previousValue: previousAllocations,
-          newValue: "disabled",
-          rationale: req.rationale || "Immediate regression prevention.",
+          authorizer: actorName,
+          previousAllocation: before,
+          enabled: false,
           status: "SUCCESS_VERIFIED",
           remoteActuation: isRemoteConfigured,
+          rationale: req.rationale || null,
         },
       });
 
       return NextResponse.json({
         success: true,
-        action: "EMERGENCY_KILL_SWITCH",
+        action: req.action,
+        source: isRemoteConfigured ? "flagsmith_remote_api" : "local_mock",
         flagsmithFeatureName: req.flagsmithFeatureName,
         enabled: false,
         remoteActuation: isRemoteConfigured,
-        message: `Flagsmith feature '${req.flagsmithFeatureName}' disabled immediately (< 50ms latency). Verified in Flagsmith engine.`,
+        message: "Emergency kill-switch completed and verified.",
       });
     }
 
-    return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 });
+    return NextResponse.json({ success: false, error: "Unsupported action." }, { status: 400 });
   } catch (error: any) {
-    return NextResponse.json(
-      { success: false, error: "Rollout execution failed", details: error.message },
-      { status: 400 }
-    );
+    return NextResponse.json({
+      success: false,
+      error: error?.message || "Rollout execution failed.",
+    }, { status: 400 });
   }
 }

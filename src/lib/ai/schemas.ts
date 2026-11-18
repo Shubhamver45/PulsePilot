@@ -11,7 +11,7 @@ export const VariantSchema = z.object({
   description: z.string().describe("Description of what this variant does"),
   isControl: z.boolean().default(false),
   trafficAllocation: z.number().min(0).max(100).describe("Percentage of traffic, sum must equal 100"),
-  featureValue: z.record(z.any()).describe("JSON payload delivered via Flagsmith feature state"),
+  featureValue: z.record(z.string(), z.any()).describe("JSON payload delivered via Flagsmith feature state"),
   whyWorthTesting: z.string().describe("Behavioral psychology or product reasoning for this variant"),
 });
 
@@ -41,14 +41,14 @@ export const ExperimentStrategySchema = z.object({
   }),
   traffic_allocation: z.object({
     controlPercent: z.number(),
-    treatmentPercents: z.record(z.number()),
+    treatmentPercents: z.record(z.string(), z.number()),
     totalPercent: z.number(),
   }),
   required_events: z.array(
     z.object({
       eventName: z.string(),
       triggerPoint: z.string(),
-      payloadSchema: z.record(z.string()).optional(),
+      payloadSchema: z.record(z.string(), z.string()).optional(),
     })
   ),
   implementation_plan: z.array(z.string()).min(2),
@@ -59,6 +59,114 @@ export const ExperimentStrategySchema = z.object({
 export type ExperimentStrategy = z.infer<typeof ExperimentStrategySchema>;
 export type VariantSpec = z.infer<typeof VariantSchema>;
 export type MetricSpec = z.infer<typeof MetricItemSchema>;
+
+export interface ExperimentStrategyValidation {
+  valid: boolean;
+  errors: string[];
+  allocation: {
+    controlPercent: number;
+    treatmentPercent: number;
+    totalPercent: number;
+  };
+}
+
+/**
+ * Deterministic validation shared by the AI preview and the privileged
+ * provisioning endpoint. AI-generated content is always treated as untrusted
+ * input until these checks pass.
+ */
+export function validateExperimentStrategy(
+  strategy: ExperimentStrategy
+): ExperimentStrategyValidation {
+  const errors: string[] = [];
+  const variants = [strategy.control_variant, ...strategy.treatment_variants];
+  const keys = variants.map((variant) => variant.key);
+  const uniqueKeys = new Set(keys);
+
+  if (!strategy.flagsmith_feature_name.startsWith("exp_")) {
+    errors.push("The Flagsmith feature key must start with exp_.");
+  }
+  if (strategy.control_variant.key !== "control") {
+    errors.push("The control variant key must be exactly 'control'.");
+  }
+  if (!strategy.control_variant.isControl) {
+    errors.push("The control variant must be explicitly marked as the control.");
+  }
+  if (strategy.treatment_variants.some((variant) => variant.isControl)) {
+    errors.push("Treatment variants cannot be marked as control.");
+  }
+  if (uniqueKeys.size !== keys.length) {
+    errors.push("Variant keys must be unique.");
+  }
+  if (keys.some((key) => !/^[a-z0-9_]+$/.test(key))) {
+    errors.push("Variant keys may contain only lowercase letters, numbers, and underscores.");
+  }
+  if (strategy.treatment_variants.length < 1 || strategy.treatment_variants.length > 4) {
+    errors.push("An experiment must contain between one and four treatment variants.");
+  }
+
+  const controlPercent = Number(strategy.control_variant.trafficAllocation);
+  const treatmentPercent = strategy.treatment_variants.reduce(
+    (sum, variant) => sum + Number(variant.trafficAllocation),
+    0
+  );
+  const totalPercent = controlPercent + treatmentPercent;
+
+  if (variants.some((variant) => !Number.isFinite(variant.trafficAllocation) ||
+      variant.trafficAllocation < 0 || variant.trafficAllocation > 100)) {
+    errors.push("Every variant allocation must be a finite percentage between 0 and 100.");
+  }
+  if (Math.abs(totalPercent - 100) > 0.01) {
+    errors.push(`Traffic allocations must total 100%; the generated plan totals ${totalPercent.toFixed(2)}%.`);
+  }
+  if (Math.abs(strategy.traffic_allocation.controlPercent - controlPercent) > 0.01) {
+    errors.push("The traffic allocation summary does not match the control variant allocation.");
+  }
+  if (Math.abs(strategy.traffic_allocation.totalPercent - totalPercent) > 0.01) {
+    errors.push("The traffic allocation summary does not match the configured variants.");
+  }
+
+  for (const variant of strategy.treatment_variants) {
+    const declared = strategy.traffic_allocation.treatmentPercents[variant.key];
+    if (declared === undefined || Math.abs(declared - variant.trafficAllocation) > 0.01) {
+      errors.push(`The traffic allocation summary does not match treatment '${variant.key}'.`);
+    }
+  }
+
+  const values = variants.map((variant) => {
+    try { return JSON.stringify(variant.featureValue); } catch { return ""; }
+  });
+  if (new Set(values).size !== values.length) {
+    errors.push("Every variant must have a distinct Flagsmith remote-config value.");
+  }
+  if (!strategy.primary_metric.key.trim()) {
+    errors.push("A measurable primary metric event key is required.");
+  }
+  if (strategy.guardrail_metrics.length === 0) {
+    errors.push("At least one operational guardrail metric is required.");
+  }
+  if (strategy.required_events.length === 0) {
+    errors.push("At least one event instrumentation requirement is required.");
+  }
+  if (!strategy.required_events.some((event) => event.eventName === strategy.primary_metric.key)) {
+    errors.push("The primary metric key must appear in the required event instrumentation plan.");
+  }
+  for (const guardrail of strategy.guardrail_metrics) {
+    if (!strategy.required_events.some((event) => event.eventName === guardrail.key)) {
+      errors.push(`Guardrail metric '${guardrail.key}' must have a corresponding required instrumentation event.`);
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    allocation: {
+      controlPercent,
+      treatmentPercent: treatmentPercent,
+      totalPercent,
+    },
+  };
+}
 
 /**
  * Zod Schema for AI Experiment Readiness Review

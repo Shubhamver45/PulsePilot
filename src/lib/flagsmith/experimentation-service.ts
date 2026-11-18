@@ -48,6 +48,10 @@ export interface ExperimentVariationResult {
   expectedLiftPercent?: number; // relative to control
   chanceToWin?: number; // 0 to 1 (Bayesian win prob)
   credibleInterval95?: [number, number];
+  pValue?: number;
+  sampleRatioPValue?: number;
+  featureValue?: unknown;
+  configuredAllocationPercent?: number;
 }
 
 export interface FlagsmithExperimentResults {
@@ -62,6 +66,8 @@ export interface FlagsmithExperimentResults {
     key: string;
     name: string;
   };
+  sampleSizeTarget?: number;
+  sampleSizeCurrent?: number;
   summary: {
     totalExposures: number;
     totalConversions: number;
@@ -373,11 +379,15 @@ export async function getFlagsmithExperimentResults(
 
       if (experiment && experiment.variants.length > 0) {
         // 1. Fetch unique exposures per user (first-touch variant assignment)
-        const exposureEvents = await prisma.telemetryEvent.findMany({
+        const exposureRows = await prisma.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "EXPOSURE" },
-          select: { distinctUserId: true, variantId: true },
+          select: { distinctUserId: true, variantId: true, properties: true },
           distinct: ["distinctUserId"],
+          orderBy: { timestamp: "asc" },
         });
+        const exposureEvents = exposureRows.filter((event: any) =>
+          !((event.properties as any)?.isSynthetic === true)
+        );
 
         const userVariantMap = new Map<string, string>();
         const exposuresByVariant: Record<string, number> = {};
@@ -393,10 +403,13 @@ export async function getFlagsmithExperimentResults(
         }
 
         // 2. Fetch all conversion events
-        const conversionEvents = await prisma.telemetryEvent.findMany({
+        const conversionRows = await prisma.telemetryEvent.findMany({
           where: { experimentId: experiment.id, eventType: "CONVERSION" },
           select: { distinctUserId: true, variantId: true, properties: true },
         });
+        const conversionEvents = conversionRows.filter((event: any) =>
+          !((event.properties as any)?.isSynthetic === true)
+        );
 
         // 3. Track unique converted users per variant, repeat purchases, and revenue
         const convertedUsersByVariant = new Map<string, Set<string>>();
@@ -410,11 +423,14 @@ export async function getFlagsmithExperimentResults(
         }
 
         for (const conv of conversionEvents) {
-          // Attribute conversion to user's assigned exposed variant, or event's variant
-          const assignedVariantId = userVariantMap.get(conv.distinctUserId) || conv.variantId;
+          // Conversions count only for users with a persisted first-touch exposure.
+          // The exposure record, not a client-supplied conversion variant, owns attribution.
+          const assignedVariantId = userVariantMap.get(conv.distinctUserId);
+          if (!assignedVariantId) continue;
+
           const userSet = convertedUsersByVariant.get(assignedVariantId);
           if (userSet) {
-            userSet.add(conv.distinctUserId); // Deduplicates repeat conversions by same user
+            userSet.add(conv.distinctUserId);
             totalPurchasesByVariant[assignedVariantId] = (totalPurchasesByVariant[assignedVariantId] || 0) + 1;
 
             const props = conv.properties as any;
@@ -448,15 +464,20 @@ export async function getFlagsmithExperimentResults(
             let expectedLiftPercent = 0;
             let chanceToWin = 0.5;
             let credibleInterval95: [number, number] = [0, 0];
+            let pValue: number | undefined;
+            let sampleRatioPValue: number | undefined;
 
             if (!isControl && expCount > 0 && controlExposures > 0) {
               const comp = compareVariants(
                 { key: controlVariant.key, name: controlVariant.name, isControl: true, exposures: controlExposures, conversions: controlUniqueConverted },
-                { key: v.key, name: v.name, isControl: false, exposures: expCount, conversions: uniqueConverted }
+                { key: v.key, name: v.name, isControl: false, exposures: expCount, conversions: uniqueConverted },
+                [Number(controlVariant.trafficAllocation || 0), Number(v.trafficAllocation || 0)]
               );
               expectedLiftPercent = Number(comp.relativeUpliftPercent.toFixed(1));
               chanceToWin = Number(comp.bayesianProbabilityToBeatControl.toFixed(3));
               credibleInterval95 = [Number(comp.confidenceInterval95[0].toFixed(4)), Number(comp.confidenceInterval95[1].toFixed(4))];
+              pValue = Number(comp.pValue.toFixed(6));
+              sampleRatioPValue = Number(comp.sampleRatioMismatch.pValue.toFixed(6));
             }
 
             return {
@@ -469,6 +490,10 @@ export async function getFlagsmithExperimentResults(
               expectedLiftPercent: !isControl ? expectedLiftPercent : undefined,
               chanceToWin: !isControl ? chanceToWin : undefined,
               credibleInterval95: !isControl ? credibleInterval95 : undefined,
+              pValue: !isControl ? pValue : undefined,
+              sampleRatioPValue: !isControl ? sampleRatioPValue : undefined,
+              featureValue: v.featureValue,
+              configuredAllocationPercent: Number(v.trafficAllocation || 0),
             };
           });
 
@@ -482,6 +507,8 @@ export async function getFlagsmithExperimentResults(
             status: experiment.status as any,
             lastRefreshedAt: new Date().toISOString(),
             warehouseConnected: true,
+            sampleSizeTarget: experiment.sampleSizeTarget,
+            sampleSizeCurrent: experiment.sampleSizeCurrent,
             variations,
             primaryMetric: {
               key: experiment.primaryMetric,
@@ -491,16 +518,55 @@ export async function getFlagsmithExperimentResults(
               totalExposures: totalDbExposures,
               totalConversions: totalUniqueConvertedUsers,
               leadingVariationKey: leadingVar?.variantKey || null,
-              statisticalCertaintyReached: (leadingVar?.chanceToWin || 0) >= 0.95 && totalDbExposures >= experiment.sampleSizeTarget,
+              statisticalCertaintyReached: Boolean(
+                leadingVar &&
+                (leadingVar.chanceToWin || 0) >= 0.95 &&
+                (leadingVar.pValue ?? 1) <= 0.05 &&
+                (leadingVar.sampleRatioPValue ?? 0) > 0.01 &&
+                (leadingVar.expectedLiftPercent || 0) > 0 &&
+                totalDbExposures >= experiment.sampleSizeTarget
+              ),
             },
           };
         }
+
+        // A persisted experiment with no valid exposures has an empty scorecard.
+        // Never substitute seeded demo statistics when PostgreSQL is configured.
+        const control = experiment.variants.find((variant) => variant.isControl) || experiment.variants[0];
+        return {
+          experimentId: experiment.id,
+          name: experiment.title,
+          featureFlagName: experiment.flagsmithFeatureName,
+          status: experiment.status as any,
+          lastRefreshedAt: new Date().toISOString(),
+          warehouseConnected: true,
+          sampleSizeTarget: experiment.sampleSizeTarget,
+          sampleSizeCurrent: experiment.sampleSizeCurrent,
+          variations: experiment.variants.map((variant) => ({
+            variantKey: variant.key,
+            variantName: variant.name,
+            isControl: variant.id === control?.id,
+            exposures: 0,
+            conversions: 0,
+            conversionRate: 0,
+            featureValue: variant.featureValue,
+          })),
+          primaryMetric: { key: experiment.primaryMetric, name: experiment.primaryMetric },
+          summary: {
+            totalExposures: 0,
+            totalConversions: 0,
+            leadingVariationKey: null,
+            statisticalCertaintyReached: false,
+          },
+        };
       }
     } catch (dbErr: any) {
       console.warn("[PostgreSQL Telemetry Aggregate Error]:", dbErr.message);
+      return null;
     }
   }
 
+  if (process.env.NODE_ENV === "production") return null;
   initDefaultDemoExperiment();
   const exp = activeFlagsmithExperiments.get(featureFlagName);
   if (!exp) return null;
