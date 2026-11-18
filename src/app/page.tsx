@@ -21,6 +21,12 @@ type FlagsmithHealth = {
   liveFlagsCount?: number;
   experimentationReadiness?: string;
   measuredLatencyMs?: number | null;
+  activeExperimentFlag?: {
+    name?: string;
+    controlPercent?: number | null;
+    allocationTotalPercent?: number | null;
+    variants?: Array<{ key?: string | null; allocationPercent?: number | null }>;
+  } | null;
 };
 
 export default function HomePage() {
@@ -115,9 +121,27 @@ export default function HomePage() {
                 <span className="text-slate-500">Flags available in connected environment</span>
                 <span className="font-mono font-semibold text-slate-900">{health?.liveFlagsCount ?? "—"}</span>
               </div>
-              <p className="mt-4 rounded-xl border border-violet-100 bg-violet-50/70 p-3 text-[11px] leading-5 text-violet-900">
-                This status is read from the connected Flagsmith APIs. It confirms connectivity—not experiment allocation or statistical readiness.
-              </p>
+              <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/70 p-3 text-[11px] leading-5 text-violet-950">
+                {health?.experimentationReadiness === "READY" && health.activeExperimentFlag ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2 font-semibold">
+                      <span>Live assignment configuration verified</span>
+                      <span>{health.activeExperimentFlag.allocationTotalPercent}% allocated</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className="rounded-md bg-white px-2 py-1">Control {health.activeExperimentFlag.controlPercent}%</span>
+                      {health.activeExperimentFlag.variants?.map((variant) => (
+                        <span key={variant.key} className="rounded-md bg-white px-2 py-1">
+                          {variant.key} {variant.allocationPercent}%
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-violet-800">This verifies live allocation configuration, not statistical significance. Outcome evidence comes from persisted demo telemetry.</p>
+                  </>
+                ) : (
+                  <>Live Flagsmith connectivity is available, but experiment allocation has not passed verification.</>
+                )}
+              </div>
             </div>
             <div className="absolute -bottom-5 -left-5 hidden items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-lg sm:flex">
               <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-100 text-violet-700"><ShieldCheck className="h-5 w-5" /></span>

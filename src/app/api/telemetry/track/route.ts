@@ -8,8 +8,8 @@ import { getFlagsmithIdentityAssignment } from "@/lib/flagsmith/identity-evaluat
 import { resolveExposureVariant } from "@/lib/telemetry/variant-attribution";
 import { isPublicDemoIdentity } from "@/lib/telemetry/public-demo-identity";
 
-const PUBLIC_DEMO_EXPERIMENTS = new Set(["exp_checkout_layout_v2", "checkout_experience"]);
-const PUBLIC_DEMO_ORGANIZATION_ID = "org_acme_growth";
+const PUBLIC_DEMO_EXPERIMENTS = new Set(["exp_pulsepilot_judge_checkout_v1", "exp_checkout_layout_v2", "checkout_experience"]);
+const PUBLIC_DEMO_ORGANIZATION_ID = "org_pulsepilot_demo";
 
 const TelemetryEventSchema = z.object({
   experimentFlag: z.string().min(1).max(120),

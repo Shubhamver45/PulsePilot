@@ -193,8 +193,8 @@ export default function DemoStorePage() {
   const [currentView, setCurrentView] = useState<StoreView>("CATALOG");
   const [selectedProduct, setSelectedProduct] = useState<Product>(PRODUCTS[0]);
 
-  // Active Experiment Flag Name (Supports exp_checkout_layout_v2 and query param override)
-  const [activeFlag, setActiveFlag] = useState<string>("exp_checkout_layout_v2");
+  // Active Experiment Flag Name (Supports exp_pulsepilot_judge_checkout_v1 and query param override)
+  const [activeFlag, setActiveFlag] = useState<string>("exp_pulsepilot_judge_checkout_v1");
 
   // Shopping Cart State
   const [cart, setCart] = useState<CartItem[]>([

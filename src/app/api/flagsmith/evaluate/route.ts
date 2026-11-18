@@ -9,7 +9,7 @@ import { prisma } from "@/lib/db/prisma";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const flag = searchParams.get("flag") || "exp_checkout_layout_v2";
+  const flag = searchParams.get("flag") || "exp_pulsepilot_judge_checkout_v1";
   const identity = searchParams.get("identity") || "user_alex_dev";
   const user = await getAuthenticatedApplicationUser(request);
   const targetBelongsToWorkspace = Boolean(

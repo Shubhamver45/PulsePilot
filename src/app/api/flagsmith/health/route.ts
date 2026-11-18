@@ -4,6 +4,8 @@ import { getLiveRemoteFeatureState } from "@/lib/flagsmith/flagsmith-admin";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+const DEMO_EXPERIMENT_FLAG = "exp_pulsepilot_judge_checkout_v1";
+
 const getApiUrl = () =>
   (process.env.FLAGSMITH_API_URL || "https://api.flagsmith.com/api/v1").replace(/\/$/, "");
 
@@ -44,7 +46,7 @@ export async function GET() {
   // Management state is separate from edge evaluation: it is the only safe
   // source for editable multivariate allocation records.
   const management = projectId
-    ? await getLiveRemoteFeatureState("exp_checkout_layout_v2")
+    ? await getLiveRemoteFeatureState(DEMO_EXPERIMENT_FLAG)
     : { success: false as const, error: "FLAGSMITH_PROJECT_ID is not configured." };
 
   const state = management.success ? management.state : null;
@@ -55,6 +57,7 @@ export async function GET() {
   const variants = optionStates.map((item: any) => {
     const option = item.multivariate_feature_option || {};
     return {
+      key: option.key ?? null,
       optionId: option.id ?? null,
       value: option.string_value ?? null,
       allocationPercent: Number.isFinite(Number(item.percentage_allocation))
@@ -62,6 +65,21 @@ export async function GET() {
         : null,
     };
   });
+  const treatmentTotalPercent = variants.every((variant: any) => variant.allocationPercent !== null)
+    ? variants.reduce((sum: number, variant: any) => sum + variant.allocationPercent, 0)
+    : null;
+  const controlPercent = treatmentTotalPercent !== null && treatmentTotalPercent <= 100
+    ? 100 - treatmentTotalPercent
+    : null;
+  const allocationVerified = Boolean(
+    management.success &&
+    state?.enabled === true &&
+    state?.feature_state_value &&
+    variants.length === 2 &&
+    variants.every((variant: any) => variant.key && variant.allocationPercent !== null) &&
+    controlPercent !== null &&
+    controlPercent + treatmentTotalPercent! === 100
+  );
 
   return NextResponse.json({
     connected: edgeConnected,
@@ -74,20 +92,20 @@ export async function GET() {
     projectId: projectId || null,
     apiBaseUrl: apiUrl,
     sdkStatus: edgeConnected ? "READY" : "UNAVAILABLE",
-    experimentationReadiness: management.success && variants.length > 0 ? "READY" : "NEEDS_CONFIGURATION",
+    experimentationReadiness: allocationVerified ? "READY" : "NEEDS_CONFIGURATION",
     measuredLatencyMs: edgeLatencyMs,
     liveFlagsCount,
     activeExperimentFlag: state ? {
       featureId: state.feature?.id ?? null,
       stateId: state.id ?? null,
-      name: state.feature?.name ?? "exp_checkout_layout_v2",
+      name: state.feature?.name ?? DEMO_EXPERIMENT_FLAG,
       type: state.feature?.type ?? null,
       enabled: state.enabled ?? null,
       defaultValue: state.feature_state_value ?? null,
       variants,
-      allocationTotalPercent: variants.every((variant: any) => variant.allocationPercent !== null)
-        ? variants.reduce((sum: number, variant: any) => sum + variant.allocationPercent, 0)
-        : null,
+      controlPercent,
+      treatmentTotalPercent,
+      allocationTotalPercent: controlPercent !== null ? controlPercent + treatmentTotalPercent! : null,
     } : null,
     managementError: management.success ? null : management.error,
     lastSynchronizedAt: new Date().toISOString(),
