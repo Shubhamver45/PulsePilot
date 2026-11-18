@@ -21,7 +21,7 @@ export default function IntegrationsPage() {
       status: "connected",
       description: "Structured JSON schema output engine powering Hypothesis, Analyst, and Strategist agents.",
       icon: <Sparkles className="w-5 h-5 text-primary" />,
-      details: "Model: gemini-2.5-flash • Structured Outputs Enforced",
+      details: "Model: gemini-3.8-flash • Structured Outputs Enforced",
     },
     {
       name: "PostgreSQL Database",

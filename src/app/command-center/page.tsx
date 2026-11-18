@@ -198,7 +198,7 @@ export default function AICommandCenterPage() {
               <p className="text-[11px] text-text-secondary mt-1 line-clamp-1">{agent.desc}</p>
             </div>
             <div className="mt-3 pt-2 border-t border-border-subtle flex items-center justify-between text-[10px] font-mono text-text-muted">
-              <span>gemini-2.5-flash</span>
+              <span>gemini-3.8-flash</span>
               <span className="text-success font-semibold">Active</span>
             </div>
           </div>
@@ -212,7 +212,7 @@ export default function AICommandCenterPage() {
             <Activity className="w-4 h-4 text-primary" /> Multi-Agent Handoff & Governance Chain
           </span>
           <span className="text-[11px] font-mono text-text-muted flex items-center gap-1">
-            <Cpu className="w-3.5 h-3.5 text-primary" /> Gemini 2.5 Flash &bull; Sub-second dispatch &bull; Zod Strict
+            <Cpu className="w-3.5 h-3.5 text-primary" /> Gemini 3.8 Flash &bull; Sub-second dispatch &bull; Zod Strict
           </span>
         </div>
         <div className="flex items-center gap-2 overflow-x-auto py-1">

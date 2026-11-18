@@ -112,7 +112,7 @@ if (!globalAuditStore.auditLogsStore) {
       entityType: "EXPERIMENT",
       entityId: "exp_pricing_annual_default",
       details: "Synthesized experiment specification from natural language growth intent.",
-      metadata: { model: "gemini-2.5-flash", tokens: 580 },
+      metadata: { model: "gemini-3.8-flash", tokens: 580 },
     },
     {
       id: "audit-2",
