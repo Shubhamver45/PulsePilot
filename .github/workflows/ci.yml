@@ -76,6 +76,9 @@ jobs:
       - name: Run deterministic unit and persistence tests
         run: npm test
 
+      - name: Prepare empty local environment file for credential-negative tests
+        run: touch .env
+
       - name: Run Flagsmith integration tests
         run: npm run test:flagsmith
 
