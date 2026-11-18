@@ -4,6 +4,7 @@ import { inMemoryTelemetryLogs } from "@/lib/telemetry/store";
 import { prisma } from "@/lib/db/prisma";
 import { getAuthenticatedApplicationUser } from "@/lib/auth/server-auth";
 import { checkRateLimit } from "@/lib/security/rate-limiter";
+import { getFlagsmithIdentityAssignment } from "@/lib/flagsmith/identity-evaluation";
 
 const PUBLIC_DEMO_EXPERIMENTS = new Set(["exp_checkout_layout_v2", "checkout_experience"]);
 const PUBLIC_DEMO_ORGANIZATION_ID = "org_acme_growth";
@@ -50,6 +51,34 @@ export async function POST(request: Request) {
         ? "EXPOSURE"
         : "CONVERSION";
 
+    const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
+    const mustPersist = Boolean(event.requirePersistence || process.env.NODE_ENV === "production" || process.env.VERCEL === "1");
+
+    // A persisted exposure is assigned by Flagsmith on the server. Never trust
+    // the variantKey sent by the browser, because that would let a client
+    // fabricate treatment/control attribution and contaminate experiment data.
+    let authoritativeVariantKey: string | undefined;
+    if (normalizedEventType === "EXPOSURE") {
+      const environmentKey =
+        process.env.FLAGSMITH_SERVER_SIDE_API_KEY ||
+        process.env.FLAGSMITH_ENVIRONMENT_KEY;
+      if (mustPersist || (environmentKey && environmentKey !== "mock")) {
+        const assignment = await getFlagsmithIdentityAssignment(event.distinctUserId, event.experimentFlag);
+        if (!assignment.success || !assignment.variantKey) {
+          return NextResponse.json({
+            success: false,
+            error: "FLAGSMITH_ASSIGNMENT_UNVERIFIED",
+            message: assignment.error || "Flagsmith did not return an authoritative variant assignment.",
+          }, { status: assignment.status || 502 });
+        }
+        authoritativeVariantKey = assignment.variantKey;
+      } else {
+        // Local-only development mode may exercise the telemetry UI without
+        // live Flagsmith credentials. This path is never accepted on Vercel.
+        authoritativeVariantKey = event.variantKey || "control";
+      }
+    }
+
     const record = {
       id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       timestamp: new Date().toISOString(),
@@ -57,15 +86,14 @@ export async function POST(request: Request) {
       distinctUserId: event.distinctUserId,
       eventType: normalizedEventType,
       rawEventType: event.eventType,
-      variantKey: event.variantKey || "control",
+      variantKey: normalizedEventType === "EXPOSURE"
+        ? authoritativeVariantKey || "control"
+        : event.variantKey || "control",
       metricKey: event.metricKey || (event.eventType === "EXPOSURE" ? "exposure" : event.eventType),
       // Clients cannot mark customer events synthetic to evade attribution or
       // mark synthetic rows as real. The server owns this classification.
       properties: { ...(event.properties || {}), isSynthetic: false },
     };
-
-    const isDbConfigured = !!process.env.DATABASE_URL && !process.env.DATABASE_URL.includes("mock");
-    const mustPersist = Boolean(event.requirePersistence || process.env.NODE_ENV === "production" || process.env.VERCEL === "1");
 
     // Hosted experiment telemetry must never silently degrade to an in-memory success.
     if (mustPersist && !isDbConfigured) {
